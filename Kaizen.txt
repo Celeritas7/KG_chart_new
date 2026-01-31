@@ -1,0 +1,6 @@
+Lets have a discussion before implementing the changes in app.
+
+
+Please update the app with,
+1. After the refresh the app returns to the color page. I want it to be on same page.
+2. In quiz mode there is no option to set the daily target of words to study instead of all the in my database.

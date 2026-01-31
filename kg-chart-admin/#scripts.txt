@@ -1,0 +1,18 @@
+python main.py upload-vocab 1_colours.csv --language my --topic colours
+python main.py upload-vocab 2_animals.csv --language my --topic animals
+python main.py upload-vocab 3_food.csv --language my --topic food
+python main.py upload-vocab 4_vegetables.csv --language my --topic vegetables
+python main.py upload-vocab 5_fruits.csv --language my --topic fruits
+python main.py upload-vocab 6_transportation.csv --language my --topic transportation
+python main.py upload-vocab 7_family.csv --language my --topic family
+python main.py upload-vocab 8_body.csv --language my --topic body
+python main.py upload-vocab 9_dates.csv --language my --topic dates
+python main.py upload-vocab 10_weather.csv --language my --topic weather
+python main.py upload-vocab 11_drinks.csv --language my --topic drinks
+python main.py upload-vocab 12_sports.csv --language my --topic sports
+python main.py upload-vocab 13_hobby.csv --language my --topic hobby
+python main.py upload-vocab 14_tableware.csv --language my --topic tableware
+python main.py upload-vocab 15_seasoning.csv --language my --topic seasoning
+
+
+
