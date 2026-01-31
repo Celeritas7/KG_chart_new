@@ -122,7 +122,7 @@
     const getImageUrl = (topicId, filename) => {
       if (!filename) return null;
       if (filename.startsWith('http')) return filename;
-      return `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${topicId}/${filename}`;
+      return `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/images/${topicId}/${filename}`;
     };
 
     // ==========================================
