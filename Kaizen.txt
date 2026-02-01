@@ -1,6 +1,23 @@
-Lets have a discussion before implementing the changes in app.
+Well I don't like the app system where the conversion of Burmese word is getting done with the python script. I want it to work on the basis of files like these, where my devnagari of words can done with the help of javascript files instead of processor file system (Same as in the consonant practice app).
+
+Upload the file for Burmese to change the app layout.
 
 
-Please update the app with,
-1. After the refresh the app returns to the color page. I want it to be on same page.
-2. In quiz mode there is no option to set the daily target of words to study instead of all the in my database.
+
+
+
+
+
+
+
+
+
+The kg chart need few updates. When I finsih the test the results should be visible for entire day so that I can revise the mistake words.
+
+
+In the quiz mode I want a special section for the writing practice where I will have 3 difficulty levels.
+1. can see the image, meaning and devnagari hint and on canvas I will write the Burmese word. 
+2. can see the image, meaning hint and on canvas I will write the Burmese word. 
+3. can see the image hint and on canvas I will write the Burmese word. 
+
+Then after comparing it with the actual answer I will rate "Correct" or "False" these records will be saved for future use.

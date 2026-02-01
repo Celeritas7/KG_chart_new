@@ -16,13 +16,10 @@
   <!-- Supabase -->
   <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
   
-  <!-- Language Files -->
-  <script src="./js/languages/burmese.js"></script>
-  
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@400;600;700&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Padauk:wght@400;700&family=Noto+Sans+Myanmar:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@400;600;700&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Padauk:wght@400;700&display=swap" rel="stylesheet">
   
   <script>
     tailwind.config = {
@@ -31,7 +28,7 @@
           fontFamily: {
             'display': ['Playfair Display', 'serif'],
             'body': ['DM Sans', 'sans-serif'],
-            'burmese': ['Noto Sans Myanmar', 'Padauk', 'Myanmar Text', 'sans-serif'],
+            'burmese': ['Padauk', 'Myanmar Text', 'sans-serif'],
             'devanagari': ['Noto Sans Devanagari', 'sans-serif'],
             'japanese': ['Noto Sans JP', 'sans-serif'],
           },
@@ -70,7 +67,7 @@
     const { useState, useEffect, useCallback, useMemo, createContext, useContext } = React;
 
     // ==========================================
-    // CONFIGURATION
+    // CONFIGURATION - UPDATE THESE VALUES
     // ==========================================
     const SUPABASE_URL = 'https://ulgrfumbwjovbjzjiems.supabase.co';
     const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVsZ3JmdW1id2pvdmJqemppZW1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczNzIyNjcsImV4cCI6MjA4Mjk0ODI2N30.ix5Vh4Y3GXNbQbzVtTD_WSko0L3cr5q_eCnTuDEMh7M';
@@ -79,6 +76,8 @@
     
     const TABLES = {
       languages: 'kg_chart_languages',
+      quiz_answers: 'kg_chart_quiz_answers',
+      quiz_sessions: 'kg_chart_quiz_sessions',      
       topics: 'kg_chart_topics',
       topicTranslations: 'kg_chart_topic_translations',
       vocabulary: 'kg_chart_vocabulary',
@@ -97,155 +96,23 @@
       quizTarget: 'kg_chart_quiz_target',
     };
 
+    // Helper functions for localStorage
     const saveToStorage = (key, value) => {
-      try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+      try {
+        localStorage.setItem(key, JSON.stringify(value));
+      } catch (e) {
+        console.warn('localStorage not available');
+      }
     };
 
     const loadFromStorage = (key, defaultValue) => {
       try {
         const saved = localStorage.getItem(key);
         return saved ? JSON.parse(saved) : defaultValue;
-      } catch (e) { return defaultValue; }
+      } catch (e) {
+        return defaultValue;
+      }
     };
-
-    // ==========================================
-    // LANGUAGE CONVERTER SYSTEM
-    // ==========================================
-    
-    // Registry of language converters
-    const LanguageConverters = {};
-
-    // Build converter from language data (consonants, vowels, medials, finals)
-    function buildConverter(langData) {
-      // Build mapping tables
-      const charToDevanagari = {};
-      const charToRoman = {};
-      
-      // Add consonants
-      if (langData.consonants) {
-        langData.consonants.forEach(c => {
-          if (c.char && c.devanagari) charToDevanagari[c.char] = c.devanagari;
-          if (c.char && c.roman) charToRoman[c.char] = c.roman;
-        });
-      }
-      
-      // Add vowels (matras)
-      if (langData.vowels) {
-        langData.vowels.forEach(v => {
-          if (v.char && v.devanagari) charToDevanagari[v.char] = v.devanagari;
-          if (v.char && v.roman) charToRoman[v.char] = v.roman;
-        });
-      }
-      
-      // Add medials
-      if (langData.medials) {
-        langData.medials.forEach(m => {
-          if (m.char && m.devanagari) charToDevanagari[m.char] = m.devanagari;
-          if (m.char && m.roman) charToRoman[m.char] = m.roman;
-        });
-      }
-      
-      // Add finals
-      if (langData.finals) {
-        langData.finals.forEach(f => {
-          if (f.char && f.devanagari) charToDevanagari[f.char] = f.devanagari;
-          if (f.char && f.roman) charToRoman[f.char] = f.roman;
-        });
-      }
-
-      // Sort keys by length (longer first) for proper multi-char matching
-      const sortedKeys = Object.keys(charToDevanagari).sort((a, b) => b.length - a.length);
-      const sortedRomanKeys = Object.keys(charToRoman).sort((a, b) => b.length - a.length);
-
-      return {
-        toDevanagari: (text) => {
-          if (!text) return '';
-          let result = '';
-          let i = 0;
-          
-          while (i < text.length) {
-            let matched = false;
-            
-            // Try to match longer sequences first
-            for (const key of sortedKeys) {
-              if (text.substring(i, i + key.length) === key) {
-                result += charToDevanagari[key];
-                i += key.length;
-                matched = true;
-                break;
-              }
-            }
-            
-            if (!matched) {
-              // Keep the character as-is if no mapping found
-              result += text[i];
-              i++;
-            }
-          }
-          
-          return result;
-        },
-        
-        toRoman: (text) => {
-          if (!text) return '';
-          let result = '';
-          let i = 0;
-          
-          while (i < text.length) {
-            let matched = false;
-            
-            for (const key of sortedRomanKeys) {
-              if (text.substring(i, i + key.length) === key) {
-                result += charToRoman[key];
-                i += key.length;
-                matched = true;
-                break;
-              }
-            }
-            
-            if (!matched) {
-              result += text[i];
-              i++;
-            }
-          }
-          
-          return result;
-        },
-        
-        langData
-      };
-    }
-
-    // Register Burmese converter (loaded from ./js/languages/burmese.js)
-    if (typeof burmese !== 'undefined') {
-      LanguageConverters['my'] = buildConverter(burmese);
-      console.log('✓ Burmese converter loaded');
-    } else {
-      console.warn('⚠ Burmese language file not loaded');
-    }
-
-    // Get converter for a language code
-    function getConverter(langCode) {
-      return LanguageConverters[langCode] || null;
-    }
-
-    // Convert text to Devanagari
-    function convertToDevanagari(text, langCode) {
-      const converter = getConverter(langCode);
-      if (converter) {
-        return converter.toDevanagari(text);
-      }
-      return text; // Return original if no converter
-    }
-
-    // Convert text to Roman
-    function convertToRoman(text, langCode) {
-      const converter = getConverter(langCode);
-      if (converter) {
-        return converter.toRoman(text);
-      }
-      return text;
-    }
 
     // ==========================================
     // SUPABASE CLIENT
@@ -255,7 +122,7 @@
     const getImageUrl = (topicId, filename) => {
       if (!filename) return null;
       if (filename.startsWith('http')) return filename;
-      return `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${topicId}/${filename}`;
+      return `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/images/${topicId}/${filename}`;
     };
 
     // ==========================================
@@ -276,7 +143,7 @@
       { id: 'english_to_native', label: 'English → Native', icon: '🌐' },
     ];
 
-    const DAILY_TARGET_OPTIONS = [5, 10, 15, 20, 25, 30, 50, 0];
+    const DAILY_TARGET_OPTIONS = [5, 10, 15, 20, 25, 30, 50, 0]; // 0 = All words
 
     const LANGUAGE_FONTS = {
       my: 'font-burmese',
@@ -365,17 +232,10 @@
           .order('sort_order')
           .then(({ data, error }) => {
             if (!error && data) {
-              const mapped = data.map(topic => {
-                const translation = topic.translations?.find(t => t.language_code === languageCode);
-                return {
-                  ...topic,
-                  translation: translation ? {
-                    ...translation,
-                    // Generate Devanagari from native title on-the-fly
-                    title_devanagari: convertToDevanagari(translation.title_native, languageCode)
-                  } : null
-                };
-              }).filter(t => t.translation);
+              const mapped = data.map(topic => ({
+                ...topic,
+                translation: topic.translations?.find(t => t.language_code === languageCode)
+              })).filter(t => t.translation);
               setTopics(mapped);
             }
             setLoading(false);
@@ -399,21 +259,10 @@
           .order('sort_order')
           .then(({ data, error }) => {
             if (!error && data) {
-              const mapped = data.map(vocab => {
-                const translation = vocab.translations?.find(t => t.language_code === languageCode);
-                return {
-                  ...vocab,
-                  translation: translation ? {
-                    ...translation,
-                    // Generate Devanagari from native text on-the-fly
-                    devanagari: convertToDevanagari(translation.native_text, languageCode),
-                    // Generate romanization on-the-fly
-                    pronunciation: {
-                      roman: convertToRoman(translation.native_text, languageCode)
-                    }
-                  } : null
-                };
-              }).filter(v => v.translation);
+              const mapped = data.map(vocab => ({
+                ...vocab,
+                translation: vocab.translations?.find(t => t.language_code === languageCode)
+              })).filter(v => v.translation);
               setVocabulary(mapped);
             }
             setLoading(false);
@@ -472,6 +321,7 @@
     // COMPONENTS
     // ==========================================
 
+    // Loading Spinner
     function LoadingSpinner({ message = 'Loading...' }) {
       return (
         <div className="flex flex-col items-center justify-center py-12">
@@ -484,6 +334,7 @@
       );
     }
 
+    // Auth Modal
     function AuthModal({ onClose }) {
       const { signInWithEmail, signUpWithEmail } = useAuth();
       const [isSignUp, setIsSignUp] = useState(false);
@@ -496,9 +347,11 @@
         e.preventDefault();
         setError('');
         setLoading(true);
+
         const { error } = isSignUp
           ? await signUpWithEmail(email, password)
           : await signInWithEmail(email, password);
+
         if (error) setError(error.message);
         else onClose();
         setLoading(false);
@@ -521,14 +374,28 @@
             )}
 
             <form onSubmit={handleSubmit} className="space-y-4">
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-jade-500"
-                placeholder="Email" required />
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                placeholder="Email"
+                required
+              />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-jade-500"
-                placeholder="Password" required minLength={6} />
-              <button type="submit" disabled={loading}
-                className="w-full py-3 bg-jade-600 text-white rounded-lg font-semibold hover:bg-jade-700 transition disabled:opacity-50">
+                placeholder="Password"
+                required
+                minLength={6}
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3 bg-jade-600 text-white rounded-lg font-semibold hover:bg-jade-700 transition disabled:opacity-50"
+              >
                 {loading ? 'Loading...' : (isSignUp ? 'Create Account' : 'Sign In')}
               </button>
             </form>
@@ -544,6 +411,7 @@
       );
     }
 
+    // Header
     function Header({ currentLanguage, languages, onLanguageChange, activeView, onViewChange }) {
       const { user, signOut } = useAuth();
       const [showAuthModal, setShowAuthModal] = useState(false);
@@ -570,8 +438,11 @@
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <select value={currentLanguage} onChange={(e) => onLanguageChange(e.target.value)}
-                    className="px-4 py-2 bg-white/20 rounded-lg text-white border border-white/30 focus:outline-none">
+                  <select
+                    value={currentLanguage}
+                    onChange={(e) => onLanguageChange(e.target.value)}
+                    className="px-4 py-2 bg-white/20 rounded-lg text-white border border-white/30 focus:outline-none"
+                  >
                     {languages.map(lang => (
                       <option key={lang.code} value={lang.code} className="text-gray-900">
                         {lang.flag_emoji} {lang.name_english}
@@ -581,32 +452,43 @@
 
                   {user ? (
                     <div className="relative">
-                      <button onClick={() => setShowUserMenu(!showUserMenu)}
-                        className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center hover:bg-white/30">👤</button>
+                      <button
+                        onClick={() => setShowUserMenu(!showUserMenu)}
+                        className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center hover:bg-white/30"
+                      >👤</button>
                       {showUserMenu && (
                         <div className="absolute right-0 top-12 w-48 bg-white rounded-xl shadow-xl py-2 z-50">
                           <div className="px-4 py-2 border-b">
                             <p className="text-sm text-gray-500">Signed in as</p>
                             <p className="text-sm font-medium text-gray-900 truncate">{user.email}</p>
                           </div>
-                          <button onClick={() => { signOut(); setShowUserMenu(false); }}
-                            className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50">Sign Out</button>
+                          <button
+                            onClick={() => { signOut(); setShowUserMenu(false); }}
+                            className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                          >Sign Out</button>
                         </div>
                       )}
                     </div>
                   ) : (
-                    <button onClick={() => setShowAuthModal(true)}
-                      className="px-4 py-2 bg-white text-jade-700 rounded-lg font-medium hover:bg-jade-50">Sign In</button>
+                    <button
+                      onClick={() => setShowAuthModal(true)}
+                      className="px-4 py-2 bg-white text-jade-700 rounded-lg font-medium hover:bg-jade-50"
+                    >Sign In</button>
                   )}
                 </div>
               </div>
 
               <div className="flex gap-2 mt-4 overflow-x-auto scrollbar-hide pb-1">
                 {views.map(view => (
-                  <button key={view.id} onClick={() => onViewChange(view.id)}
+                  <button
+                    key={view.id}
+                    onClick={() => onViewChange(view.id)}
                     className={`px-4 py-2 rounded-lg font-medium transition-all flex items-center gap-2 whitespace-nowrap ${
-                      activeView === view.id ? 'bg-white text-jade-700 shadow-md' : 'bg-white/20 hover:bg-white/30'
-                    }`}>
+                      activeView === view.id
+                        ? 'bg-white text-jade-700 shadow-md'
+                        : 'bg-white/20 hover:bg-white/30'
+                    }`}
+                  >
                     <span>{view.icon}</span>
                     <span className="hidden sm:inline">{view.label}</span>
                   </button>
@@ -619,16 +501,22 @@
       );
     }
 
+    // Topic Nav
     function TopicNav({ topics, activeTopic, onSelect }) {
       return (
         <div className="bg-white border-b sticky top-0 z-30 shadow-sm">
           <div className="max-w-7xl mx-auto px-2">
             <div className="flex overflow-x-auto py-3 gap-2 scrollbar-hide">
               {topics.map((topic) => (
-                <button key={topic.id} onClick={() => onSelect(topic.id)}
+                <button
+                  key={topic.id}
+                  onClick={() => onSelect(topic.id)}
                   className={`px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all flex items-center gap-2 ${
-                    activeTopic === topic.id ? 'bg-jade-600 text-white shadow-lg' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}>
+                    activeTopic === topic.id
+                      ? 'bg-jade-600 text-white shadow-lg'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
                   <span>{topic.icon}</span>
                   <span>{topic.translation?.title_native || topic.id}</span>
                 </button>
@@ -639,14 +527,17 @@
       );
     }
 
+    // Vocabulary Card
     function VocabCard({ item, topicId, rating, onRate, onClick, showEnglish, fontClass }) {
       const [imageError, setImageError] = useState(false);
       const currentRating = getRatingById(rating);
       const colorCode = item.extra_data?.colorCode;
 
       return (
-        <div onClick={onClick}
-          className="bg-white rounded-xl shadow-md hover:shadow-xl transition-all cursor-pointer group relative overflow-hidden border border-gray-100">
+        <div
+          onClick={onClick}
+          className="bg-white rounded-xl shadow-md hover:shadow-xl transition-all cursor-pointer group relative overflow-hidden border border-gray-100"
+        >
           {currentRating && (
             <div className={`absolute top-2 right-2 w-7 h-7 rounded-full ${currentRating.color} text-white text-sm flex items-center justify-center z-10 shadow-md`}>
               {currentRating.emoji}
@@ -659,8 +550,12 @@
             ) : imageError || !item.image_filename ? (
               <div className="text-5xl opacity-50">📷</div>
             ) : (
-              <img src={getImageUrl(topicId, item.image_filename)} alt={item.english_text}
-                className="max-w-full max-h-full object-contain" onError={() => setImageError(true)} />
+              <img
+                src={getImageUrl(topicId, item.image_filename)}
+                alt={item.english_text}
+                className="max-w-full max-h-full object-contain"
+                onError={() => setImageError(true)}
+              />
             )}
           </div>
 
@@ -679,10 +574,14 @@
           <div className="absolute bottom-0 left-0 right-0 bg-white/95 border-t border-gray-200 p-2 opacity-0 group-hover:opacity-100 transition-opacity">
             <div className="flex justify-center gap-1">
               {RATINGS.map((r) => (
-                <button key={r.id} onClick={(e) => { e.stopPropagation(); onRate(item.id, r.id); }}
+                <button
+                  key={r.id}
+                  onClick={(e) => { e.stopPropagation(); onRate(item.id, r.id); }}
                   className={`w-7 h-7 rounded-lg text-sm hover:scale-110 transition-transform ${
                     rating === r.id ? r.color + ' text-white shadow-md' : 'bg-gray-100 hover:bg-gray-200'
-                  }`} title={r.label}>{r.emoji}</button>
+                  }`}
+                  title={r.label}
+                >{r.emoji}</button>
               ))}
             </div>
           </div>
@@ -690,6 +589,7 @@
       );
     }
 
+    // Detail Modal
     function DetailModal({ item, topicId, rating, onRate, onClose, fontClass }) {
       const [imageError, setImageError] = useState(false);
       const colorCode = item.extra_data?.colorCode;
@@ -705,8 +605,12 @@
                 ) : imageError || !item.image_filename ? (
                   <div className="text-6xl opacity-50">📷</div>
                 ) : (
-                  <img src={getImageUrl(topicId, item.image_filename)} alt={item.english_text}
-                    className="max-w-full max-h-full object-contain" onError={() => setImageError(true)} />
+                  <img
+                    src={getImageUrl(topicId, item.image_filename)}
+                    alt={item.english_text}
+                    className="max-w-full max-h-full object-contain"
+                    onError={() => setImageError(true)}
+                  />
                 )}
               </div>
 
@@ -733,10 +637,13 @@
                 <p className="text-sm text-gray-500 mb-3">How well do you know this?</p>
                 <div className="flex flex-wrap justify-center gap-2">
                   {RATINGS.map((r) => (
-                    <button key={r.id} onClick={() => onRate(item.id, r.id)}
+                    <button
+                      key={r.id}
+                      onClick={() => onRate(item.id, r.id)}
                       className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
                         rating === r.id ? r.color + ' text-white shadow-lg' : 'bg-gray-100 hover:bg-gray-200'
-                      }`}>{r.emoji} {r.label}</button>
+                      }`}
+                    >{r.emoji} {r.label}</button>
                   ))}
                 </div>
               </div>
@@ -750,6 +657,7 @@
       );
     }
 
+    // Chart View
     function ChartView({ topic, vocabulary, ratings, onRate, languageCode, showEnglish, onToggleEnglish }) {
       const [selectedItem, setSelectedItem] = useState(null);
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
@@ -764,6 +672,7 @@
 
       return (
         <div className="max-w-7xl mx-auto px-4 py-6">
+          {/* Header */}
           <div className="bg-white rounded-2xl shadow-lg mb-6 overflow-hidden border border-gray-100">
             <div className="grid grid-cols-1 md:grid-cols-4">
               <div className="bg-gradient-to-r from-jade-700 to-jade-800 p-6 flex items-center justify-center">
@@ -778,37 +687,51 @@
               </div>
               <div className="p-4 flex flex-col justify-center items-center">
                 <div className={`text-sm text-red-700 text-center ${fontClass}`}>{topic.translation?.question_native}</div>
-                <div className="text-xs text-red-500 text-center mt-1 font-devanagari">
-                  {convertToDevanagari(topic.translation?.question_native, languageCode)}
-                </div>
+                <div className="text-xs text-red-500 text-center mt-1 font-devanagari">{topic.translation?.question_devanagari}</div>
               </div>
             </div>
           </div>
 
+          {/* Controls */}
           <div className="flex items-center justify-between mb-4 bg-white rounded-xl p-3 shadow-sm">
             <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={showEnglish} onChange={(e) => onToggleEnglish(e.target.checked)}
-                className="w-5 h-5 rounded border-gray-300 text-jade-600" />
+              <input type="checkbox" checked={showEnglish} onChange={(e) => onToggleEnglish(e.target.checked)} className="w-5 h-5 rounded border-gray-300 text-jade-600" />
               <span className="text-sm text-gray-700 font-medium">Show English</span>
             </label>
             <div className="text-sm text-gray-500">{vocabulary.length} items</div>
           </div>
 
+          {/* Grid */}
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
             {vocabulary.map((item) => (
-              <VocabCard key={item.id} item={item} topicId={topic.id} rating={ratings[item.id]?.rating}
-                onRate={onRate} onClick={() => setSelectedItem(item)} showEnglish={showEnglish} fontClass={fontClass} />
+              <VocabCard
+                key={item.id}
+                item={item}
+                topicId={topic.id}
+                rating={ratings[item.id]?.rating}
+                onRate={onRate}
+                onClick={() => setSelectedItem(item)}
+                showEnglish={showEnglish}
+                fontClass={fontClass}
+              />
             ))}
           </div>
 
           {selectedItem && (
-            <DetailModal item={selectedItem} topicId={topic.id} rating={ratings[selectedItem.id]?.rating}
-              onRate={onRate} onClose={() => setSelectedItem(null)} fontClass={fontClass} />
+            <DetailModal
+              item={selectedItem}
+              topicId={topic.id}
+              rating={ratings[selectedItem.id]?.rating}
+              onRate={onRate}
+              onClose={() => setSelectedItem(null)}
+              fontClass={fontClass}
+            />
           )}
         </div>
       );
     }
 
+    // Quiz View - Updated with Daily Target
     function QuizView({ topics, vocabulary, onRate, languageCode, user }) {
       const [quizTopic, setQuizTopic] = useState('all');
       const [quizType, setQuizType] = useState('native_to_image');
@@ -826,12 +749,17 @@
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       const filteredVocab = quizTopic === 'all' ? vocabulary : vocabulary.filter(v => v.topic_id === quizTopic);
 
-      useEffect(() => { saveToStorage(STORAGE_KEYS.quizTarget, dailyTarget); }, [dailyTarget]);
+      // Save daily target to localStorage
+      useEffect(() => {
+        saveToStorage(STORAGE_KEYS.quizTarget, dailyTarget);
+      }, [dailyTarget]);
 
+      // Generate quiz words based on daily target
       const startQuiz = useCallback(() => {
         const targetCount = dailyTarget === 0 ? filteredVocab.length : Math.min(dailyTarget, filteredVocab.length);
         const shuffled = [...filteredVocab].sort(() => Math.random() - 0.5);
         const selected = shuffled.slice(0, targetCount);
+        
         setQuizWords(selected);
         setCurrentWordIndex(0);
         setScore({ correct: 0, total: 0 });
@@ -839,14 +767,23 @@
         setQuizStarted(true);
       }, [filteredVocab, dailyTarget]);
 
+      // Generate question for current word
       const generateQuestion = useCallback(() => {
         if (quizWords.length < 4 || currentWordIndex >= quizWords.length) {
           setQuizCompleted(true);
           return;
         }
+
         const questionItem = quizWords[currentWordIndex];
-        const wrongOptions = filteredVocab.filter(v => v.id !== questionItem.id).sort(() => Math.random() - 0.5).slice(0, 3);
+        
+        // Get wrong options from all vocabulary (not just quiz words)
+        const wrongOptions = filteredVocab
+          .filter(v => v.id !== questionItem.id)
+          .sort(() => Math.random() - 0.5)
+          .slice(0, 3);
+        
         const allOptions = [questionItem, ...wrongOptions].sort(() => Math.random() - 0.5);
+        
         setCurrentQuestion(questionItem);
         setOptions(allOptions);
         setSelectedAnswer(null);
@@ -854,7 +791,9 @@
       }, [quizWords, currentWordIndex, filteredVocab]);
 
       useEffect(() => {
-        if (quizStarted && quizWords.length >= 4 && !quizCompleted) generateQuestion();
+        if (quizStarted && quizWords.length >= 4 && !quizCompleted) {
+          generateQuestion();
+        }
       }, [quizStarted, quizWords, currentWordIndex, generateQuestion, quizCompleted]);
 
       const handleAnswer = (item) => {
@@ -867,10 +806,14 @@
       };
 
       const nextQuestion = () => {
-        if (currentWordIndex + 1 >= quizWords.length) setQuizCompleted(true);
-        else setCurrentWordIndex(prev => prev + 1);
+        if (currentWordIndex + 1 >= quizWords.length) {
+          setQuizCompleted(true);
+        } else {
+          setCurrentWordIndex(prev => prev + 1);
+        }
       };
 
+      // Quiz Setup Screen
       if (!quizStarted) {
         return (
           <div className="max-w-2xl mx-auto p-6">
@@ -883,6 +826,7 @@
               </div>
 
               <div className="space-y-6">
+                {/* Topic Selection */}
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Topic</label>
                   <select value={quizTopic} onChange={(e) => setQuizTopic(e.target.value)} className="w-full px-4 py-3 border rounded-xl">
@@ -894,26 +838,41 @@
                   </select>
                 </div>
 
+                {/* Daily Target Selection */}
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    Daily Target <span className="text-gray-400 font-normal ml-2">({dailyTarget === 0 ? 'All' : dailyTarget} words)</span>
+                    Daily Target 
+                    <span className="text-gray-400 font-normal ml-2">
+                      ({dailyTarget === 0 ? 'All' : dailyTarget} words)
+                    </span>
                   </label>
                   <div className="grid grid-cols-4 gap-2">
                     {DAILY_TARGET_OPTIONS.map(target => (
-                      <button key={target} onClick={() => setDailyTarget(target)}
+                      <button
+                        key={target}
+                        onClick={() => setDailyTarget(target)}
                         className={`py-3 rounded-xl border-2 font-medium transition-all ${
-                          dailyTarget === target ? 'border-jade-500 bg-jade-50 text-jade-700' : 'border-gray-200 hover:border-gray-300'
-                        }`}>{target === 0 ? 'All' : target}</button>
+                          dailyTarget === target 
+                            ? 'border-jade-500 bg-jade-50 text-jade-700' 
+                            : 'border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        {target === 0 ? 'All' : target}
+                      </button>
                     ))}
                   </div>
                 </div>
 
+                {/* Quiz Type Selection */}
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Quiz Type</label>
                   <div className="grid grid-cols-2 gap-3">
                     {QUIZ_TYPES.map(type => (
-                      <button key={type.id} onClick={() => setQuizType(type.id)}
-                        className={`p-4 rounded-xl border-2 transition-all ${quizType === type.id ? 'border-jade-500 bg-jade-50' : 'border-gray-200'}`}>
+                      <button
+                        key={type.id}
+                        onClick={() => setQuizType(type.id)}
+                        className={`p-4 rounded-xl border-2 transition-all ${quizType === type.id ? 'border-jade-500 bg-jade-50' : 'border-gray-200'}`}
+                      >
                         <div className="text-2xl mb-1">{type.icon}</div>
                         <div className="text-sm font-medium">{type.label}</div>
                       </button>
@@ -921,9 +880,16 @@
                   </div>
                 </div>
 
-                <button onClick={startQuiz} disabled={filteredVocab.length < 4}
-                  className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">
-                  {filteredVocab.length < 4 ? 'Need 4+ words' : `Start Quiz (${dailyTarget === 0 ? filteredVocab.length : Math.min(dailyTarget, filteredVocab.length)} words)`}
+                {/* Start Button */}
+                <button
+                  onClick={startQuiz}
+                  disabled={filteredVocab.length < 4}
+                  className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50"
+                >
+                  {filteredVocab.length < 4 
+                    ? 'Need 4+ words' 
+                    : `Start Quiz (${dailyTarget === 0 ? filteredVocab.length : Math.min(dailyTarget, filteredVocab.length)} words)`
+                  }
                 </button>
               </div>
             </div>
@@ -931,9 +897,12 @@
         );
       }
 
+      // Quiz Completed Screen
       if (quizCompleted) {
         const percentage = score.total > 0 ? Math.round(score.correct / score.total * 100) : 0;
-        let message = '', emoji = '';
+        let message = '';
+        let emoji = '';
+        
         if (percentage >= 90) { message = 'Excellent!'; emoji = '🏆'; }
         else if (percentage >= 70) { message = 'Great job!'; emoji = '🌟'; }
         else if (percentage >= 50) { message = 'Good effort!'; emoji = '👍'; }
@@ -945,15 +914,28 @@
               <div className="text-6xl mb-4">{emoji}</div>
               <h2 className="text-3xl font-bold text-gray-800 mb-2">{message}</h2>
               <p className="text-gray-500 mb-6">Quiz Completed!</p>
+              
               <div className="bg-gradient-to-r from-jade-500 to-jade-600 text-white rounded-2xl p-6 mb-6">
                 <div className="text-5xl font-bold mb-2">{score.correct}/{score.total}</div>
                 <div className="text-xl opacity-90">{percentage}% Correct</div>
               </div>
+
               <div className="flex gap-4 justify-center">
-                <button onClick={() => { setQuizStarted(false); setQuizCompleted(false); }}
-                  className="px-6 py-3 bg-gray-100 rounded-xl font-medium hover:bg-gray-200">← Back to Setup</button>
-                <button onClick={startQuiz}
-                  className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Try Again</button>
+                <button
+                  onClick={() => {
+                    setQuizStarted(false);
+                    setQuizCompleted(false);
+                  }}
+                  className="px-6 py-3 bg-gray-100 rounded-xl font-medium hover:bg-gray-200"
+                >
+                  ← Back to Setup
+                </button>
+                <button
+                  onClick={startQuiz}
+                  className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700"
+                >
+                  Try Again
+                </button>
               </div>
             </div>
           </div>
@@ -964,14 +946,26 @@
 
       return (
         <div className="max-w-4xl mx-auto p-4">
+          {/* Progress Header */}
           <div className="bg-white rounded-2xl shadow-lg p-4 mb-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <button onClick={() => setQuizStarted(false)} className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">← Back</button>
+              
               <div className="flex items-center gap-4">
-                <div className="text-sm text-gray-500">{currentWordIndex + 1} / {quizWords.length}</div>
-                <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
-                  <div className="h-full bg-jade-500 transition-all duration-300" style={{ width: `${((currentWordIndex + 1) / quizWords.length) * 100}%` }} />
+                {/* Progress indicator */}
+                <div className="text-sm text-gray-500">
+                  {currentWordIndex + 1} / {quizWords.length}
                 </div>
+                
+                {/* Progress bar */}
+                <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-jade-500 transition-all duration-300"
+                    style={{ width: `${((currentWordIndex + 1) / quizWords.length) * 100}%` }}
+                  />
+                </div>
+                
+                {/* Score */}
                 <div className="bg-gradient-to-r from-jade-500 to-jade-600 text-white px-4 py-2 rounded-xl font-bold shadow-md">
                   {score.correct}/{score.total}
                 </div>
@@ -979,6 +973,7 @@
             </div>
           </div>
 
+          {/* Question Card */}
           <div className="bg-white rounded-2xl shadow-lg p-8 mb-6 text-center">
             <div className="text-sm text-gray-400 mb-4">Find the matching answer:</div>
             {quizType === 'native_to_image' && (
@@ -1004,6 +999,7 @@
             )}
           </div>
 
+          {/* Options */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             {options.map((opt) => {
               let borderClass = 'border-gray-200 hover:border-jade-300 hover:shadow-lg';
@@ -1011,9 +1007,9 @@
                 if (opt.id === currentQuestion.id) borderClass = 'border-green-500 border-4 bg-green-50';
                 else if (selectedAnswer?.id === opt.id) borderClass = 'border-red-500 border-4 bg-red-50';
               }
+
               return (
-                <button key={opt.id} onClick={() => handleAnswer(opt)} disabled={showResult}
-                  className={`p-4 rounded-xl border-2 transition-all ${borderClass}`}>
+                <button key={opt.id} onClick={() => handleAnswer(opt)} disabled={showResult} className={`p-4 rounded-xl border-2 transition-all ${borderClass}`}>
                   {(quizType === 'native_to_image' || quizType === 'devanagari_to_image') ? (
                     <>
                       <div className="w-20 h-20 mx-auto flex items-center justify-center mb-2">
@@ -1036,6 +1032,7 @@
             })}
           </div>
 
+          {/* Result & Next */}
           {showResult && (
             <div className="text-center animate-slide-up">
               <div className={`text-2xl font-bold mb-4 ${selectedAnswer?.id === currentQuestion.id ? 'text-green-600' : 'text-red-600'}`}>
@@ -1050,6 +1047,7 @@
       );
     }
 
+    // Flashcard View
     function FlashcardView({ topics, vocabulary, ratings, onRate, languageCode, user }) {
       const [selectedTopic, setSelectedTopic] = useState(topics[0]?.id || '');
       const [currentIndex, setCurrentIndex] = useState(0);
@@ -1114,10 +1112,13 @@
               <div className="text-center text-sm text-gray-500 mb-3">How well do you know this?</div>
               <div className="flex flex-wrap justify-center gap-2">
                 {RATINGS.map((r) => (
-                  <button key={r.id} onClick={() => handleRate(r.id)}
+                  <button
+                    key={r.id}
+                    onClick={() => handleRate(r.id)}
                     className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
                       ratings[currentItem.id]?.rating === r.id ? r.color + ' text-white shadow-lg' : 'bg-gray-100 hover:bg-gray-200'
-                    }`}>{r.emoji} {r.label}</button>
+                    }`}
+                  >{r.emoji} {r.label}</button>
                 ))}
               </div>
             </div>
@@ -1130,6 +1131,7 @@
       );
     }
 
+    // Progress View
     function ProgressView({ topics, vocabulary, ratings, languageCode, user }) {
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
 
@@ -1140,6 +1142,7 @@
           result.byTopic[t.id] = { topic: t, total: 0, rated: 0, byRating: {} };
           RATINGS.forEach(r => { result.byTopic[t.id].byRating[r.id] = 0; });
         });
+
         vocabulary.forEach(vocab => {
           const rating = ratings[vocab.id]?.rating;
           if (result.byTopic[vocab.topic_id]) {
@@ -1221,8 +1224,11 @@
       );
     }
 
+    // Main App
     function AppContent() {
       const { user } = useAuth();
+      
+      // Load initial state from localStorage
       const [currentLanguage, setCurrentLanguage] = useState(() => loadFromStorage(STORAGE_KEYS.language, 'my'));
       const [activeView, setActiveView] = useState(() => loadFromStorage(STORAGE_KEYS.view, 'chart'));
       const [activeTopic, setActiveTopic] = useState(() => loadFromStorage(STORAGE_KEYS.topic, null));
@@ -1233,17 +1239,26 @@
       const { vocabulary, loading: loadingVocab } = useVocabulary(currentLanguage);
       const { ratings, updateRating } = useUserRatings(currentLanguage);
 
+      // Save to localStorage when state changes
       useEffect(() => { saveToStorage(STORAGE_KEYS.language, currentLanguage); }, [currentLanguage]);
       useEffect(() => { saveToStorage(STORAGE_KEYS.view, activeView); }, [activeView]);
       useEffect(() => { saveToStorage(STORAGE_KEYS.topic, activeTopic); }, [activeTopic]);
       useEffect(() => { saveToStorage(STORAGE_KEYS.showEnglish, showEnglish); }, [showEnglish]);
 
+      // Set first topic if none saved, or validate saved topic exists
       useEffect(() => {
         if (topics.length > 0) {
           const savedTopicExists = topics.some(t => t.id === activeTopic);
-          if (!activeTopic || !savedTopicExists) setActiveTopic(topics[0].id);
+          if (!activeTopic || !savedTopicExists) {
+            setActiveTopic(topics[0].id);
+          }
         }
       }, [topics, activeTopic]);
+
+      // Reset topic when language changes (but only if saved topic doesn't exist in new language)
+      useEffect(() => {
+        // Don't reset immediately - let the topics load first
+      }, [currentLanguage]);
 
       const topicVocabulary = activeTopic ? vocabulary.filter(v => v.topic_id === activeTopic) : [];
       const currentTopic = topics.find(t => t.id === activeTopic);
@@ -1252,8 +1267,13 @@
 
       return (
         <div className="min-h-screen bg-gray-50">
-          <Header currentLanguage={currentLanguage} languages={languages} onLanguageChange={setCurrentLanguage}
-            activeView={activeView} onViewChange={setActiveView} />
+          <Header
+            currentLanguage={currentLanguage}
+            languages={languages}
+            onLanguageChange={setCurrentLanguage}
+            activeView={activeView}
+            onViewChange={setActiveView}
+          />
 
           {activeView === 'chart' && !loadingTopics && topics.length > 0 && (
             <TopicNav topics={topics} activeTopic={activeTopic} onSelect={setActiveTopic} />
@@ -1265,8 +1285,15 @@
             ) : (
               <>
                 {activeView === 'chart' && (
-                  <ChartView topic={currentTopic} vocabulary={topicVocabulary} ratings={ratings} onRate={updateRating}
-                    languageCode={currentLanguage} showEnglish={showEnglish} onToggleEnglish={setShowEnglish} />
+                  <ChartView
+                    topic={currentTopic}
+                    vocabulary={topicVocabulary}
+                    ratings={ratings}
+                    onRate={updateRating}
+                    languageCode={currentLanguage}
+                    showEnglish={showEnglish}
+                    onToggleEnglish={setShowEnglish}
+                  />
                 )}
                 {activeView === 'quiz' && (
                   <QuizView topics={topics} vocabulary={vocabulary} onRate={updateRating} languageCode={currentLanguage} user={user} />
