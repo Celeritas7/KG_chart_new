@@ -104,6 +104,7 @@ const burmese = {
         { char: 'ပ်', roman: 'p', devanagari: 'प्' },
         { char: 'က်', roman: 'k', devanagari: 'क्' },
         { char: 'င်', roman: 'ng', devanagari: 'ं' },
+        { char: 'င်္', roman: 'ng', devanagari: 'ं' },
         { char: 'ွန်', roman: 'un', devanagari: 'ुन', name: 'un' },
         { char: 'ုန်', roman: 'on', devanagari: 'ोन', name: 'on' }
     ],
