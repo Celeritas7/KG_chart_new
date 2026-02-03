@@ -1,9 +1,3 @@
-I want the javascript file for cosonents app and KG chart app as common. Please keep my javascript file format same as the attached file. And regenerate the app based on it.
-
-Also The topic uploading part is bit confusing for me. So take this excel file and give me different csv files with guidance for how to upload them.
-
-
-I want to scale my KG chart app along with the consonant app with different languages in future. So consider that as well. See the attached files of other languages that are also going to handle the calculations.
 
 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
