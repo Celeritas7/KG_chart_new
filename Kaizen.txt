@@ -1,12 +1,11 @@
-Well I don't like the app system where the conversion of Burmese word is getting done with the python script. I want it to work on the basis of files like these, where my devnagari of words can done with the help of javascript files instead of processor file system (Same as in the consonant practice app).
+I want the javascript file for cosonents app and KG chart app as common. Please keep my javascript file format same as the attached file. And regenerate the app based on it.
 
-Upload the file for Burmese to change the app layout.
-
-
+Also The topic uploading part is bit confusing for me. So take this excel file and give me different csv files with guidance for how to upload them.
 
 
+I want to scale my KG chart app along with the consonant app with different languages in future. So consider that as well. See the attached files of other languages that are also going to handle the calculations.
 
-
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 
 
