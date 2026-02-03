@@ -1,0 +1,20 @@
+topic_id,icon,sort_order,image_filename,title_english,title_native,question_english,question_native
+colours,🎨,1,colours.png,Colours,အရောင်များ,What colour is this?,ဒါကဘာအရောင်လဲ။
+animals,🐾,2,animals.png,Animals,တိရစ္ဆာန်များ,What is this animal?,ဒီတိရစ္ဆာန်ကဘာလဲ။
+food,🍔,3,food.png,Food,သိုး,I'll take it.,အစားအသောက်
+vegetables,🥕,4,vegetables.png,Vegetables,အသီးအရွက်,Do you have something you cannot eat,မင်း မစားနိုင်တဲ့ အရာ ရှိလား။
+fruits,🍎,5,fruits.png,Fruits,သစ်သီးများ,What is your favorite fruit?,မင်းအကြိုက်ဆုံးအသီးကဘာလဲ။
+transportation,🚌,6,transportation.png,Transportation,မိုဘိုင်း,Where should I go?,ဘယ်သွားရမလဲ
+shopping,🛒,7,shopping.png,Shopping,ဈေးဝယ်ထွက်,Can you discount me?,ငါ့ကိုလျှော့ပေးနိုင်မလား
+hotel,🏨,8,hotel.png,Hotel,ဟိုတယ်,Is there a vacant room?,အခန်းလွတ်ရှိပါသလား။
+body,🧍,9,body.png,Body,ခန္ဓာကိုယ်,Where does it hurt?,ဘယ်နားကနာနေပါလဲ?
+date,📅,10,date.png,Date,ရက်စွဲ,What day is today?,ဒီနေ့ဘာနေ့ပါလဲ?
+month,📆,11,month.png,Month,လ,When is your birthday?,သင့်မွေးနေ့ဘယ်တော့လဲ?
+season,🌸,12,season.png,The season,ရာသီဥတု,How is the weather?,ရာသီဥတု ဘယ်လိုလဲ။
+family,👨‍👩‍👧‍👦,13,family.png,Family,မိသားစု,Who is it?,ဘယ်သူလဲ?
+directions,🧭,14,directions.png,Directions,ဦးတည်ချက်,Where is the bus stop?,ဘူတာရုံက ဘယ်မှာလဲ။
+hobby,🎨,15,hobby.png,Hobby,ဝါသနာ,,
+tableware,🍽️,16,tableware.png,Tableware,ပန်းကန်ခွက်ယောက်,,
+seasoning,🧂,17,seasoning.png,Seasoning,ဟင်းခတ်အနှစ်,Could you please take?,ကျေးဇူးပြုပြီး ယူလို့ရမလား။
+sport,⚽,18,sport.png,Sport,အားကစား,Are you doing sports?,မင်းအားကစားလုပ်နေတာလား။
+drink,🥤,19,drink.png,Drink,သောက်ပါ။,What would you like to drink?,သင်ဘာသောက်ချင်ပါသလဲ?

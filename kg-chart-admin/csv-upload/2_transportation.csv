@@ -1,0 +1,13 @@
+english,native,image_filename,sort_order,extra_data
+Bus,ဘတ်စ်ကား,bus.png,1,
+Train,ရထား,train.png,2,
+Car,ကား,car.png,3,
+Airplane,လေယာဉ်ပျံ,airplane.png,4,
+Ship,သင်္ဘော,ship.png,5,
+Boat,လှေ,boat.png,6,
+Submarine,ရေငုပ်သင်္ဘော,submarine.png,7,
+Bicycle,စက်ဘီး,bicycle.png,8,
+Subway,မြေအောက်ရထား,subway.png,9,
+Motorbike,ဆိုင်ကယ်,motorbike.png,10,
+Helicopter,ရဟတ်ယာဉ်,helicopter.png,11,
+Taxi,တက္ကစီ,taxi.png,12,

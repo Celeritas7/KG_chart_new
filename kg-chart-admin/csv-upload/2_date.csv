@@ -1,0 +1,8 @@
+english,native,image_filename,sort_order,extra_data
+Day,နေ့,day.png,1,
+Today,ဒီနေ့,today.png,2,
+Yesterday,မနေ့က,yesterday.png,3,
+Yesterday,မနေ့က,yesterday.png,4,
+Day after tomorrow,သဘက်ခါ,day_after_tomorrow.png,5,
+Tomorrow,မနက်ဖြန်,tomorrow.png,6,
+Year,တစ်နှစ်,year.png,7,

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Check Supabase Schema</title>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+</head>
+<body>
+    <h1>Supabase Schema Checker</h1>
+    <div id="output" style="font-family: monospace; white-space: pre; background: #f0f0f0; padding: 20px;"></div>
+    
+    <script>
+        const SUPABASE_URL = 'https://ulgrfumbwjovbjzjiems.supabase.co';
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVsZ3JmdW1id2pvdmJqemppZW1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczNzIyNjcsImV4cCI6MjA4Mjk0ODI2N30.ix5Vh4Y3GXNbQbzVtTD_WSko0L3cr5q_eCnTuDEMh7M';
+        
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        
+        async function checkSchema() {
+            const output = document.getElementById('output');
+            let result = '';
+            
+            const tables = [
+                'kg_chart_languages',
+                'kg_chart_topics',
+                'kg_chart_topic_translations',
+                'kg_chart_vocabulary',
+                'kg_chart_vocabulary_translations',
+                'kg_chart_user_ratings'
+            ];
+            
+            for (const table of tables) {
+                result += `\n=== ${table} ===\n`;
+                try {
+                    const { data, error } = await supabase.from(table).select('*').limit(1);
+                    if (error) {
+                        result += `Error: ${error.message}\n`;
+                    } else if (data && data.length > 0) {
+                        result += `Columns: ${Object.keys(data[0]).join(', ')}\n`;
+                        result += `Sample: ${JSON.stringify(data[0], null, 2)}\n`;
+                    } else {
+                        // Try to get columns even if empty
+                        const { data: emptyData, error: emptyError } = await supabase.from(table).select('*').limit(0);
+                        result += `Table exists but is empty\n`;
+                    }
+                } catch (e) {
+                    result += `Exception: ${e.message}\n`;
+                }
+            }
+            
+            output.textContent = result;
+        }
+        
+        checkSchema();
+    </script>
+</body>
+</html>

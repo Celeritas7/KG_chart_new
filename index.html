@@ -1,0 +1,1305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KG Chart - Multi-Language Vocabulary Learning</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Supabase -->
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  
+  <!-- Language Files -->
+  <script src="./js/languages/burmese.js"></script>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@400;600;700&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Padauk:wght@400;700&family=Noto+Sans+Myanmar:wght@400;500;700&display=swap" rel="stylesheet">
+  
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            'display': ['Playfair Display', 'serif'],
+            'body': ['DM Sans', 'sans-serif'],
+            'burmese': ['Noto Sans Myanmar', 'Padauk', 'Myanmar Text', 'sans-serif'],
+            'devanagari': ['Noto Sans Devanagari', 'sans-serif'],
+            'japanese': ['Noto Sans JP', 'sans-serif'],
+          },
+          colors: {
+            'jade': {
+              50: '#f0fdf6', 100: '#dcfce9', 200: '#bbf7d4', 300: '#86efb0',
+              400: '#4ade83', 500: '#22c55e', 600: '#16a34a', 700: '#15803d',
+              800: '#166534', 900: '#14532d',
+            },
+          },
+        },
+      },
+    }
+  </script>
+  
+  <style>
+    .scrollbar-hide::-webkit-scrollbar { display: none; }
+    .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+    .flip-card { perspective: 1000px; }
+    .flip-card-inner { transition: transform 0.6s; transform-style: preserve-3d; }
+    .flip-card.flipped .flip-card-inner { transform: rotateY(180deg); }
+    .flip-card-front, .flip-card-back { -webkit-backface-visibility: hidden; backface-visibility: hidden; }
+    .flip-card-back { transform: rotateY(180deg); }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes scaleIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+    .animate-fade-in { animation: fadeIn 0.5s ease-out forwards; }
+    .animate-slide-up { animation: slideUp 0.4s ease-out forwards; }
+    .animate-scale-in { animation: scaleIn 0.3s ease-out forwards; }
+  </style>
+</head>
+<body class="bg-gray-50">
+  <div id="root"></div>
+  
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useMemo, createContext, useContext } = React;
+
+    // ==========================================
+    // CONFIGURATION
+    // ==========================================
+    const SUPABASE_URL = 'https://ulgrfumbwjovbjzjiems.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVsZ3JmdW1id2pvdmJqemppZW1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczNzIyNjcsImV4cCI6MjA4Mjk0ODI2N30.ix5Vh4Y3GXNbQbzVtTD_WSko0L3cr5q_eCnTuDEMh7M';
+    
+    const STORAGE_BUCKET = 'vocabulary-assets';
+    
+    const TABLES = {
+      languages: 'kg_chart_languages',
+      topics: 'kg_chart_topics',
+      topicTranslations: 'kg_chart_topic_translations',
+      vocabulary: 'kg_chart_vocabulary',
+      vocabularyTranslations: 'kg_chart_vocabulary_translations',
+      userRatings: 'kg_chart_user_ratings',
+    };
+
+    // ==========================================
+    // LOCAL STORAGE KEYS
+    // ==========================================
+    const STORAGE_KEYS = {
+      language: 'kg_chart_language',
+      view: 'kg_chart_view',
+      topic: 'kg_chart_topic',
+      showEnglish: 'kg_chart_show_english',
+      quizTarget: 'kg_chart_quiz_target',
+    };
+
+    const saveToStorage = (key, value) => {
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+    };
+
+    const loadFromStorage = (key, defaultValue) => {
+      try {
+        const saved = localStorage.getItem(key);
+        return saved ? JSON.parse(saved) : defaultValue;
+      } catch (e) { return defaultValue; }
+    };
+
+    // ==========================================
+    // LANGUAGE CONVERTER SYSTEM
+    // ==========================================
+    
+    // Registry of language converters
+    const LanguageConverters = {};
+
+    // Build converter from language data (consonants, vowels, medials, finals)
+    function buildConverter(langData) {
+      // Build mapping tables
+      const charToDevanagari = {};
+      const charToRoman = {};
+      
+      // Add consonants
+      if (langData.consonants) {
+        langData.consonants.forEach(c => {
+          if (c.char && c.devanagari) charToDevanagari[c.char] = c.devanagari;
+          if (c.char && c.roman) charToRoman[c.char] = c.roman;
+        });
+      }
+      
+      // Add vowels (matras)
+      if (langData.vowels) {
+        langData.vowels.forEach(v => {
+          if (v.char && v.devanagari) charToDevanagari[v.char] = v.devanagari;
+          if (v.char && v.roman) charToRoman[v.char] = v.roman;
+        });
+      }
+      
+      // Add medials
+      if (langData.medials) {
+        langData.medials.forEach(m => {
+          if (m.char && m.devanagari) charToDevanagari[m.char] = m.devanagari;
+          if (m.char && m.roman) charToRoman[m.char] = m.roman;
+        });
+      }
+      
+      // Add finals
+      if (langData.finals) {
+        langData.finals.forEach(f => {
+          if (f.char && f.devanagari) charToDevanagari[f.char] = f.devanagari;
+          if (f.char && f.roman) charToRoman[f.char] = f.roman;
+        });
+      }
+
+      // Sort keys by length (longer first) for proper multi-char matching
+      const sortedKeys = Object.keys(charToDevanagari).sort((a, b) => b.length - a.length);
+      const sortedRomanKeys = Object.keys(charToRoman).sort((a, b) => b.length - a.length);
+
+      return {
+        toDevanagari: (text) => {
+          if (!text) return '';
+          let result = '';
+          let i = 0;
+          
+          while (i < text.length) {
+            let matched = false;
+            
+            // Try to match longer sequences first
+            for (const key of sortedKeys) {
+              if (text.substring(i, i + key.length) === key) {
+                result += charToDevanagari[key];
+                i += key.length;
+                matched = true;
+                break;
+              }
+            }
+            
+            if (!matched) {
+              // Keep the character as-is if no mapping found
+              result += text[i];
+              i++;
+            }
+          }
+          
+          return result;
+        },
+        
+        toRoman: (text) => {
+          if (!text) return '';
+          let result = '';
+          let i = 0;
+          
+          while (i < text.length) {
+            let matched = false;
+            
+            for (const key of sortedRomanKeys) {
+              if (text.substring(i, i + key.length) === key) {
+                result += charToRoman[key];
+                i += key.length;
+                matched = true;
+                break;
+              }
+            }
+            
+            if (!matched) {
+              result += text[i];
+              i++;
+            }
+          }
+          
+          return result;
+        },
+        
+        langData
+      };
+    }
+
+    // Register Burmese converter (loaded from ./js/languages/burmese.js)
+    if (typeof burmese !== 'undefined') {
+      LanguageConverters['my'] = buildConverter(burmese);
+      console.log('✓ Burmese converter loaded');
+    } else {
+      console.warn('⚠ Burmese language file not loaded');
+    }
+
+    // Get converter for a language code
+    function getConverter(langCode) {
+      return LanguageConverters[langCode] || null;
+    }
+
+    // Convert text to Devanagari
+    function convertToDevanagari(text, langCode) {
+      const converter = getConverter(langCode);
+      if (converter) {
+        return converter.toDevanagari(text);
+      }
+      return text; // Return original if no converter
+    }
+
+    // Convert text to Roman
+    function convertToRoman(text, langCode) {
+      const converter = getConverter(langCode);
+      if (converter) {
+        return converter.toRoman(text);
+      }
+      return text;
+    }
+
+    // ==========================================
+    // SUPABASE CLIENT
+    // ==========================================
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const getImageUrl = (topicId, filename) => {
+      if (!filename) return null;
+      if (filename.startsWith('http')) return filename;
+      return `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/images/${topicId}/${filename}`;
+    };
+
+    // ==========================================
+    // CONSTANTS
+    // ==========================================
+    const RATINGS = [
+      { id: 1, emoji: '✓', label: 'Monthly Review', description: 'Know well', color: 'bg-green-500', textColor: 'text-green-500' },
+      { id: 2, emoji: '💬', label: "Can't use in conversation", description: 'Recognition only', color: 'bg-blue-500', textColor: 'text-blue-500' },
+      { id: 3, emoji: '✍', label: "Can't write", description: 'Speaking only', color: 'bg-yellow-500', textColor: 'text-yellow-500' },
+      { id: 4, emoji: '🤔', label: "Understand but can't use", description: 'Passive', color: 'bg-orange-500', textColor: 'text-orange-500' },
+      { id: 5, emoji: '❌', label: "Don't know", description: 'Need to learn', color: 'bg-red-500', textColor: 'text-red-500' },
+    ];
+
+    const QUIZ_TYPES = [
+      { id: 'native_to_image', label: 'Native → Image', icon: '🔤' },
+      { id: 'image_to_native', label: 'Image → Native', icon: '🖼️' },
+      { id: 'devanagari_to_image', label: 'Devanagari → Image', icon: '🕉️' },
+      { id: 'english_to_native', label: 'English → Native', icon: '🌐' },
+    ];
+
+    const DAILY_TARGET_OPTIONS = [5, 10, 15, 20, 25, 30, 50, 0];
+
+    const LANGUAGE_FONTS = {
+      my: 'font-burmese',
+      ja: 'font-japanese',
+      zh: 'font-body',
+      te: 'font-devanagari',
+    };
+
+    const getRatingById = (id) => RATINGS.find(r => r.id === id);
+
+    // ==========================================
+    // AUTH CONTEXT
+    // ==========================================
+    const AuthContext = createContext({});
+    const useAuth = () => useContext(AuthContext);
+
+    function AuthProvider({ children }) {
+      const [user, setUser] = useState(null);
+      const [loading, setLoading] = useState(true);
+
+      useEffect(() => {
+        supabase.auth.getSession().then(({ data: { session } }) => {
+          setUser(session?.user ?? null);
+          setLoading(false);
+        });
+
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+          setUser(session?.user ?? null);
+        });
+
+        return () => subscription.unsubscribe();
+      }, []);
+
+      const signInWithEmail = async (email, password) => {
+        return await supabase.auth.signInWithPassword({ email, password });
+      };
+
+      const signUpWithEmail = async (email, password) => {
+        return await supabase.auth.signUp({ email, password });
+      };
+
+      const signOut = async () => {
+        return await supabase.auth.signOut();
+      };
+
+      return (
+        <AuthContext.Provider value={{ user, loading, signInWithEmail, signUpWithEmail, signOut }}>
+          {!loading && children}
+        </AuthContext.Provider>
+      );
+    }
+
+    // ==========================================
+    // DATA HOOKS
+    // ==========================================
+    function useLanguages() {
+      const [languages, setLanguages] = useState([]);
+      const [loading, setLoading] = useState(true);
+
+      useEffect(() => {
+        supabase
+          .from(TABLES.languages)
+          .select('*')
+          .eq('is_active', true)
+          .order('sort_order')
+          .then(({ data, error }) => {
+            if (!error) setLanguages(data || []);
+            setLoading(false);
+          });
+      }, []);
+
+      return { languages, loading };
+    }
+
+    function useTopics(languageCode) {
+      const [topics, setTopics] = useState([]);
+      const [loading, setLoading] = useState(true);
+
+      useEffect(() => {
+        if (!languageCode) return;
+        setLoading(true);
+
+        supabase
+          .from(TABLES.topics)
+          .select(`*, translations:${TABLES.topicTranslations}(*)`)
+          .order('sort_order')
+          .then(({ data, error }) => {
+            if (!error && data) {
+              const mapped = data.map(topic => {
+                const translation = topic.translations?.find(t => t.language_code === languageCode);
+                return {
+                  ...topic,
+                  translation: translation ? {
+                    ...translation,
+                    // Generate Devanagari from native title on-the-fly
+                    title_devanagari: convertToDevanagari(translation.title_native, languageCode)
+                  } : null
+                };
+              }).filter(t => t.translation);
+              setTopics(mapped);
+            }
+            setLoading(false);
+          });
+      }, [languageCode]);
+
+      return { topics, loading };
+    }
+
+    function useVocabulary(languageCode) {
+      const [vocabulary, setVocabulary] = useState([]);
+      const [loading, setLoading] = useState(true);
+
+      useEffect(() => {
+        if (!languageCode) return;
+        setLoading(true);
+
+        supabase
+          .from(TABLES.vocabulary)
+          .select(`*, translations:${TABLES.vocabularyTranslations}(*)`)
+          .order('sort_order')
+          .then(({ data, error }) => {
+            if (!error && data) {
+              const mapped = data.map(vocab => {
+                const translation = vocab.translations?.find(t => t.language_code === languageCode);
+                return {
+                  ...vocab,
+                  translation: translation ? {
+                    ...translation,
+                    // Generate Devanagari from native text on-the-fly
+                    devanagari: convertToDevanagari(translation.native_text, languageCode),
+                    // Generate romanization on-the-fly
+                    pronunciation: {
+                      roman: convertToRoman(translation.native_text, languageCode)
+                    }
+                  } : null
+                };
+              }).filter(v => v.translation);
+              setVocabulary(mapped);
+            }
+            setLoading(false);
+          });
+      }, [languageCode]);
+
+      return { vocabulary, loading };
+    }
+
+    function useUserRatings(languageCode) {
+      const { user } = useAuth();
+      const [ratings, setRatings] = useState({});
+
+      useEffect(() => {
+        if (!user || !languageCode) return;
+
+        supabase
+          .from(TABLES.userRatings)
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('language_code', languageCode)
+          .then(({ data }) => {
+            const map = {};
+            (data || []).forEach(r => { map[r.vocabulary_id] = r; });
+            setRatings(map);
+          });
+      }, [user, languageCode]);
+
+      const updateRating = useCallback(async (vocabularyId, rating) => {
+        if (!user) return false;
+
+        const now = new Date().toISOString();
+        const { error } = await supabase
+          .from(TABLES.userRatings)
+          .upsert({
+            user_id: user.id,
+            vocabulary_id: vocabularyId,
+            language_code: languageCode,
+            rating,
+            last_reviewed_at: now,
+          }, { onConflict: 'user_id,vocabulary_id,language_code' });
+
+        if (!error) {
+          setRatings(prev => ({
+            ...prev,
+            [vocabularyId]: { ...prev[vocabularyId], rating, last_reviewed_at: now }
+          }));
+        }
+        return !error;
+      }, [user, languageCode]);
+
+      return { ratings, updateRating };
+    }
+
+    // ==========================================
+    // COMPONENTS
+    // ==========================================
+
+    function LoadingSpinner({ message = 'Loading...' }) {
+      return (
+        <div className="flex flex-col items-center justify-center py-12">
+          <div className="relative w-16 h-16">
+            <div className="absolute inset-0 border-4 border-jade-200 rounded-full"></div>
+            <div className="absolute inset-0 border-4 border-jade-600 rounded-full border-t-transparent animate-spin"></div>
+          </div>
+          <p className="mt-4 text-gray-500 font-medium">{message}</p>
+        </div>
+      );
+    }
+
+    function AuthModal({ onClose }) {
+      const { signInWithEmail, signUpWithEmail } = useAuth();
+      const [isSignUp, setIsSignUp] = useState(false);
+      const [email, setEmail] = useState('');
+      const [password, setPassword] = useState('');
+      const [error, setError] = useState('');
+      const [loading, setLoading] = useState(false);
+
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+        setError('');
+        setLoading(true);
+        const { error } = isSignUp
+          ? await signUpWithEmail(email, password)
+          : await signInWithEmail(email, password);
+        if (error) setError(error.message);
+        else onClose();
+        setLoading(false);
+      };
+
+      return (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={onClose}>
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl animate-scale-in" onClick={e => e.stopPropagation()}>
+            <div className="text-center mb-6">
+              <div className="w-16 h-16 bg-jade-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <span className="text-3xl">🔐</span>
+              </div>
+              <h2 className="text-2xl font-bold text-gray-900">
+                {isSignUp ? 'Create Account' : 'Welcome Back'}
+              </h2>
+            </div>
+
+            {error && (
+              <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg mb-4 text-sm">{error}</div>
+            )}
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-jade-500"
+                placeholder="Email" required />
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-jade-500"
+                placeholder="Password" required minLength={6} />
+              <button type="submit" disabled={loading}
+                className="w-full py-3 bg-jade-600 text-white rounded-lg font-semibold hover:bg-jade-700 transition disabled:opacity-50">
+                {loading ? 'Loading...' : (isSignUp ? 'Create Account' : 'Sign In')}
+              </button>
+            </form>
+
+            <p className="text-center text-sm text-gray-500 mt-4">
+              {isSignUp ? 'Have an account?' : "No account?"}
+              <button onClick={() => setIsSignUp(!isSignUp)} className="text-jade-600 font-medium ml-1 hover:underline">
+                {isSignUp ? 'Sign In' : 'Sign Up'}
+              </button>
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    function Header({ currentLanguage, languages, onLanguageChange, activeView, onViewChange }) {
+      const { user, signOut } = useAuth();
+      const [showAuthModal, setShowAuthModal] = useState(false);
+      const [showUserMenu, setShowUserMenu] = useState(false);
+
+      const views = [
+        { id: 'chart', icon: '📊', label: 'Chart' },
+        { id: 'quiz', icon: '🎯', label: 'Quiz' },
+        { id: 'flashcard', icon: '🃏', label: 'Cards' },
+        { id: 'progress', icon: '📈', label: 'Progress' },
+      ];
+
+      return (
+        <>
+          <header className="bg-gradient-to-r from-jade-700 to-jade-800 text-white shadow-lg">
+            <div className="max-w-7xl mx-auto px-4 py-4">
+              <div className="flex items-center justify-between flex-wrap gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center text-2xl">📚</div>
+                  <div>
+                    <h1 className="text-xl md:text-2xl font-bold">KG Vocabulary Chart</h1>
+                    <p className="text-jade-200 text-sm">Multi-language learning</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <select value={currentLanguage} onChange={(e) => onLanguageChange(e.target.value)}
+                    className="px-4 py-2 bg-white/20 rounded-lg text-white border border-white/30 focus:outline-none">
+                    {languages.map(lang => (
+                      <option key={lang.code} value={lang.code} className="text-gray-900">
+                        {lang.flag_emoji} {lang.name_english}
+                      </option>
+                    ))}
+                  </select>
+
+                  {user ? (
+                    <div className="relative">
+                      <button onClick={() => setShowUserMenu(!showUserMenu)}
+                        className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center hover:bg-white/30">👤</button>
+                      {showUserMenu && (
+                        <div className="absolute right-0 top-12 w-48 bg-white rounded-xl shadow-xl py-2 z-50">
+                          <div className="px-4 py-2 border-b">
+                            <p className="text-sm text-gray-500">Signed in as</p>
+                            <p className="text-sm font-medium text-gray-900 truncate">{user.email}</p>
+                          </div>
+                          <button onClick={() => { signOut(); setShowUserMenu(false); }}
+                            className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50">Sign Out</button>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <button onClick={() => setShowAuthModal(true)}
+                      className="px-4 py-2 bg-white text-jade-700 rounded-lg font-medium hover:bg-jade-50">Sign In</button>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex gap-2 mt-4 overflow-x-auto scrollbar-hide pb-1">
+                {views.map(view => (
+                  <button key={view.id} onClick={() => onViewChange(view.id)}
+                    className={`px-4 py-2 rounded-lg font-medium transition-all flex items-center gap-2 whitespace-nowrap ${
+                      activeView === view.id ? 'bg-white text-jade-700 shadow-md' : 'bg-white/20 hover:bg-white/30'
+                    }`}>
+                    <span>{view.icon}</span>
+                    <span className="hidden sm:inline">{view.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </header>
+          {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
+        </>
+      );
+    }
+
+    function TopicNav({ topics, activeTopic, onSelect }) {
+      return (
+        <div className="bg-white border-b sticky top-0 z-30 shadow-sm">
+          <div className="max-w-7xl mx-auto px-2">
+            <div className="flex overflow-x-auto py-3 gap-2 scrollbar-hide">
+              {topics.map((topic) => (
+                <button key={topic.id} onClick={() => onSelect(topic.id)}
+                  className={`px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all flex items-center gap-2 ${
+                    activeTopic === topic.id ? 'bg-jade-600 text-white shadow-lg' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}>
+                  <span>{topic.icon}</span>
+                  <span>{topic.translation?.title_native || topic.id}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function VocabCard({ item, topicId, rating, onRate, onClick, showEnglish, fontClass }) {
+      const [imageError, setImageError] = useState(false);
+      const currentRating = getRatingById(rating);
+      const colorCode = item.extra_data?.colorCode;
+
+      return (
+        <div onClick={onClick}
+          className="bg-white rounded-xl shadow-md hover:shadow-xl transition-all cursor-pointer group relative overflow-hidden border border-gray-100">
+          {currentRating && (
+            <div className={`absolute top-2 right-2 w-7 h-7 rounded-full ${currentRating.color} text-white text-sm flex items-center justify-center z-10 shadow-md`}>
+              {currentRating.emoji}
+            </div>
+          )}
+
+          <div className="aspect-square p-3 flex items-center justify-center bg-gradient-to-b from-gray-50 to-white">
+            {colorCode ? (
+              <div className="w-16 h-16 rounded-xl shadow-inner border-2 border-gray-200" style={{ backgroundColor: colorCode }} />
+            ) : imageError || !item.image_filename ? (
+              <div className="text-5xl opacity-50">📷</div>
+            ) : (
+              <img src={getImageUrl(topicId, item.image_filename)} alt={item.english_text}
+                className="max-w-full max-h-full object-contain" onError={() => setImageError(true)} />
+            )}
+          </div>
+
+          <div className="p-3 bg-white border-t border-gray-100">
+            <div className={`text-center text-lg font-semibold text-gray-800 ${fontClass}`}>
+              {item.translation?.native_text}
+            </div>
+            <div className="text-center text-sm text-blue-600 font-devanagari mt-1">
+              {item.translation?.devanagari}
+            </div>
+            {showEnglish && (
+              <div className="text-center text-xs text-gray-400 mt-1">{item.english_text}</div>
+            )}
+          </div>
+
+          <div className="absolute bottom-0 left-0 right-0 bg-white/95 border-t border-gray-200 p-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex justify-center gap-1">
+              {RATINGS.map((r) => (
+                <button key={r.id} onClick={(e) => { e.stopPropagation(); onRate(item.id, r.id); }}
+                  className={`w-7 h-7 rounded-lg text-sm hover:scale-110 transition-transform ${
+                    rating === r.id ? r.color + ' text-white shadow-md' : 'bg-gray-100 hover:bg-gray-200'
+                  }`} title={r.label}>{r.emoji}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function DetailModal({ item, topicId, rating, onRate, onClose, fontClass }) {
+      const [imageError, setImageError] = useState(false);
+      const colorCode = item.extra_data?.colorCode;
+      const pronunciation = item.translation?.pronunciation || {};
+
+      return (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
+          <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl animate-scale-in" onClick={e => e.stopPropagation()}>
+            <div className="text-center">
+              <div className="w-36 h-36 mx-auto mb-6 flex items-center justify-center bg-gray-50 rounded-2xl border">
+                {colorCode ? (
+                  <div className="w-24 h-24 rounded-xl shadow-lg" style={{ backgroundColor: colorCode }} />
+                ) : imageError || !item.image_filename ? (
+                  <div className="text-6xl opacity-50">📷</div>
+                ) : (
+                  <img src={getImageUrl(topicId, item.image_filename)} alt={item.english_text}
+                    className="max-w-full max-h-full object-contain" onError={() => setImageError(true)} />
+                )}
+              </div>
+
+              <h2 className={`text-4xl font-bold text-gray-800 mb-2 ${fontClass}`}>
+                {item.translation?.native_text}
+              </h2>
+              <div className="text-2xl text-blue-600 font-devanagari mb-2">
+                {item.translation?.devanagari}
+              </div>
+
+              {Object.keys(pronunciation).length > 0 && (
+                <div className="flex flex-wrap justify-center gap-2 mb-3">
+                  {Object.entries(pronunciation).map(([key, value]) => (
+                    <span key={key} className="px-3 py-1 bg-gray-100 rounded-full text-sm text-gray-600">
+                      <span className="text-gray-400 mr-1">{key}:</span>{value}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="text-xl text-gray-600 mb-8">{item.english_text}</div>
+
+              <div className="mb-6">
+                <p className="text-sm text-gray-500 mb-3">How well do you know this?</p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  {RATINGS.map((r) => (
+                    <button key={r.id} onClick={() => onRate(item.id, r.id)}
+                      className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+                        rating === r.id ? r.color + ' text-white shadow-lg' : 'bg-gray-100 hover:bg-gray-200'
+                      }`}>{r.emoji} {r.label}</button>
+                  ))}
+                </div>
+              </div>
+
+              <button onClick={onClose} className="px-8 py-3 bg-jade-600 text-white rounded-full font-semibold hover:bg-jade-700 transition shadow-lg">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function ChartView({ topic, vocabulary, ratings, onRate, languageCode, showEnglish, onToggleEnglish }) {
+      const [selectedItem, setSelectedItem] = useState(null);
+      const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
+
+      if (!topic) {
+        return (
+          <div className="flex items-center justify-center h-64">
+            <p className="text-gray-500">Select a topic to view vocabulary</p>
+          </div>
+        );
+      }
+
+      return (
+        <div className="max-w-7xl mx-auto px-4 py-6">
+          <div className="bg-white rounded-2xl shadow-lg mb-6 overflow-hidden border border-gray-100">
+            <div className="grid grid-cols-1 md:grid-cols-4">
+              <div className="bg-gradient-to-r from-jade-700 to-jade-800 p-6 flex items-center justify-center">
+                <div className="text-5xl">{topic.icon}</div>
+              </div>
+              <div className="p-4 flex flex-col justify-center items-center border-b md:border-b-0 md:border-r border-gray-100">
+                <div className={`text-2xl font-bold text-gray-800 ${fontClass}`}>{topic.translation?.title_native}</div>
+                <div className="text-lg text-blue-600 font-devanagari mt-1">{topic.translation?.title_devanagari}</div>
+              </div>
+              <div className="p-4 flex items-center justify-center border-b md:border-b-0 md:border-r border-gray-100 bg-gray-50">
+                <p className="text-center text-gray-700 font-medium">{topic.translation?.question_english}</p>
+              </div>
+              <div className="p-4 flex flex-col justify-center items-center">
+                <div className={`text-sm text-red-700 text-center ${fontClass}`}>{topic.translation?.question_native}</div>
+                <div className="text-xs text-red-500 text-center mt-1 font-devanagari">
+                  {convertToDevanagari(topic.translation?.question_native, languageCode)}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between mb-4 bg-white rounded-xl p-3 shadow-sm">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={showEnglish} onChange={(e) => onToggleEnglish(e.target.checked)}
+                className="w-5 h-5 rounded border-gray-300 text-jade-600" />
+              <span className="text-sm text-gray-700 font-medium">Show English</span>
+            </label>
+            <div className="text-sm text-gray-500">{vocabulary.length} items</div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+            {vocabulary.map((item) => (
+              <VocabCard key={item.id} item={item} topicId={topic.id} rating={ratings[item.id]?.rating}
+                onRate={onRate} onClick={() => setSelectedItem(item)} showEnglish={showEnglish} fontClass={fontClass} />
+            ))}
+          </div>
+
+          {selectedItem && (
+            <DetailModal item={selectedItem} topicId={topic.id} rating={ratings[selectedItem.id]?.rating}
+              onRate={onRate} onClose={() => setSelectedItem(null)} fontClass={fontClass} />
+          )}
+        </div>
+      );
+    }
+
+    function QuizView({ topics, vocabulary, onRate, languageCode, user }) {
+      const [quizTopic, setQuizTopic] = useState('all');
+      const [quizType, setQuizType] = useState('native_to_image');
+      const [dailyTarget, setDailyTarget] = useState(() => loadFromStorage(STORAGE_KEYS.quizTarget, 10));
+      const [currentQuestion, setCurrentQuestion] = useState(null);
+      const [options, setOptions] = useState([]);
+      const [selectedAnswer, setSelectedAnswer] = useState(null);
+      const [showResult, setShowResult] = useState(false);
+      const [score, setScore] = useState({ correct: 0, total: 0 });
+      const [quizStarted, setQuizStarted] = useState(false);
+      const [quizWords, setQuizWords] = useState([]);
+      const [currentWordIndex, setCurrentWordIndex] = useState(0);
+      const [quizCompleted, setQuizCompleted] = useState(false);
+
+      const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
+      const filteredVocab = quizTopic === 'all' ? vocabulary : vocabulary.filter(v => v.topic_id === quizTopic);
+
+      useEffect(() => { saveToStorage(STORAGE_KEYS.quizTarget, dailyTarget); }, [dailyTarget]);
+
+      const startQuiz = useCallback(() => {
+        const targetCount = dailyTarget === 0 ? filteredVocab.length : Math.min(dailyTarget, filteredVocab.length);
+        const shuffled = [...filteredVocab].sort(() => Math.random() - 0.5);
+        const selected = shuffled.slice(0, targetCount);
+        setQuizWords(selected);
+        setCurrentWordIndex(0);
+        setScore({ correct: 0, total: 0 });
+        setQuizCompleted(false);
+        setQuizStarted(true);
+      }, [filteredVocab, dailyTarget]);
+
+      const generateQuestion = useCallback(() => {
+        if (quizWords.length < 4 || currentWordIndex >= quizWords.length) {
+          setQuizCompleted(true);
+          return;
+        }
+        const questionItem = quizWords[currentWordIndex];
+        const wrongOptions = filteredVocab.filter(v => v.id !== questionItem.id).sort(() => Math.random() - 0.5).slice(0, 3);
+        const allOptions = [questionItem, ...wrongOptions].sort(() => Math.random() - 0.5);
+        setCurrentQuestion(questionItem);
+        setOptions(allOptions);
+        setSelectedAnswer(null);
+        setShowResult(false);
+      }, [quizWords, currentWordIndex, filteredVocab]);
+
+      useEffect(() => {
+        if (quizStarted && quizWords.length >= 4 && !quizCompleted) generateQuestion();
+      }, [quizStarted, quizWords, currentWordIndex, generateQuestion, quizCompleted]);
+
+      const handleAnswer = (item) => {
+        if (showResult) return;
+        setSelectedAnswer(item);
+        setShowResult(true);
+        const isCorrect = item.id === currentQuestion.id;
+        setScore(prev => ({ correct: prev.correct + (isCorrect ? 1 : 0), total: prev.total + 1 }));
+        if (!isCorrect && user) onRate(currentQuestion.id, 5);
+      };
+
+      const nextQuestion = () => {
+        if (currentWordIndex + 1 >= quizWords.length) setQuizCompleted(true);
+        else setCurrentWordIndex(prev => prev + 1);
+      };
+
+      if (!quizStarted) {
+        return (
+          <div className="max-w-2xl mx-auto p-6">
+            <div className="bg-white rounded-3xl shadow-xl p-8">
+              <div className="text-center mb-8">
+                <div className="w-20 h-20 bg-jade-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <span className="text-4xl">🎯</span>
+                </div>
+                <h2 className="text-3xl font-bold text-gray-800">Quiz Mode</h2>
+              </div>
+
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Topic</label>
+                  <select value={quizTopic} onChange={(e) => setQuizTopic(e.target.value)} className="w-full px-4 py-3 border rounded-xl">
+                    <option value="all">All Topics ({vocabulary.length} words)</option>
+                    {topics.map(t => {
+                      const count = vocabulary.filter(v => v.topic_id === t.id).length;
+                      return <option key={t.id} value={t.id}>{t.icon} {t.translation?.title_native} ({count})</option>;
+                    })}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Daily Target <span className="text-gray-400 font-normal ml-2">({dailyTarget === 0 ? 'All' : dailyTarget} words)</span>
+                  </label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {DAILY_TARGET_OPTIONS.map(target => (
+                      <button key={target} onClick={() => setDailyTarget(target)}
+                        className={`py-3 rounded-xl border-2 font-medium transition-all ${
+                          dailyTarget === target ? 'border-jade-500 bg-jade-50 text-jade-700' : 'border-gray-200 hover:border-gray-300'
+                        }`}>{target === 0 ? 'All' : target}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Quiz Type</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    {QUIZ_TYPES.map(type => (
+                      <button key={type.id} onClick={() => setQuizType(type.id)}
+                        className={`p-4 rounded-xl border-2 transition-all ${quizType === type.id ? 'border-jade-500 bg-jade-50' : 'border-gray-200'}`}>
+                        <div className="text-2xl mb-1">{type.icon}</div>
+                        <div className="text-sm font-medium">{type.label}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button onClick={startQuiz} disabled={filteredVocab.length < 4}
+                  className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">
+                  {filteredVocab.length < 4 ? 'Need 4+ words' : `Start Quiz (${dailyTarget === 0 ? filteredVocab.length : Math.min(dailyTarget, filteredVocab.length)} words)`}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (quizCompleted) {
+        const percentage = score.total > 0 ? Math.round(score.correct / score.total * 100) : 0;
+        let message = '', emoji = '';
+        if (percentage >= 90) { message = 'Excellent!'; emoji = '🏆'; }
+        else if (percentage >= 70) { message = 'Great job!'; emoji = '🌟'; }
+        else if (percentage >= 50) { message = 'Good effort!'; emoji = '👍'; }
+        else { message = 'Keep practicing!'; emoji = '💪'; }
+
+        return (
+          <div className="max-w-2xl mx-auto p-6">
+            <div className="bg-white rounded-3xl shadow-xl p-8 text-center">
+              <div className="text-6xl mb-4">{emoji}</div>
+              <h2 className="text-3xl font-bold text-gray-800 mb-2">{message}</h2>
+              <p className="text-gray-500 mb-6">Quiz Completed!</p>
+              <div className="bg-gradient-to-r from-jade-500 to-jade-600 text-white rounded-2xl p-6 mb-6">
+                <div className="text-5xl font-bold mb-2">{score.correct}/{score.total}</div>
+                <div className="text-xl opacity-90">{percentage}% Correct</div>
+              </div>
+              <div className="flex gap-4 justify-center">
+                <button onClick={() => { setQuizStarted(false); setQuizCompleted(false); }}
+                  className="px-6 py-3 bg-gray-100 rounded-xl font-medium hover:bg-gray-200">← Back to Setup</button>
+                <button onClick={startQuiz}
+                  className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Try Again</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (!currentQuestion) return <LoadingSpinner />;
+
+      return (
+        <div className="max-w-4xl mx-auto p-4">
+          <div className="bg-white rounded-2xl shadow-lg p-4 mb-6">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <button onClick={() => setQuizStarted(false)} className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">← Back</button>
+              <div className="flex items-center gap-4">
+                <div className="text-sm text-gray-500">{currentWordIndex + 1} / {quizWords.length}</div>
+                <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
+                  <div className="h-full bg-jade-500 transition-all duration-300" style={{ width: `${((currentWordIndex + 1) / quizWords.length) * 100}%` }} />
+                </div>
+                <div className="bg-gradient-to-r from-jade-500 to-jade-600 text-white px-4 py-2 rounded-xl font-bold shadow-md">
+                  {score.correct}/{score.total}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-lg p-8 mb-6 text-center">
+            <div className="text-sm text-gray-400 mb-4">Find the matching answer:</div>
+            {quizType === 'native_to_image' && (
+              <>
+                <div className={`text-4xl font-bold text-gray-800 mb-2 ${fontClass}`}>{currentQuestion.translation?.native_text}</div>
+                <div className="text-xl text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>
+              </>
+            )}
+            {quizType === 'image_to_native' && (
+              <div className="w-32 h-32 mx-auto flex items-center justify-center">
+                {currentQuestion.extra_data?.colorCode ? (
+                  <div className="w-24 h-24 rounded-xl shadow-lg" style={{ backgroundColor: currentQuestion.extra_data.colorCode }} />
+                ) : (
+                  <img src={getImageUrl(currentQuestion.topic_id, currentQuestion.image_filename)} alt="" className="max-w-full max-h-full object-contain" />
+                )}
+              </div>
+            )}
+            {quizType === 'devanagari_to_image' && (
+              <div className="text-4xl text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>
+            )}
+            {quizType === 'english_to_native' && (
+              <div className="text-3xl font-bold text-gray-800">{currentQuestion.english_text}</div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            {options.map((opt) => {
+              let borderClass = 'border-gray-200 hover:border-jade-300 hover:shadow-lg';
+              if (showResult) {
+                if (opt.id === currentQuestion.id) borderClass = 'border-green-500 border-4 bg-green-50';
+                else if (selectedAnswer?.id === opt.id) borderClass = 'border-red-500 border-4 bg-red-50';
+              }
+              return (
+                <button key={opt.id} onClick={() => handleAnswer(opt)} disabled={showResult}
+                  className={`p-4 rounded-xl border-2 transition-all ${borderClass}`}>
+                  {(quizType === 'native_to_image' || quizType === 'devanagari_to_image') ? (
+                    <>
+                      <div className="w-20 h-20 mx-auto flex items-center justify-center mb-2">
+                        {opt.extra_data?.colorCode ? (
+                          <div className="w-14 h-14 rounded-lg shadow" style={{ backgroundColor: opt.extra_data.colorCode }} />
+                        ) : (
+                          <img src={getImageUrl(opt.topic_id, opt.image_filename)} alt="" className="max-w-full max-h-full object-contain" />
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-500">{opt.english_text}</div>
+                    </>
+                  ) : (
+                    <>
+                      <div className={`text-lg font-semibold text-gray-800 ${fontClass}`}>{opt.translation?.native_text}</div>
+                      <div className="text-sm text-blue-600 font-devanagari mt-1">{opt.translation?.devanagari}</div>
+                    </>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {showResult && (
+            <div className="text-center animate-slide-up">
+              <div className={`text-2xl font-bold mb-4 ${selectedAnswer?.id === currentQuestion.id ? 'text-green-600' : 'text-red-600'}`}>
+                {selectedAnswer?.id === currentQuestion.id ? '✅ Correct!' : `❌ Wrong! It was "${currentQuestion.english_text}"`}
+              </div>
+              <button onClick={nextQuestion} className="px-8 py-3 bg-blue-600 text-white rounded-full font-bold hover:bg-blue-700">
+                {currentWordIndex + 1 >= quizWords.length ? 'See Results' : 'Next Question →'}
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function FlashcardView({ topics, vocabulary, ratings, onRate, languageCode, user }) {
+      const [selectedTopic, setSelectedTopic] = useState(topics[0]?.id || '');
+      const [currentIndex, setCurrentIndex] = useState(0);
+      const [isFlipped, setIsFlipped] = useState(false);
+
+      const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
+      const filteredVocab = selectedTopic ? vocabulary.filter(v => v.topic_id === selectedTopic) : vocabulary;
+      const currentItem = filteredVocab[currentIndex];
+      const currentRating = currentItem ? getRatingById(ratings[currentItem.id]?.rating) : null;
+
+      useEffect(() => { setCurrentIndex(0); setIsFlipped(false); }, [selectedTopic]);
+
+      const goNext = () => { setIsFlipped(false); setTimeout(() => setCurrentIndex(prev => (prev + 1) % filteredVocab.length), 100); };
+      const goPrev = () => { setIsFlipped(false); setTimeout(() => setCurrentIndex(prev => (prev - 1 + filteredVocab.length) % filteredVocab.length), 100); };
+      const goRandom = () => { setIsFlipped(false); setTimeout(() => setCurrentIndex(Math.floor(Math.random() * filteredVocab.length)), 100); };
+      const handleRate = (ratingId) => { if (currentItem && user) { onRate(currentItem.id, ratingId); goNext(); } };
+
+      if (!currentItem) return <div className="text-center py-12 text-gray-500">No flashcards available</div>;
+
+      return (
+        <div className="max-w-2xl mx-auto p-4">
+          <div className="bg-white rounded-2xl shadow-lg p-4 mb-6 flex flex-wrap items-center justify-between gap-4">
+            <select value={selectedTopic} onChange={(e) => setSelectedTopic(e.target.value)} className="px-4 py-2 border rounded-xl font-medium">
+              {topics.map(t => <option key={t.id} value={t.id}>{t.icon} {t.translation?.title_native}</option>)}
+            </select>
+            <div className="text-gray-600 font-medium">{currentIndex + 1} / {filteredVocab.length}</div>
+          </div>
+
+          <div className={`flip-card ${isFlipped ? 'flipped' : ''} cursor-pointer mb-6`} onClick={() => setIsFlipped(!isFlipped)}>
+            <div className="flip-card-inner relative" style={{ minHeight: '350px' }}>
+              <div className="flip-card-front absolute inset-0 bg-white rounded-3xl shadow-xl p-8 flex flex-col items-center justify-center">
+                {currentRating && (
+                  <div className={`absolute top-4 right-4 px-4 py-2 rounded-full text-sm font-medium ${currentRating.color} text-white shadow-md`}>
+                    {currentRating.emoji} {currentRating.label}
+                  </div>
+                )}
+                <div className={`text-5xl font-bold text-gray-800 mb-4 ${fontClass}`}>{currentItem.translation?.native_text}</div>
+                <div className="text-3xl text-blue-600 font-devanagari mb-4">{currentItem.translation?.devanagari}</div>
+                <div className="absolute bottom-6 text-gray-400 text-sm">👆 Tap to flip</div>
+              </div>
+              <div className="flip-card-back absolute inset-0 bg-gradient-to-br from-jade-50 to-white rounded-3xl shadow-xl p-8 flex flex-col items-center justify-center">
+                <div className="w-32 h-32 mb-4 flex items-center justify-center">
+                  {currentItem.extra_data?.colorCode ? (
+                    <div className="w-24 h-24 rounded-xl shadow-lg" style={{ backgroundColor: currentItem.extra_data.colorCode }} />
+                  ) : (
+                    <img src={getImageUrl(currentItem.topic_id, currentItem.image_filename)} alt="" className="max-w-full max-h-full object-contain" />
+                  )}
+                </div>
+                <div className="text-3xl font-bold text-gray-800">{currentItem.english_text}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-center gap-3 mb-6">
+            <button onClick={goPrev} className="px-6 py-3 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">← Prev</button>
+            <button onClick={goRandom} className="px-6 py-3 bg-purple-500 text-white rounded-xl hover:bg-purple-600 font-medium shadow-md">🎲 Random</button>
+            <button onClick={goNext} className="px-6 py-3 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">Next →</button>
+          </div>
+
+          {user ? (
+            <div className="bg-white rounded-2xl shadow-lg p-4">
+              <div className="text-center text-sm text-gray-500 mb-3">How well do you know this?</div>
+              <div className="flex flex-wrap justify-center gap-2">
+                {RATINGS.map((r) => (
+                  <button key={r.id} onClick={() => handleRate(r.id)}
+                    className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+                      ratings[currentItem.id]?.rating === r.id ? r.color + ' text-white shadow-lg' : 'bg-gray-100 hover:bg-gray-200'
+                    }`}>{r.emoji} {r.label}</button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="bg-amber-50 rounded-2xl p-4 text-center">
+              <p className="text-amber-700 text-sm">Sign in to save your progress</p>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function ProgressView({ topics, vocabulary, ratings, languageCode, user }) {
+      const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
+
+      const stats = useMemo(() => {
+        const result = { total: vocabulary.length, rated: 0, byRating: {}, byTopic: {} };
+        RATINGS.forEach(r => { result.byRating[r.id] = 0; });
+        topics.forEach(t => {
+          result.byTopic[t.id] = { topic: t, total: 0, rated: 0, byRating: {} };
+          RATINGS.forEach(r => { result.byTopic[t.id].byRating[r.id] = 0; });
+        });
+        vocabulary.forEach(vocab => {
+          const rating = ratings[vocab.id]?.rating;
+          if (result.byTopic[vocab.topic_id]) {
+            result.byTopic[vocab.topic_id].total++;
+            if (rating) { result.byTopic[vocab.topic_id].rated++; result.byTopic[vocab.topic_id].byRating[rating]++; }
+          }
+          if (rating) { result.rated++; result.byRating[rating]++; }
+        });
+        return result;
+      }, [topics, vocabulary, ratings]);
+
+      if (!user) {
+        return (
+          <div className="max-w-4xl mx-auto p-6 text-center">
+            <div className="bg-white rounded-3xl shadow-xl p-8">
+              <div className="w-24 h-24 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                <span className="text-5xl">📊</span>
+              </div>
+              <h2 className="text-2xl font-bold text-gray-800 mb-2">Track Your Progress</h2>
+              <p className="text-gray-500">Sign in to track your vocabulary ratings.</p>
+            </div>
+          </div>
+        );
+      }
+
+      const progressPercent = stats.total > 0 ? Math.round((stats.rated / stats.total) * 100) : 0;
+
+      return (
+        <div className="max-w-4xl mx-auto p-4 space-y-6">
+          <div className="bg-white rounded-3xl shadow-xl p-6">
+            <h2 className="text-2xl font-bold text-gray-800 mb-6">Overall Progress</h2>
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-gray-600">Vocabulary Rated</span>
+                <span className="font-bold text-jade-600">{progressPercent}%</span>
+              </div>
+              <div className="h-4 bg-gray-100 rounded-full overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-jade-400 to-jade-600 rounded-full" style={{ width: `${Math.max(progressPercent, 2)}%` }} />
+              </div>
+              <p className="text-sm text-gray-500 mt-2">{stats.rated} of {stats.total} items rated</p>
+            </div>
+
+            <div className="grid grid-cols-5 gap-3 mt-6">
+              {RATINGS.map(r => (
+                <div key={r.id} className={`p-4 rounded-xl text-center ${r.color} bg-opacity-10`}>
+                  <div className="text-2xl mb-1">{r.emoji}</div>
+                  <div className={`text-2xl font-bold ${r.textColor}`}>{stats.byRating[r.id]}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-lg p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">Progress by Topic</h3>
+            <div className="space-y-4">
+              {Object.values(stats.byTopic).filter(ts => ts.total > 0).map(ts => {
+                const topicPercent = Math.round((ts.rated / ts.total) * 100);
+                return (
+                  <div key={ts.topic.id} className="border-b border-gray-100 pb-4 last:border-b-0">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xl">{ts.topic.icon}</span>
+                        <span className={`font-medium text-gray-800 ${fontClass}`}>{ts.topic.translation?.title_native}</span>
+                      </div>
+                      <div className="text-sm text-gray-500">{ts.rated}/{ts.total} ({topicPercent}%)</div>
+                    </div>
+                    <div className="h-3 bg-gray-100 rounded-full overflow-hidden flex">
+                      {RATINGS.map(r => {
+                        const percent = (ts.byRating[r.id] / ts.total) * 100;
+                        return percent > 0 ? <div key={r.id} className={r.color} style={{ width: `${percent}%` }} /> : null;
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function AppContent() {
+      const { user } = useAuth();
+      const [currentLanguage, setCurrentLanguage] = useState(() => loadFromStorage(STORAGE_KEYS.language, 'my'));
+      const [activeView, setActiveView] = useState(() => loadFromStorage(STORAGE_KEYS.view, 'chart'));
+      const [activeTopic, setActiveTopic] = useState(() => loadFromStorage(STORAGE_KEYS.topic, null));
+      const [showEnglish, setShowEnglish] = useState(() => loadFromStorage(STORAGE_KEYS.showEnglish, true));
+
+      const { languages, loading: loadingLangs } = useLanguages();
+      const { topics, loading: loadingTopics } = useTopics(currentLanguage);
+      const { vocabulary, loading: loadingVocab } = useVocabulary(currentLanguage);
+      const { ratings, updateRating } = useUserRatings(currentLanguage);
+
+      useEffect(() => { saveToStorage(STORAGE_KEYS.language, currentLanguage); }, [currentLanguage]);
+      useEffect(() => { saveToStorage(STORAGE_KEYS.view, activeView); }, [activeView]);
+      useEffect(() => { saveToStorage(STORAGE_KEYS.topic, activeTopic); }, [activeTopic]);
+      useEffect(() => { saveToStorage(STORAGE_KEYS.showEnglish, showEnglish); }, [showEnglish]);
+
+      useEffect(() => {
+        if (topics.length > 0) {
+          const savedTopicExists = topics.some(t => t.id === activeTopic);
+          if (!activeTopic || !savedTopicExists) setActiveTopic(topics[0].id);
+        }
+      }, [topics, activeTopic]);
+
+      const topicVocabulary = activeTopic ? vocabulary.filter(v => v.topic_id === activeTopic) : [];
+      const currentTopic = topics.find(t => t.id === activeTopic);
+
+      if (loadingLangs) return <div className="min-h-screen flex items-center justify-center"><LoadingSpinner message="Loading..." /></div>;
+
+      return (
+        <div className="min-h-screen bg-gray-50">
+          <Header currentLanguage={currentLanguage} languages={languages} onLanguageChange={setCurrentLanguage}
+            activeView={activeView} onViewChange={setActiveView} />
+
+          {activeView === 'chart' && !loadingTopics && topics.length > 0 && (
+            <TopicNav topics={topics} activeTopic={activeTopic} onSelect={setActiveTopic} />
+          )}
+
+          <main className="pb-8">
+            {(loadingTopics || loadingVocab) ? (
+              <div className="py-12"><LoadingSpinner message="Loading vocabulary..." /></div>
+            ) : (
+              <>
+                {activeView === 'chart' && (
+                  <ChartView topic={currentTopic} vocabulary={topicVocabulary} ratings={ratings} onRate={updateRating}
+                    languageCode={currentLanguage} showEnglish={showEnglish} onToggleEnglish={setShowEnglish} />
+                )}
+                {activeView === 'quiz' && (
+                  <QuizView topics={topics} vocabulary={vocabulary} onRate={updateRating} languageCode={currentLanguage} user={user} />
+                )}
+                {activeView === 'flashcard' && (
+                  <FlashcardView topics={topics} vocabulary={vocabulary} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} />
+                )}
+                {activeView === 'progress' && (
+                  <ProgressView topics={topics} vocabulary={vocabulary} ratings={ratings} languageCode={currentLanguage} user={user} />
+                )}
+              </>
+            )}
+          </main>
+
+          <footer className="bg-gray-800 text-white py-6 px-4">
+            <div className="max-w-7xl mx-auto text-center">
+              <p className="text-gray-300 text-sm">KG Vocabulary Learning System</p>
+              <p className="text-gray-400 text-xs mt-1">Multi-language vocabulary with Devanagari transliteration</p>
+            </div>
+          </footer>
+        </div>
+      );
+    }
+
+    function App() {
+      return (
+        <AuthProvider>
+          <AppContent />
+        </AuthProvider>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

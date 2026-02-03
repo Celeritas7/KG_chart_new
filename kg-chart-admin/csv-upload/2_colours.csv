@@ -1,0 +1,11 @@
+english,native,image_filename,sort_order,extra_data
+Red,အနီရောင်,red.png,1,"{""colorCode"":""#FF0000""}"
+Blue,အပြာ,blue.png,2,"{""colorCode"":""#0000FF""}"
+Yellow,အဝါရောင်,yellow.png,3,"{""colorCode"":""#FFFF00""}"
+Green,အစိမ်းရောင်,green.png,4,"{""colorCode"":""#00FF00""}"
+Orange,လိမ္မော်ရောင်,orange.png,5,"{""colorCode"":""#FFA500""}"
+Pink,ပန်းရောင်,pink.png,6,"{""colorCode"":""#FFC0CB""}"
+Purple,ခရမ်းရောင်,purple.png,7,"{""colorCode"":""#800080""}"
+Brown,အညို,brown.png,8,"{""colorCode"":""#8B4513""}"
+White,အဖြူ,white.png,9,"{""colorCode"":""#FFFFFF""}"
+Black,အနက်ရောင်,black.png,10,"{""colorCode"":""#000000""}"

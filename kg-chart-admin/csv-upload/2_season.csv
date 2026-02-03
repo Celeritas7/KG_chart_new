@@ -1,0 +1,12 @@
+english,native,image_filename,sort_order,extra_data
+Sunny,နေသာသည်။,sunny.png,1,
+Cloudy,တိမ်ထူတယ်။,cloudy.png,2,
+Rain,မိုး,rain.png,3,
+Snow,နှင်း,snow.png,4,
+Wind,လေတိုက်သည်။,wind.png,5,
+Fog,မြူနှင်း,fog.png,6,
+Hot,ပူတယ်။,hot.png,7,
+Cold,အေး,cold.png,8,
+Warm,နွေးထွေးတယ်။,warm.png,9,
+Cool,အေးတယ်။,cool.png,10,
+Dry,ခြောက်သွေ့,dry.png,11,
