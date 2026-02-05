@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Burmese → Devanagari Converter Tester</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Myanmar:wght@400;500;700&family=Noto+Sans+Devanagari:wght@400;500;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    .font-burmese { font-family: 'Noto Sans Myanmar', 'Padauk', sans-serif; }
+    .font-devanagari { font-family: 'Noto Sans Devanagari', sans-serif; }
+    body { font-family: 'DM Sans', sans-serif; }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+  <!-- Inline burmese.js data -->
+  <script>
+    const burmese = {
+      id: 'burmese', name: 'Burmese', native: 'မြန်မာ',
+      consonants: [
+        { char: 'က', roman: 'ka', devanagari: 'क' },
+        { char: 'ခ', roman: 'kha', devanagari: 'ख' },
+        { char: 'ဂ', roman: 'ga', devanagari: 'ग' },
+        { char: 'ဃ', roman: 'gha', devanagari: 'घ' },
+        { char: 'င', roman: 'nga', devanagari: 'ङ' },
+        { char: 'စ', roman: 'ca', devanagari: 'च' },
+        { char: 'ဆ', roman: 'cha', devanagari: 'छ' },
+        { char: 'ဇ', roman: 'ja', devanagari: 'ज' },
+        { char: 'ဈ', roman: 'jha', devanagari: 'झ' },
+        { char: 'ည', roman: 'nya', devanagari: 'ञ' },
+        { char: 'ဋ', roman: 'ṭa', devanagari: 'ट' },
+        { char: 'ဌ', roman: 'ṭha', devanagari: 'ठ' },
+        { char: 'ဍ', roman: 'ḍa', devanagari: 'ड' },
+        { char: 'ဎ', roman: 'ḍha', devanagari: 'ढ' },
+        { char: 'ဏ', roman: 'ṇa', devanagari: 'ण' },
+        { char: 'တ', roman: 'ta', devanagari: 'त' },
+        { char: 'ထ', roman: 'tha', devanagari: 'थ' },
+        { char: 'ဒ', roman: 'da', devanagari: 'द' },
+        { char: 'ဓ', roman: 'dha', devanagari: 'ध' },
+        { char: 'န', roman: 'na', devanagari: 'न' },
+        { char: 'ပ', roman: 'pa', devanagari: 'प' },
+        { char: 'ဖ', roman: 'pha', devanagari: 'फ' },
+        { char: 'ဗ', roman: 'ba', devanagari: 'ब' },
+        { char: 'ဘ', roman: 'bha', devanagari: 'भ' },
+        { char: 'မ', roman: 'ma', devanagari: 'म' },
+        { char: 'ယ', roman: 'ya', devanagari: 'य' },
+        { char: 'ရ', roman: 'ra', devanagari: 'र' },
+        { char: 'လ', roman: 'la', devanagari: 'ल' },
+        { char: 'ဝ', roman: 'wa', devanagari: 'व' },
+        { char: 'သ', roman: 'sa', devanagari: 'श' },
+        { char: 'ဟ', roman: 'ha', devanagari: 'ह' },
+        { char: 'ဠ', roman: 'ḷa', devanagari: 'ळ' },
+        { char: 'အ', roman: 'a', devanagari: 'अ' }
+      ],
+      vowels: [
+        { char: 'ါ', roman: 'ā', devanagari: 'ा' },
+        { char: 'ာ', roman: 'ā', devanagari: 'ा' },
+        { char: 'ိ', roman: 'i', devanagari: 'ि' },
+        { char: 'ီ', roman: 'ī', devanagari: 'ी' },
+        { char: 'ု', roman: 'u', devanagari: 'ु' },
+        { char: 'ူ', roman: 'ū', devanagari: 'ू' },
+        { char: 'ေ', roman: 'e', devanagari: 'े' },
+        { char: 'ဲ', roman: 'ai', devanagari: 'ै' },
+        { char: 'ော', roman: 'o', devanagari: 'ो' },
+        { char: 'ို', roman: 'o', devanagari: 'ो' },
+        { char: 'ွန်', roman: 'un', devanagari: 'ुन्' },
+        { char: 'ုန်', roman: 'on', devanagari: 'ोन्' }
+      ],
+      medials: [
+        { char: 'ျ', roman: 'y', devanagari: '्य' },
+        { char: 'ြ', roman: 'r', devanagari: '्र' },
+        { char: 'ွ', roman: 'w', devanagari: '्व' },
+        { char: 'ှ', roman: 'h', devanagari: '्ह' }
+      ],
+      finals: [
+        { char: '်', roman: '', devanagari: '्' },
+        { char: 'ံ', roman: 'ṃ', devanagari: 'ं' },
+        { char: '့', roman: '', devanagari: '' },
+        { char: 'း', roman: 'ḥ', devanagari: 'ः' }
+      ],
+      combinations: [
+        { char: 'ောင်', roman: 'aung', devanagari: 'ौंग्' },
+        { char: 'ိုင်', roman: 'aing', devanagari: 'ैंग्' },
+        { char: 'ောက်', roman: 'auk', devanagari: 'ौक्' },
+        { char: 'ိုက်', roman: 'aik', devanagari: 'ैक्' },
+        { char: 'ုံ', roman: 'un', devanagari: 'ुं' },
+        { char: 'ိန်', roman: 'in', devanagari: 'िन्' },
+        { char: 'ိမ်', roman: 'im', devanagari: 'िम्' },
+        { char: 'ိတ်', roman: 'it', devanagari: 'ित्' },
+        { char: 'ိပ်', roman: 'ip', devanagari: 'िप्' },
+        { char: 'ိက်', roman: 'ik', devanagari: 'िक्' },
+        { char: 'ုတ်', roman: 'ut', devanagari: 'ुत्' },
+        { char: 'ုပ်', roman: 'up', devanagari: 'ुप्' },
+        { char: 'ုက်', roman: 'uk', devanagari: 'ुक्' },
+        { char: 'န်', roman: 'n', devanagari: 'न्' },
+        { char: 'မ်', roman: 'm', devanagari: 'म्' },
+        { char: 'တ်', roman: 't', devanagari: 'त्' },
+        { char: 'ပ်', roman: 'p', devanagari: 'प्' },
+        { char: 'က်', roman: 'k', devanagari: 'क्' },
+        { char: 'င်', roman: 'ng', devanagari: 'ं' }
+      ]
+    };
+
+    // === CONVERTER (same logic as your app) ===
+    function buildConverter(langData) {
+      const charToDevanagari = {};
+      const charToRoman = {};
+
+      // Add combinations FIRST (highest priority)
+      if (langData.combinations) {
+        langData.combinations.forEach(c => {
+          if (c.char && c.devanagari) charToDevanagari[c.char] = c.devanagari;
+          if (c.char && c.roman) charToRoman[c.char] = c.roman;
+        });
+      }
+      if (langData.consonants) {
+        langData.consonants.forEach(c => {
+          if (c.char && c.devanagari) charToDevanagari[c.char] = c.devanagari;
+          if (c.char && c.roman) charToRoman[c.char] = c.roman;
+        });
+      }
+      if (langData.vowels) {
+        langData.vowels.forEach(v => {
+          if (v.char && v.devanagari) charToDevanagari[v.char] = v.devanagari;
+          if (v.char && v.roman) charToRoman[v.char] = v.roman;
+        });
+      }
+      if (langData.medials) {
+        langData.medials.forEach(m => {
+          if (m.char && m.devanagari) charToDevanagari[m.char] = m.devanagari;
+          if (m.char && m.roman) charToRoman[m.char] = m.roman;
+        });
+      }
+      if (langData.finals) {
+        langData.finals.forEach(f => {
+          if (f.char && f.devanagari) charToDevanagari[f.char] = f.devanagari;
+          if (f.char && f.roman) charToRoman[f.char] = f.roman;
+        });
+      }
+
+      const sortedKeys = Object.keys(charToDevanagari).sort((a, b) => b.length - a.length);
+      const sortedRomanKeys = Object.keys(charToRoman).sort((a, b) => b.length - a.length);
+
+      return {
+        toDevanagari: (text) => {
+          if (!text) return '';
+          let result = '', i = 0;
+          while (i < text.length) {
+            let matched = false;
+            for (const key of sortedKeys) {
+              if (text.substring(i, i + key.length) === key) {
+                result += charToDevanagari[key];
+                i += key.length;
+                matched = true;
+                break;
+              }
+            }
+            if (!matched) { result += text[i]; i++; }
+          }
+          return result;
+        },
+        toRoman: (text) => {
+          if (!text) return '';
+          let result = '', i = 0;
+          while (i < text.length) {
+            let matched = false;
+            for (const key of sortedRomanKeys) {
+              if (text.substring(i, i + key.length) === key) {
+                result += charToRoman[key];
+                i += key.length;
+                matched = true;
+                break;
+              }
+            }
+            if (!matched) { result += text[i]; i++; }
+          }
+          return result;
+        }
+      };
+    }
+
+    const converter = buildConverter(burmese);
+
+    // === FETCH VOCABULARY ===
+    const SUPABASE_URL = 'https://ulgrfumbwjovbjzjiems.supabase.co';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVsZ3JmdW1id2pvdmJqemppZW1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczNzIyNjcsImV4cCI6MjA4Mjk0ODI2N30.ix5Vh4Y3GXNbQbzVtTD_WSko0L3cr5q_eCnTuDEMh7M';
+
+    async function fetchVocab() {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/kg_chart_vocabulary_translations?language_code=eq.my&select=vocabulary_id,native_text,devanagari,kg_chart_vocabulary(english_text,topic_id)&order=vocabulary_id`, {
+        headers: { 'apikey': SUPABASE_KEY }
+      });
+      return await res.json();
+    }
+
+    // === RENDER ===
+    async function render() {
+      const tbody = document.getElementById('tbody');
+      const status = document.getElementById('status');
+      status.textContent = 'Fetching vocabulary from Supabase...';
+
+      try {
+        const data = await fetchVocab();
+        status.textContent = `Loaded ${data.length} words. Review the generated vs stored Devanagari below.`;
+
+        let html = '';
+        let issueCount = 0;
+
+        data.forEach((row, idx) => {
+          const burmese = row.native_text || '';
+          const storedDev = row.devanagari || '';
+          const generatedDev = converter.toDevanagari(burmese);
+          const generatedRoman = converter.toRoman(burmese);
+          const english = row.kg_chart_vocabulary?.english_text || '';
+          const topic = row.kg_chart_vocabulary?.topic_id || '';
+          const hasStored = storedDev.trim().length > 0;
+          const mismatch = hasStored && storedDev !== generatedDev;
+          if (mismatch) issueCount++;
+
+          const rowClass = mismatch ? 'bg-red-50' : (idx % 2 === 0 ? 'bg-white' : 'bg-gray-50');
+
+          html += `<tr class="${rowClass}">
+            <td class="px-3 py-2 text-xs text-gray-400">${idx + 1}</td>
+            <td class="px-3 py-2 text-xs text-gray-500">${topic}</td>
+            <td class="px-3 py-2 text-sm">${english}</td>
+            <td class="px-3 py-2 text-lg font-burmese">${burmese}</td>
+            <td class="px-3 py-2 text-lg font-devanagari text-blue-700 font-semibold">${generatedDev}</td>
+            <td class="px-3 py-2 text-sm text-purple-600">${generatedRoman}</td>
+            <td class="px-3 py-2 text-lg font-devanagari text-gray-500">${storedDev || '<span class="text-xs text-gray-300">—</span>'}</td>
+            <td class="px-3 py-2 text-center">${mismatch ? '⚠️' : (hasStored ? '✅' : '—')}</td>
+          </tr>`;
+        });
+
+        tbody.innerHTML = html;
+        document.getElementById('issueCount').textContent = issueCount > 0
+          ? `⚠️ ${issueCount} mismatches between stored and generated Devanagari`
+          : '✅ No mismatches found (or no stored Devanagari to compare)';
+      } catch (e) {
+        status.textContent = 'Error: ' + e.message;
+      }
+    }
+
+    // Live tester
+    function liveConvert() {
+      const input = document.getElementById('liveInput').value;
+      document.getElementById('liveDev').textContent = converter.toDevanagari(input);
+      document.getElementById('liveRoman').textContent = converter.toRoman(input);
+    }
+
+    document.addEventListener('DOMContentLoaded', render);
+  </script>
+
+  <div class="max-w-7xl mx-auto px-4 py-8">
+    <!-- Header -->
+    <div class="bg-gradient-to-r from-indigo-700 to-purple-700 text-white rounded-2xl p-6 mb-8 shadow-lg">
+      <h1 class="text-2xl font-bold mb-1">Burmese → Devanagari Converter Tester</h1>
+      <p class="text-indigo-200 text-sm">Test your converter output against your actual vocabulary data</p>
+    </div>
+
+    <!-- Live Tester -->
+    <div class="bg-white rounded-xl shadow-md p-6 mb-8 border border-gray-100">
+      <h2 class="text-lg font-bold text-gray-800 mb-4">🔤 Live Tester — Type Burmese Below</h2>
+      <input id="liveInput" type="text" oninput="liveConvert()" placeholder="Type Burmese text here..."
+        class="w-full px-4 py-3 text-2xl font-burmese border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none mb-4" />
+      <div class="grid grid-cols-2 gap-4">
+        <div class="bg-blue-50 rounded-xl p-4">
+          <div class="text-xs text-blue-500 font-semibold mb-1">DEVANAGARI OUTPUT</div>
+          <div id="liveDev" class="text-3xl font-devanagari text-blue-800 min-h-[40px]"></div>
+        </div>
+        <div class="bg-purple-50 rounded-xl p-4">
+          <div class="text-xs text-purple-500 font-semibold mb-1">ROMAN OUTPUT</div>
+          <div id="liveRoman" class="text-2xl text-purple-800 min-h-[40px]"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status -->
+    <div class="flex items-center justify-between mb-4">
+      <p id="status" class="text-sm text-gray-500">Loading...</p>
+      <p id="issueCount" class="text-sm font-medium"></p>
+    </div>
+
+    <!-- Table -->
+    <div class="bg-white rounded-xl shadow-md overflow-hidden border border-gray-100">
+      <div class="overflow-x-auto">
+        <table class="w-full text-left">
+          <thead class="bg-gray-800 text-white text-xs uppercase">
+            <tr>
+              <th class="px-3 py-3">#</th>
+              <th class="px-3 py-3">Topic</th>
+              <th class="px-3 py-3">English</th>
+              <th class="px-3 py-3">Burmese</th>
+              <th class="px-3 py-3">Generated Devanagari</th>
+              <th class="px-3 py-3">Generated Roman</th>
+              <th class="px-3 py-3">Stored Devanagari</th>
+              <th class="px-3 py-3">Match?</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
