@@ -153,14 +153,6 @@
         });
       }
 
-      // Add combinations (multi-char sequences like ုန် that must match as a unit)
-      if (langData.combinations) {
-        langData.combinations.forEach(c => {
-          if (c.char && c.devanagari) charToDevanagari[c.char] = c.devanagari;
-          if (c.char && c.roman) charToRoman[c.char] = c.roman;
-        });
-      }
-
       // Sort keys by length (longer first) for proper multi-char matching
       const sortedKeys = Object.keys(charToDevanagari).sort((a, b) => b.length - a.length);
       const sortedRomanKeys = Object.keys(charToRoman).sort((a, b) => b.length - a.length);
