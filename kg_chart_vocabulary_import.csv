@@ -1,0 +1,236 @@
+topic_id,english_text,sort_order
+colours,Red,1
+colours,Blue,2
+colours,Yellow,3
+colours,Green,4
+colours,Orange,5
+colours,Pink,6
+colours,Purple,7
+colours,Brown,8
+colours,White,9
+colours,Black,10
+animals,Dog,1
+animals,Cat,2
+animals,Lion,3
+animals,Sparrow,4
+animals,Rabbit,5
+animals,Pig,6
+animals,Cow,7
+animals,Ox,8
+animals,Elephant,9
+animals,Horse,10
+animals,Monkey,11
+animals,Bear,12
+animals,Giraffe,13
+food,Salad,1
+food,Sandwich,2
+food,Hamburger,3
+food,French fries,4
+food,Pizza,5
+food,Pasta,6
+food,Bread,7
+food,cooked rice,8
+food,Couscous,9
+food,Egg,10
+food,Cheese,11
+food,Yogurt,12
+food,ham,13
+food,sausage,14
+food,Fish,15
+food,chicken,16
+food,Pig,17
+food,beef,18
+vegetables,Tomato,1
+vegetables,Potato,2
+vegetables,Carrot,3
+vegetables,Onion,4
+vegetables,Japanese leek,5
+vegetables,Mushroom,6
+vegetables,Green pepper,7
+vegetables,Radish,8
+vegetables,Legume,9
+vegetables,Cabbage,10
+vegetables,Napa cabbage,11
+vegetables,Spinach,12
+vegetables,Lettuce,13
+vegetables,Cucumber,14
+vegetables,Pumpkin,15
+vegetables,Broccoli,16
+fruits,Apple,1
+fruits,Lemon,2
+fruits,Mango,3
+fruits,Pomegranate,4
+fruits,Strawberry,5
+fruits,Orange,6
+fruits,Pineapple,7
+fruits,Melon,8
+fruits,Grapes,9
+fruits,Banana,10
+fruits,Cherry,11
+fruits,Guava,12
+fruits,Watermelon,13
+fruits,Pear,14
+fruits,Fig,15
+fruits,Kiwi,16
+fruits,Papaya,17
+fruits,Coconut,18
+fruits,Grapefruit,19
+transportation,Bus,1
+transportation,Train,2
+transportation,Car,3
+transportation,Airplane,4
+transportation,Ship,5
+transportation,Boat,6
+transportation,Submarine,7
+transportation,Bicycle,8
+transportation,Subway,9
+transportation,Motorbike,10
+transportation,Helicopter,11
+transportation,Taxi,12
+hotel,Single,1
+hotel,Double,2
+hotel,Twin,3
+hotel,Room key,4
+hotel,Wifi password,5
+hotel,Cleaning,6
+hotel,Cleaning service,7
+hotel,Iron,8
+hotel,Mineral water,9
+hotel,Blanket,10
+hotel,Towel,11
+hotel,Dryer,12
+body,Eye,1
+body,nose,2
+body,mouth,3
+body,face,4
+body,Head,5
+body,neck,6
+body,hair,7
+body,ear,8
+body,tooth,9
+body,claw,10
+body,finger,11
+body,hand,12
+body,arm,13
+body,shoulder,14
+body,Toes,15
+body,legs,16
+body,stomach,17
+date,Day,1
+date,Today,2
+date,Yesterday,3
+date,Day after tomorrow,4
+date,Tomorrow,5
+date,Year,6
+days_of_week,Week,1
+days_of_week,Sunday,2
+days_of_week,Monday,3
+days_of_week,Tuesday,4
+days_of_week,Wednesday,5
+days_of_week,Thursday,6
+days_of_week,Friday,7
+days_of_week,Saturday,8
+season,Spring,1
+season,Summer,2
+season,Autumn,3
+season,Winter,4
+months,January,1
+months,February,2
+months,March,3
+months,April,4
+months,May,5
+months,June,6
+months,July,7
+months,August,8
+months,September,9
+months,October,10
+months,November,11
+family,I,1
+family,Father,2
+family,Mother,3
+family,Elder brother,4
+family,Elder sister,5
+family,Younger brother,6
+family,Younger sister,7
+family,Grandfather,8
+family,Grandmother,9
+family,Son,10
+family,Daughter,11
+family,Husband,12
+family,Wife,13
+directions,bus,1
+directions,Go straight ahead,2
+directions,Turn left,3
+directions,Turn right,4
+directions,Before,5
+directions,Behind,6
+directions,Next to,7
+directions,Across the street,8
+directions,Corner,9
+directions,Left,10
+directions,Right,11
+directions,Up,12
+directions,Down,13
+directions,North,14
+directions,East,15
+directions,West,16
+weather,Sunny,1
+weather,Cloudy,2
+weather,Rain,3
+weather,Snow,4
+weather,Wind,5
+weather,Fog,6
+weather,Hot,7
+weather,Cold,8
+weather,Warm,9
+weather,Cool,10
+weather,Dry,11
+hobby,To read,1
+hobby,to cook,2
+hobby,draw a picture,3
+hobby,play piano,4
+hobby,Play a musical instrument,5
+hobby,sing,6
+hobby,dance,7
+tableware,Fork,1
+tableware,Knife,2
+tableware,Spoon,3
+tableware,Chopsticks,4
+tableware,Dish,5
+tableware,Vessel,6
+tableware,Glass,7
+tableware,Cup,8
+tableware,Napkin,9
+seasoning,Salt,1
+seasoning,Pepper,2
+seasoning,Sugar,3
+seasoning,Mayonnaise,4
+seasoning,Ketchup,5
+seasoning,Mustard,6
+seasoning,Oil,7
+seasoning,Vinegar,8
+seasoning,Jam,9
+seasoning,Honey,10
+seasoning,Butter,11
+sport,Running,1
+sport,Bicycle,2
+sport,Swimming,3
+sport,Skiings,4
+sport,Soccer,5
+sport,Basketball,6
+sport,Volleyball,7
+sport,Baseball,8
+sport,Table tennis,9
+sport,Tennis,10
+sport,Badminton,11
+sport,Fighting sports,12
+drink,Water,1
+drink,Orange juice,2
+drink,Fruit juice,3
+drink,Cola,4
+drink,Soft drink,5
+drink,Beer,6
+drink,Wine,7
+drink,Tea,8
+drink,Coffee,9
+drink,Cocoa,10
