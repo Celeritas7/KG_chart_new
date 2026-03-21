@@ -460,13 +460,13 @@
                 const converter = getConverter(languageCode);
                 const usesPronunciation = converter?.usePronunciation;
 
-                // Chinese: convert from pronunciation.pinyin if available
+                // Chinese: convert from pinyin column if available
                 const titleSource = usesPronunciation
-                  ? (translation.pronunciation?.pinyin || translation.title_native)
+                  ? (translation.pinyin || translation.title_native)
                   : translation.title_native;
 
                 const questionSource = usesPronunciation
-                  ? (translation.pronunciation?.pinyin_question || translation.question_native)
+                  ? (translation.pinyin_question || translation.question_native)
                   : translation.question_native;
 
                 return {
@@ -733,7 +733,7 @@
       );
     }
 
-    function TopicNav({ topics, activeTopic, onSelect }) {
+    function TopicNav({ topics, activeTopic, onSelect, showEnglish }) {
       return (
         <div className="bg-white border-b sticky top-0 z-30 shadow-sm">
           <div className="max-w-7xl mx-auto px-2">
@@ -744,7 +744,7 @@
                     activeTopic === topic.id ? 'bg-jade-600 text-white shadow-lg' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                   }`}>
                   <span>{topic.icon}</span>
-                  <span>{topic.translation?.title_native || topic.id}</span>
+                  <span>{showEnglish ? topic.id : (topic.translation?.title_native || topic.id)}</span>
                 </button>
               ))}
             </div>
@@ -786,7 +786,10 @@
               {item.translation?.devanagari}
             </div>
             {showEnglish && (
-              <div className="text-center text-xs text-gray-400 mt-1">{item.english_text}</div>
+              <>
+                <div className="text-center text-xs text-gray-400 mt-1">{item.english_text}</div>
+                <div className="text-center text-xs text-gray-300 mt-0.5 font-mono">{item.image_filename || 'no file'}</div>
+              </>
             )}
           </div>
 
@@ -1503,7 +1506,7 @@
             activeView={activeView} onViewChange={setActiveView} />
 
           {activeView === 'chart' && !loadingTopics && topics.length > 0 && (
-            <TopicNav topics={topics} activeTopic={activeTopic} onSelect={setActiveTopic} />
+            <TopicNav topics={topics} activeTopic={activeTopic} onSelect={setActiveTopic} showEnglish={showEnglish} />
           )}
 
           <main className="pb-8">
