@@ -1045,21 +1045,6 @@
         else setCurrentWordIndex(prev => prev + 1);
       };
 
-      // Keyboard support: 1-4 to pick answer, Enter/Space for next
-      useEffect(() => {
-        if (!quizStarted || quizCompleted) return;
-        const handleKey = (e) => {
-          if (showResult) {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); nextQuestion(); }
-          } else {
-            const num = parseInt(e.key);
-            if (num >= 1 && num <= 4 && options[num - 1]) handleAnswer(options[num - 1]);
-          }
-        };
-        window.addEventListener('keydown', handleKey);
-        return () => window.removeEventListener('keydown', handleKey);
-      }, [quizStarted, quizCompleted, showResult, options, currentQuestion]);
-
       if (!quizStarted) {
         return (
           <div className="max-w-2xl mx-auto p-6">
@@ -1229,7 +1214,7 @@
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            {options.map((opt, idx) => {
+            {options.map((opt) => {
               let borderClass = 'border-gray-200 hover:border-jade-300 hover:shadow-lg';
               if (showResult) {
                 if (opt.id === currentQuestion.id) borderClass = 'border-green-500 border-4 bg-green-50';
@@ -1237,8 +1222,7 @@
               }
               return (
                 <button key={opt.id} onClick={() => handleAnswer(opt)} disabled={showResult}
-                  className={`p-4 rounded-xl border-2 transition-all relative ${borderClass}`}>
-                  <span className="absolute top-1.5 left-2 text-xs text-gray-300 font-mono hidden sm:inline">{idx + 1}</span>
+                  className={`p-4 rounded-xl border-2 transition-all ${borderClass}`}>
                   {(quizType === 'native_to_image' || quizType === 'devanagari_to_image') ? (
                     <>
                       <div className="w-20 h-20 mx-auto flex items-center justify-center mb-2">
@@ -1267,7 +1251,7 @@
                 {selectedAnswer?.id === currentQuestion.id ? '✅ Correct!' : `❌ Wrong! It was "${currentQuestion.english_text}"`}
               </div>
               <button onClick={nextQuestion} className="px-8 py-3 bg-blue-600 text-white rounded-full font-bold hover:bg-blue-700">
-                {currentWordIndex + 1 >= quizWords.length ? 'See Results' : 'Next Question →'} <span className="text-blue-300 text-sm hidden sm:inline ml-1">↵</span>
+                {currentWordIndex + 1 >= quizWords.length ? 'See Results' : 'Next Question →'}
               </button>
             </div>
           )}
@@ -1290,25 +1274,7 @@
       const goNext = () => { setIsFlipped(false); setTimeout(() => setCurrentIndex(prev => (prev + 1) % filteredVocab.length), 100); };
       const goPrev = () => { setIsFlipped(false); setTimeout(() => setCurrentIndex(prev => (prev - 1 + filteredVocab.length) % filteredVocab.length), 100); };
       const goRandom = () => { setIsFlipped(false); setTimeout(() => setCurrentIndex(Math.floor(Math.random() * filteredVocab.length)), 100); };
-      const handleRate = (ratingId) => { if (currentItem && user) { onRate(currentItem.id, ratingId); } };
-
-      // Keyboard support: ←/→ prev/next, Space flip, 1-5 rate, R random
-      useEffect(() => {
-        const handleKey = (e) => {
-          if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
-          switch (e.key) {
-            case 'ArrowLeft': e.preventDefault(); goPrev(); break;
-            case 'ArrowRight': e.preventDefault(); goNext(); break;
-            case ' ': e.preventDefault(); setIsFlipped(f => !f); break;
-            case 'r': case 'R': e.preventDefault(); goRandom(); break;
-            default:
-              const num = parseInt(e.key);
-              if (num >= 1 && num <= 5 && user) handleRate(num);
-          }
-        };
-        window.addEventListener('keydown', handleKey);
-        return () => window.removeEventListener('keydown', handleKey);
-      }, [currentItem, user, filteredVocab]);
+      const handleRate = (ratingId) => { if (currentItem && user) { onRate(currentItem.id, ratingId); goNext(); } };
 
       if (!currentItem) return <div className="text-center py-12 text-gray-500">No flashcards available</div>;
 
@@ -1335,7 +1301,7 @@
                 )}
                 <div className={`text-5xl font-bold text-gray-800 mb-4 ${fontClass}`}>{currentItem.translation?.native_text}</div>
                 <div className="text-3xl text-blue-600 font-devanagari mb-4">{currentItem.translation?.devanagari}</div>
-                <div className="absolute bottom-6 text-gray-400 text-sm">👆 Tap to flip <span className="hidden sm:inline text-gray-300 ml-1">(Space)</span></div>
+                <div className="absolute bottom-6 text-gray-400 text-sm">👆 Tap to flip</div>
               </div>
               <div className="flip-card-back absolute inset-0 bg-gradient-to-br from-jade-50 to-white rounded-3xl shadow-xl p-8 flex flex-col items-center justify-center">
                 <div className="w-32 h-32 mb-4 flex items-center justify-center">
@@ -1352,7 +1318,7 @@
 
           <div className="flex justify-center gap-3 mb-6">
             <button onClick={goPrev} className="px-6 py-3 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">← Prev</button>
-            <button onClick={goRandom} className="px-6 py-3 bg-purple-500 text-white rounded-xl hover:bg-purple-600 font-medium shadow-md">🎲 Random <span className="text-purple-300 text-xs hidden sm:inline">(R)</span></button>
+            <button onClick={goRandom} className="px-6 py-3 bg-purple-500 text-white rounded-xl hover:bg-purple-600 font-medium shadow-md">🎲 Random</button>
             <button onClick={goNext} className="px-6 py-3 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">Next →</button>
           </div>
 
