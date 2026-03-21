@@ -18,11 +18,6 @@
   
   <!-- Language Files -->
   <script src="./js/languages/burmese.js"></script>
-  <script src="./js/languages/chinese.js"></script>
-  <script>
-    // Shim: chinese.js uses const (not on window) — ensure it's globally accessible
-    if (typeof chinese !== 'undefined' && typeof window.chinese === 'undefined') window.chinese = chinese;
-  </script>
   
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -237,78 +232,6 @@
       console.warn('⚠ Burmese language file not loaded');
     }
 
-    // Build Chinese converter (syllable-based: pinyin → Devanagari)
-    // Unlike Burmese (char-based), Chinese converts from PRONUNCIATION, not native text
-    function buildChineseConverter(langData) {
-      const { syllables, toneMarks, toneSuffixes } = langData;
-      const syllableKeys = Object.keys(syllables).sort((a, b) => b.length - a.length);
-
-      return {
-        // Flag: this converter needs pronunciation field, not native_text
-        usePronunciation: true,
-
-        toDevanagari: (pinyinText) => {
-          if (!pinyinText) return '';
-
-          const words = pinyinText.trim().split(/\s+/);
-          return words.map(word => {
-            // Strip tone marks, record tone per character position
-            let bare = '';
-            const toneAt = []; // { pos, tone }
-
-            for (const ch of word) {
-              const lower = ch.toLowerCase();
-              if (toneMarks[lower]) {
-                toneAt.push({ pos: bare.length, tone: toneMarks[lower].tone });
-                bare += toneMarks[lower].base;
-              } else {
-                bare += lower;
-              }
-            }
-
-            // Greedy longest-match split into syllables
-            const parts = [];
-            let i = 0;
-            while (i < bare.length) {
-              let matched = false;
-              for (const key of syllableKeys) {
-                if (bare.substring(i, i + key.length) === key) {
-                  // Find tone that falls within this syllable's range
-                  let tone = 0;
-                  for (const t of toneAt) {
-                    if (t.pos >= i && t.pos < i + key.length) { tone = t.tone; break; }
-                  }
-                  const dev = syllables[key] || key;
-                  const suffix = tone && toneSuffixes[tone] ? toneSuffixes[tone] : '';
-                  parts.push(dev + suffix);
-                  i += key.length;
-                  matched = true;
-                  break;
-                }
-              }
-              if (!matched) { parts.push(bare[i]); i++; }
-            }
-            return parts.join('');
-          }).join(' ');
-        },
-
-        toRoman: (pinyinText) => {
-          // Pinyin IS the romanization — just return it cleaned
-          return pinyinText || '';
-        },
-
-        langData
-      };
-    }
-
-    // Register Chinese converter (loaded from ./js/languages/chinese.js)
-    if (typeof chinese !== 'undefined') {
-      LanguageConverters['zh'] = buildChineseConverter(chinese);
-      console.log('✓ Chinese converter loaded');
-    } else {
-      console.warn('⚠ Chinese language file not loaded');
-    }
-
     // Get converter for a language code
     function getConverter(langCode) {
       return LanguageConverters[langCode] || null;
@@ -452,27 +375,13 @@
             if (!error && data) {
               const mapped = data.map(topic => {
                 const translation = topic.translations?.find(t => t.language_code === languageCode);
-                if (!translation) return { ...topic, translation: null };
-
-                const converter = getConverter(languageCode);
-                const usesPronunciation = converter?.usePronunciation;
-
-                // Chinese: convert from pronunciation.pinyin if available
-                const titleSource = usesPronunciation
-                  ? (translation.pronunciation?.pinyin || translation.title_native)
-                  : translation.title_native;
-
-                const questionSource = usesPronunciation
-                  ? (translation.pronunciation?.pinyin_question || translation.question_native)
-                  : translation.question_native;
-
                 return {
                   ...topic,
-                  translation: {
+                  translation: translation ? {
                     ...translation,
-                    title_devanagari: convertToDevanagari(titleSource, languageCode),
-                    question_devanagari: convertToDevanagari(questionSource, languageCode)
-                  }
+                    // Generate Devanagari from native title on-the-fly
+                    title_devanagari: convertToDevanagari(translation.title_native, languageCode)
+                  } : null
                 };
               }).filter(t => t.translation);
               setTopics(mapped);
@@ -500,29 +409,17 @@
             if (!error && data) {
               const mapped = data.map(vocab => {
                 const translation = vocab.translations?.find(t => t.language_code === languageCode);
-                if (!translation) return { ...vocab, translation: null };
-
-                const converter = getConverter(languageCode);
-                const usesPronunciation = converter?.usePronunciation;
-
-                // Chinese: convert from pinyin pronunciation field
-                // Burmese/others: convert from native_text
-                const sourceText = usesPronunciation
-                  ? (translation.pronunciation?.pinyin || '')
-                  : translation.native_text;
-
-                const devanagari = convertToDevanagari(sourceText, languageCode);
-
-                // Build pronunciation display
-                // For pronunciation-based langs: keep DB pronunciation + add devanagari info
-                // For char-based langs: generate roman from native text
-                const pronunciation = usesPronunciation
-                  ? { ...(translation.pronunciation || {}), roman: translation.pronunciation?.pinyin || '' }
-                  : { roman: convertToRoman(translation.native_text, languageCode) };
-
                 return {
                   ...vocab,
-                  translation: { ...translation, devanagari, pronunciation }
+                  translation: translation ? {
+                    ...translation,
+                    // Generate Devanagari from native text on-the-fly
+                    devanagari: convertToDevanagari(translation.native_text, languageCode),
+                    // Generate romanization on-the-fly
+                    pronunciation: {
+                      roman: convertToRoman(translation.native_text, languageCode)
+                    }
+                  } : null
                 };
               }).filter(v => v.translation);
               setVocabulary(mapped);
@@ -890,7 +787,7 @@
               <div className="p-4 flex flex-col justify-center items-center">
                 <div className={`text-sm text-red-700 text-center ${fontClass}`}>{topic.translation?.question_native}</div>
                 <div className="text-xs text-red-500 text-center mt-1 font-devanagari">
-                  {topic.translation?.question_devanagari}
+                  {convertToDevanagari(topic.translation?.question_native, languageCode)}
                 </div>
               </div>
             </div>
