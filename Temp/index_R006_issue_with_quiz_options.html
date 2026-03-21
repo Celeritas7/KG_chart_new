@@ -951,26 +951,21 @@
       }, [filteredVocab, dailyTarget]);
 
       const generateQuestion = useCallback(() => {
-        if (vocabulary.length < 4 || quizWords.length < 1 || currentWordIndex >= quizWords.length) {
+        if (quizWords.length < 4 || currentWordIndex >= quizWords.length) {
           setQuizCompleted(true);
           return;
         }
         const questionItem = quizWords[currentWordIndex];
-        // Pull wrong options from ALL vocabulary for variety
-        // Prefer same-topic words first, then fill from other topics
-        const sameTopic = filteredVocab.filter(v => v.id !== questionItem.id).sort(() => Math.random() - 0.5);
-        const otherTopics = vocabulary.filter(v => v.id !== questionItem.id && v.topic_id !== questionItem.topic_id).sort(() => Math.random() - 0.5);
-        const wrongPool = [...sameTopic, ...otherTopics];
-        const wrongOptions = wrongPool.slice(0, 3);
+        const wrongOptions = filteredVocab.filter(v => v.id !== questionItem.id).sort(() => Math.random() - 0.5).slice(0, 3);
         const allOptions = [questionItem, ...wrongOptions].sort(() => Math.random() - 0.5);
         setCurrentQuestion(questionItem);
         setOptions(allOptions);
         setSelectedAnswer(null);
         setShowResult(false);
-      }, [quizWords, currentWordIndex, filteredVocab, vocabulary]);
+      }, [quizWords, currentWordIndex, filteredVocab]);
 
       useEffect(() => {
-        if (quizStarted && quizWords.length >= 1 && vocabulary.length >= 4 && !quizCompleted) generateQuestion();
+        if (quizStarted && quizWords.length >= 4 && !quizCompleted) generateQuestion();
       }, [quizStarted, quizWords, currentWordIndex, generateQuestion, quizCompleted]);
 
       const handleAnswer = (item) => {
@@ -1040,9 +1035,9 @@
                   </div>
                 </div>
 
-                <button onClick={startQuiz} disabled={filteredVocab.length < 1 || vocabulary.length < 4}
+                <button onClick={startQuiz} disabled={filteredVocab.length < 4}
                   className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">
-                  {vocabulary.length < 4 ? 'Need 4+ words total' : filteredVocab.length < 1 ? 'No words in topic' : `Start Quiz (${dailyTarget === 0 ? filteredVocab.length : Math.min(dailyTarget, filteredVocab.length)} words)`}
+                  {filteredVocab.length < 4 ? 'Need 4+ words' : `Start Quiz (${dailyTarget === 0 ? filteredVocab.length : Math.min(dailyTarget, filteredVocab.length)} words)`}
                 </button>
               </div>
             </div>
