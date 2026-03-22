@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KG Chart — Admin Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Playfair+Display:wght@400;600;700&family=JetBrains+Mono:wght@300;400;500;600&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+Myanmar:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Padauk:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+:root { --transition: 0.25s ease; }
+[data-theme="jade"] {
+  --bg-primary: #f9fafb; --bg-secondary: #ffffff; --bg-tertiary: #f3f4f6; --bg-card: #ffffff;
+  --bg-hover: #f0fdf6; --bg-input: #ffffff; --border: #e5e7eb; --border-focus: #16a34a;
+  --text-primary: #1f2937; --text-secondary: #6b7280; --text-muted: #9ca3af;
+  --accent: #16a34a; --accent-light: #22c55e; --accent-dim: rgba(22,163,74,0.08);
+  --accent-hover: #15803d; --accent-gradient: linear-gradient(135deg, #15803d, #166534);
+  --success: #22c55e; --danger: #ef4444; --danger-dim: rgba(239,68,68,0.08);
+  --warning: #f59e0b; --info: #2563eb;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06); --shadow: 0 4px 12px rgba(0,0,0,0.06); --shadow-lg: 0 8px 30px rgba(0,0,0,0.08);
+  --sidebar-bg: #ffffff; --sidebar-header-bg: linear-gradient(135deg, #15803d, #166534);
+  --chart-cell-bg: #ffffff; --chart-cell-border: #e5e7eb; --scrollbar-thumb: #d1d5db;
+  --badge-bg: rgba(22,163,74,0.1); --badge-text: #16a34a;
+  --devanagari-color: #2563eb; --question-color: #b91c1c;
+}
+[data-theme="dark-amber"] {
+  --bg-primary: #0a0a0c; --bg-secondary: #111114; --bg-tertiary: #1a1a1f; --bg-card: #14141a;
+  --bg-hover: #1e1e26; --bg-input: #111114; --border: #2a2a35; --border-focus: #f5a623;
+  --text-primary: #e8e6e3; --text-secondary: #8a8a95; --text-muted: #55555f;
+  --accent: #f5a623; --accent-light: #ffb83d; --accent-dim: rgba(245,166,35,0.12);
+  --accent-hover: #e09510; --accent-gradient: linear-gradient(135deg, #b07818, #f5a623);
+  --success: #34d399; --danger: #f87171; --danger-dim: rgba(248,113,113,0.1);
+  --warning: #fbbf24; --info: #60a5fa;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.3); --shadow: 0 4px 12px rgba(0,0,0,0.4); --shadow-lg: 0 8px 30px rgba(0,0,0,0.5);
+  --sidebar-bg: #0d0d10; --sidebar-header-bg: linear-gradient(135deg, #3d2e0a, #1a1a1f);
+  --chart-cell-bg: #14141a; --chart-cell-border: #2a2a35; --scrollbar-thumb: #333;
+  --badge-bg: rgba(245,166,35,0.15); --badge-text: #f5a623;
+  --devanagari-color: #60a5fa; --question-color: #f87171;
+}
+[data-theme="clean-minimal"] {
+  --bg-primary: #fafafa; --bg-secondary: #ffffff; --bg-tertiary: #f5f5f5; --bg-card: #ffffff;
+  --bg-hover: #f0f0f0; --bg-input: #ffffff; --border: #e0e0e0; --border-focus: #111111;
+  --text-primary: #111111; --text-secondary: #666666; --text-muted: #aaaaaa;
+  --accent: #111111; --accent-light: #333333; --accent-dim: rgba(0,0,0,0.05);
+  --accent-hover: #000000; --accent-gradient: linear-gradient(135deg, #222, #111);
+  --success: #16a34a; --danger: #dc2626; --danger-dim: rgba(220,38,38,0.06);
+  --warning: #d97706; --info: #2563eb;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04); --shadow: 0 2px 8px rgba(0,0,0,0.05); --shadow-lg: 0 4px 16px rgba(0,0,0,0.06);
+  --sidebar-bg: #ffffff; --sidebar-header-bg: linear-gradient(135deg, #222, #111);
+  --chart-cell-bg: #ffffff; --chart-cell-border: #e0e0e0; --scrollbar-thumb: #ccc;
+  --badge-bg: rgba(0,0,0,0.06); --badge-text: #333;
+  --devanagari-color: #2563eb; --question-color: #b91c1c;
+}
+[data-theme="neon-vapor"] {
+  --bg-primary: #0f0e17; --bg-secondary: #161524; --bg-tertiary: #1c1b30; --bg-card: #13122a;
+  --bg-hover: #201f3a; --bg-input: #13122a; --border: #2e2c54; --border-focus: #e53170;
+  --text-primary: #fffffe; --text-secondary: #a7a9be; --text-muted: #5e5f7e;
+  --accent: #e53170; --accent-light: #ff4590; --accent-dim: rgba(229,49,112,0.12);
+  --accent-hover: #c82060; --accent-gradient: linear-gradient(135deg, #a01050, #e53170);
+  --success: #7f5af0; --danger: #ff6b6b; --danger-dim: rgba(255,107,107,0.1);
+  --warning: #ffd803; --info: #2cb67d;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.3); --shadow: 0 4px 16px rgba(229,49,112,0.08); --shadow-lg: 0 8px 30px rgba(229,49,112,0.12);
+  --sidebar-bg: #0c0b15; --sidebar-header-bg: linear-gradient(135deg, #2a0020, #0f0e17);
+  --chart-cell-bg: #161524; --chart-cell-border: #2e2c54; --scrollbar-thumb: #3a386a;
+  --badge-bg: rgba(229,49,112,0.15); --badge-text: #e53170;
+  --devanagari-color: #2cb67d; --question-color: #ff6b6b;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color: var(--text-primary); display: flex; height: 100vh; overflow: hidden; transition: background var(--transition), color var(--transition); }
+::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
+.sidebar { width: 250px; min-width: 250px; background: var(--sidebar-bg); border-right: 1px solid var(--border); display: flex; flex-direction: column; transition: background var(--transition), border var(--transition); z-index: 10; }
+.sidebar-header { padding: 20px; background: var(--sidebar-header-bg); color: #fff; }
+.sidebar-header .logo-row { display: flex; align-items: center; gap: 12px; }
+.sidebar-header .logo-icon { width: 42px; height: 42px; background: rgba(255,255,255,0.2); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; }
+.sidebar-header h1 { font-family: 'Playfair Display', serif; font-size: 20px; font-weight: 700; }
+.sidebar-header .subtitle { font-size: 12px; opacity: 0.7; margin-top: 2px; }
+.sidebar-nav { flex: 1; padding: 12px; overflow-y: auto; }
+.nav-section-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; padding: 14px 12px 6px; }
+.nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; cursor: pointer; font-size: 14px; font-weight: 500; color: var(--text-secondary); transition: all var(--transition); margin-bottom: 2px; }
+.nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.nav-item.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+.nav-item .icon { font-size: 18px; width: 24px; text-align: center; }
+.nav-item .badge { margin-left: auto; background: var(--badge-bg); color: var(--badge-text); font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; padding: 2px 8px; border-radius: 10px; }
+.theme-switcher { padding: 14px; border-top: 1px solid var(--border); }
+.theme-switcher label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; display: block; margin-bottom: 10px; }
+.theme-options { display: flex; gap: 6px; }
+.theme-btn { flex: 1; height: 30px; border-radius: 8px; border: 2px solid transparent; cursor: pointer; transition: all var(--transition); }
+.theme-btn:hover { transform: scale(1.06); }
+.theme-btn.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.theme-btn[data-t="jade"] { background: linear-gradient(135deg, #f9fafb 50%, #16a34a 50%); }
+.theme-btn[data-t="dark-amber"] { background: linear-gradient(135deg, #0a0a0c 50%, #f5a623 50%); }
+.theme-btn[data-t="clean-minimal"] { background: linear-gradient(135deg, #fafafa 50%, #111111 50%); }
+.theme-btn[data-t="neon-vapor"] { background: linear-gradient(135deg, #0f0e17 50%, #e53170 50%); }
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.topbar { padding: 18px 28px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; background: var(--bg-secondary); transition: background var(--transition); }
+.topbar h2 { font-family: 'Playfair Display', serif; font-size: 22px; font-weight: 700; }
+.topbar-actions { display: flex; gap: 8px; align-items: center; }
+.content { flex: 1; overflow-y: auto; padding: 24px 28px; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-tertiary); color: var(--text-primary); font-size: 13px; font-weight: 500; cursor: pointer; transition: all var(--transition); font-family: 'DM Sans', sans-serif; }
+.btn:hover { background: var(--bg-hover); box-shadow: var(--shadow-sm); }
+.btn-accent { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.btn-accent:hover { background: var(--accent-hover); }
+.btn-danger { background: var(--danger-dim); color: var(--danger); border-color: transparent; }
+.btn-danger:hover { background: var(--danger); color: #fff; }
+.btn-sm { padding: 5px 12px; font-size: 12px; border-radius: 8px; }
+.data-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.data-table th { text-align: left; padding: 12px 16px; font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; border-bottom: 2px solid var(--border); background: var(--bg-secondary); position: sticky; top: 0; z-index: 2; }
+.data-table td { padding: 12px 16px; border-bottom: 1px solid var(--border); color: var(--text-primary); vertical-align: middle; }
+.data-table tbody tr { transition: background var(--transition); }
+.data-table tbody tr:hover td { background: var(--bg-hover); }
+.data-table .mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; backdrop-filter: blur(4px); animation: fadeIn 0.2s; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes scaleIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: 20px; padding: 28px; width: 90%; max-width: 560px; max-height: 80vh; overflow-y: auto; box-shadow: var(--shadow-lg); animation: scaleIn 0.25s; }
+.modal h3 { font-family: 'Playfair Display', serif; font-size: 20px; margin-bottom: 24px; color: var(--text-primary); }
+.modal h3 .accent-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: 10px; vertical-align: middle; }
+.form-group { margin-bottom: 16px; }
+.form-group label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+.form-group input, .form-group select, .form-group textarea { width: 100%; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-primary); font-size: 14px; font-family: 'DM Sans', 'Noto Sans Myanmar', 'Noto Sans Devanagari', 'Noto Sans JP', 'Noto Sans SC', sans-serif; transition: border var(--transition), box-shadow var(--transition); outline: none; }
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-dim); }
+.form-group textarea { resize: vertical; min-height: 70px; }
+.form-row { display: flex; gap: 12px; } .form-row .form-group { flex: 1; }
+.form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 24px; }
+.toggle { position: relative; width: 44px; height: 24px; border-radius: 12px; background: var(--border); cursor: pointer; transition: background 0.2s; }
+.toggle.on { background: var(--accent); }
+.toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: white; transition: transform 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+.toggle.on::after { transform: translateX(20px); }
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.status-dot.active { background: var(--success); } .status-dot.inactive { background: var(--text-muted); }
+.tag { display: inline-block; padding: 3px 10px; border-radius: 8px; font-size: 11px; font-weight: 600; background: var(--badge-bg); color: var(--badge-text); }
+.chart-header { background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; margin-bottom: 20px; box-shadow: var(--shadow-sm); }
+.chart-header-grid { display: grid; grid-template-columns: auto 1fr 1fr 1fr; }
+.chart-header-icon { background: var(--accent-gradient); padding: 24px; display: flex; align-items: center; justify-content: center; font-size: 48px; min-width: 100px; }
+.chart-header-cell { padding: 16px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; border-left: 1px solid var(--border); }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 16px; }
+.chart-card { background: var(--chart-cell-bg); border: 1px solid var(--chart-cell-border); border-radius: 16px; overflow: hidden; transition: all var(--transition); box-shadow: var(--shadow-sm); }
+.chart-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: var(--accent); }
+.chart-card .img-area { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; background: var(--bg-tertiary); padding: 12px; font-size: 44px; border-bottom: 1px solid var(--chart-cell-border); }
+.chart-card .text-area { padding: 12px; text-align: center; }
+.chart-card .native-text { font-size: 16px; font-weight: 600; color: var(--text-primary); font-family: 'DM Sans', 'Noto Sans Myanmar', 'Noto Sans Devanagari', 'Noto Sans JP', 'Noto Sans SC', sans-serif; }
+.chart-card .dev-text { font-size: 14px; color: var(--devanagari-color); font-family: 'Noto Sans Devanagari', sans-serif; margin-top: 4px; }
+.chart-card .eng-text { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.chart-card .pinyin-text { font-size: 11px; color: var(--info); font-family: 'JetBrains Mono', monospace; margin-top: 2px; }
+.tabs { display: flex; gap: 4px; } .tab { padding: 8px 16px; border-radius: 12px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text-secondary); background: transparent; border: none; transition: all var(--transition); }
+.tab:hover { background: var(--bg-hover); } .tab.active { background: var(--accent-dim); color: var(--accent); }
+.filter-bar { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; flex-wrap: wrap; }
+.filter-bar select, .filter-bar input[type="text"] { padding: 8px 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-primary); font-size: 13px; outline: none; font-family: 'DM Sans', sans-serif; transition: border var(--transition), box-shadow var(--transition); }
+.filter-bar select:focus, .filter-bar input[type="text"]:focus { border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-dim); }
+.filter-count { color: var(--text-muted); font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+.toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 22px; border-radius: 14px; font-size: 13px; font-weight: 600; z-index: 200; animation: scaleIn 0.3s; box-shadow: var(--shadow-lg); }
+.toast.success { background: var(--success); color: #fff; } .toast.error { background: var(--danger); color: #fff; }
+.empty-state { text-align: center; padding: 60px 20px; color: var(--text-muted); }
+.empty-state .icon { font-size: 48px; margin-bottom: 12px; } .empty-state p { font-size: 14px; margin-bottom: 16px; }
+.spinner-wrap { display: flex; align-items: center; justify-content: center; height: 100%; gap: 14px; color: var(--text-secondary); font-size: 14px; font-weight: 500; }
+.spinner { width: 36px; height: 36px; position: relative; }
+.spinner::before, .spinner::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 3px solid var(--border); }
+.spinner::after { border-color: var(--accent); border-top-color: transparent; border-right-color: transparent; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.lang-card { border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-bottom: 12px; transition: border var(--transition); }
+.lang-card:hover { border-color: var(--accent); }
+.lang-card .lang-header { font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+.lang-card .lang-header .code { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted); }
+</style>
+</head>
+<body data-theme="jade">
+<aside class="sidebar">
+  <div class="sidebar-header">
+    <div class="logo-row">
+      <div class="logo-icon">📚</div>
+      <div><h1>KG Chart</h1><div class="subtitle">Admin Panel</div></div>
+    </div>
+  </div>
+  <nav class="sidebar-nav">
+    <div class="nav-section-label">Data Management</div>
+    <div class="nav-item active" data-page="languages"><span class="icon">🌐</span>Languages<span class="badge" id="badge-lang">-</span></div>
+    <div class="nav-item" data-page="topics"><span class="icon">📂</span>Topics<span class="badge" id="badge-topics">-</span></div>
+    <div class="nav-item" data-page="vocabulary"><span class="icon">📖</span>Vocabulary<span class="badge" id="badge-vocab">-</span></div>
+    <div class="nav-item" data-page="translations"><span class="icon">🔤</span>Translations</div>
+    <div class="nav-item" data-page="topic-translations"><span class="icon">🏷️</span>Topic Headers</div>
+    <div class="nav-section-label">Preview</div>
+    <div class="nav-item" data-page="chart-preview"><span class="icon">📊</span>Chart Preview</div>
+    <div class="nav-section-label">Analytics</div>
+    <div class="nav-item" data-page="quiz-stats"><span class="icon">🧠</span>Quiz Stats</div>
+  </nav>
+  <div class="theme-switcher">
+    <label>Theme</label>
+    <div class="theme-options">
+      <div class="theme-btn active" data-t="jade" title="Jade"></div>
+      <div class="theme-btn" data-t="dark-amber" title="Dark"></div>
+      <div class="theme-btn" data-t="clean-minimal" title="Minimal"></div>
+      <div class="theme-btn" data-t="neon-vapor" title="Neon"></div>
+    </div>
+  </div>
+</aside>
+<div class="main">
+  <div class="topbar"><h2 id="page-title">Languages</h2><div class="topbar-actions" id="topbar-actions"></div></div>
+  <div class="content" id="content"><div class="spinner-wrap"><div class="spinner"></div> Connecting to Supabase...</div></div>
+</div>
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+<script>
+const SUPABASE_URL='https://ulgrfumbwjovbjzjiems.supabase.co';
+const SUPABASE_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVsZ3JmdW1id2pvdmJqemppZW1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczNzIyNjcsImV4cCI6MjA4Mjk0ODI2N30.ix5Vh4Y3GXNbQbzVtTD_WSko0L3cr5q_eCnTuDEMh7M';
+const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+const STORAGE_BUCKET='vocabulary-assets';
+const getImageUrl=(tid,fn)=>{if(!fn)return null;if(fn.startsWith('http'))return fn;return`${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${tid}/${fn}`;};
+let state={languages:[],topics:[],vocabulary:[],vocabTranslations:[],topicTranslations:[],quizSessions:[],currentPage:'languages',filters:{topic:'',language:'',search:''},chartViewMode:'grid'};
+document.querySelectorAll('.theme-btn').forEach(b=>{b.addEventListener('click',()=>{document.body.dataset.theme=b.dataset.t;document.querySelectorAll('.theme-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');localStorage.setItem('kg-admin-theme',b.dataset.t);});});
+const st=localStorage.getItem('kg-admin-theme');if(st){document.body.dataset.theme=st;document.querySelectorAll('.theme-btn').forEach(b=>b.classList.toggle('active',b.dataset.t===st));}
+document.querySelectorAll('.nav-item').forEach(item=>{item.addEventListener('click',()=>{document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));item.classList.add('active');state.currentPage=item.dataset.page;renderPage();});});
+function toast(msg,type='success'){const el=document.createElement('div');el.className=`toast ${type}`;el.textContent=msg;document.getElementById('toast-root').appendChild(el);setTimeout(()=>el.remove(),3000);}
+function showModal(html){document.getElementById('modal-root').innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal">${html}</div></div>`;}
+function closeModal(){document.getElementById('modal-root').innerHTML='';}
+async function loadAll(){try{const[a,b,c,d,e,f]=await Promise.all([sb.from('kg_chart_languages').select('*').order('sort_order'),sb.from('kg_chart_topics').select('*').order('sort_order'),sb.from('kg_chart_vocabulary').select('*').order('sort_order'),sb.from('kg_chart_vocabulary_translations').select('*'),sb.from('kg_chart_topic_translations').select('*'),sb.from('kg_chart_quiz_sessions').select('*').order('created_at',{ascending:false}).limit(50)]);state.languages=a.data||[];state.topics=b.data||[];state.vocabulary=c.data||[];state.vocabTranslations=d.data||[];state.topicTranslations=e.data||[];state.quizSessions=f.data||[];document.getElementById('badge-lang').textContent=state.languages.length;document.getElementById('badge-topics').textContent=state.topics.length;document.getElementById('badge-vocab').textContent=state.vocabulary.length;renderPage();}catch(e){document.getElementById('content').innerHTML=`<div class="empty-state"><div class="icon">⚠️</div><p>Failed to connect: ${e.message}</p></div>`;}}
+function renderPage(){const t=document.getElementById('page-title'),a=document.getElementById('topbar-actions'),c=document.getElementById('content');switch(state.currentPage){case'languages':t.textContent='Languages';a.innerHTML=`<button class="btn btn-accent" onclick="editLanguage()">+ Add Language</button>`;renderLanguages(c);break;case'topics':t.textContent='Topics';a.innerHTML=`<button class="btn btn-accent" onclick="editTopic()">+ Add Topic</button>`;renderTopics(c);break;case'vocabulary':t.textContent='Vocabulary';a.innerHTML=`<button class="btn btn-accent" onclick="editVocab()">+ Add Item</button>`;renderVocabulary(c);break;case'translations':t.textContent='Vocabulary Translations';a.innerHTML='';renderTranslations(c);break;case'topic-translations':t.textContent='Topic Headers';a.innerHTML=`<button class="btn btn-accent" onclick="editTopicTranslation()">+ Add Header</button>`;renderTopicTranslations(c);break;case'chart-preview':t.textContent='Chart Preview';a.innerHTML='';renderChartPreview(c);break;case'quiz-stats':t.textContent='Quiz Stats';a.innerHTML='';renderQuizStats(c);break;}}
+function renderLanguages(el){if(!state.languages.length){el.innerHTML=`<div class="empty-state"><div class="icon">🌐</div><p>No languages yet</p></div>`;return;}el.innerHTML=`<table class="data-table"><thead><tr><th>Code</th><th>English Name</th><th>Native Name</th><th>Flag</th><th>Status</th><th>Order</th><th>Actions</th></tr></thead><tbody>${state.languages.map(l=>`<tr><td class="mono">${l.code}</td><td>${l.name_english||''}</td><td>${l.name_native||''}</td><td style="font-size:22px">${l.flag_emoji||''}</td><td><span class="status-dot ${l.is_active?'active':'inactive'}"></span>${l.is_active?'Active':'Inactive'}</td><td class="mono">${l.sort_order??''}</td><td><button class="btn btn-sm" onclick="editLanguage('${l.code}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="deleteLanguage('${l.code}')">Del</button></td></tr>`).join('')}</tbody></table>`;}
+function editLanguage(code){const l=code?state.languages.find(x=>x.code===code):{};const n=!code;showModal(`<h3><span class="accent-dot"></span>${n?'Add Language':'Edit Language'}</h3><div class="form-row"><div class="form-group"><label>Code</label><input id="f-code" value="${l.code||''}" ${n?'':'readonly style="opacity:0.5"'} placeholder="e.g. my, mr, zh"></div><div class="form-group"><label>Flag Emoji</label><input id="f-flag" value="${l.flag_emoji||''}" placeholder="🇲🇲"></div></div><div class="form-row"><div class="form-group"><label>English Name</label><input id="f-eng" value="${l.name_english||''}" placeholder="Burmese"></div><div class="form-group"><label>Native Name</label><input id="f-native" value="${l.name_native||''}" placeholder="မြန်မာ"></div></div><div class="form-row"><div class="form-group"><label>Sort Order</label><input id="f-order" type="number" value="${l.sort_order??0}"></div><div class="form-group"><label>Active</label><div id="f-active" class="toggle ${l.is_active!==false?'on':''}" onclick="this.classList.toggle('on')"></div></div></div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-accent" onclick="saveLanguage(${n})">Save</button></div>`);}
+async function saveLanguage(n){const d={code:document.getElementById('f-code').value.trim(),name_english:document.getElementById('f-eng').value.trim(),name_native:document.getElementById('f-native').value.trim(),flag_emoji:document.getElementById('f-flag').value.trim(),sort_order:parseInt(document.getElementById('f-order').value)||0,is_active:document.getElementById('f-active').classList.contains('on'),updated_at:new Date().toISOString()};if(!d.code){toast('Code is required','error');return;}if(n)d.created_at=new Date().toISOString();const{error}=n?await sb.from('kg_chart_languages').insert(d):await sb.from('kg_chart_languages').update(d).eq('code',d.code);if(error){toast(error.message,'error');return;}toast(n?'Language added':'Language updated');closeModal();await loadAll();}
+async function deleteLanguage(code){if(!confirm(`Delete language "${code}"?`))return;const{error}=await sb.from('kg_chart_languages').delete().eq('code',code);if(error){toast(error.message,'error');return;}toast('Language deleted');await loadAll();}
+function renderTopics(el){if(!state.topics.length){el.innerHTML=`<div class="empty-state"><div class="icon">📂</div><p>No topics yet</p></div>`;return;}el.innerHTML=`<table class="data-table"><thead><tr><th>ID</th><th>Icon</th><th>Image Folder</th><th>Order</th><th>Vocab Count</th><th>Actions</th></tr></thead><tbody>${state.topics.map(t=>{const c=state.vocabulary.filter(v=>v.topic_id===t.id).length;return`<tr><td class="mono">${t.id}</td><td style="font-size:28px">${t.icon||''}</td><td class="mono">${t.image_folder||''}</td><td class="mono">${t.sort_order??''}</td><td><span class="tag">${c} items</span></td><td><button class="btn btn-sm" onclick="editTopic('${t.id}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="deleteTopic('${t.id}')">Del</button></td></tr>`;}).join('')}</tbody></table>`;}
+function editTopic(id){const t=id?state.topics.find(x=>x.id===id):{};const n=!id;showModal(`<h3><span class="accent-dot"></span>${n?'Add Topic':'Edit Topic'}</h3><div class="form-row"><div class="form-group"><label>ID (slug)</label><input id="f-tid" value="${t.id||''}" ${n?'':'readonly style="opacity:0.5"'} placeholder="fruits, transport"></div><div class="form-group"><label>Icon</label><input id="f-ticon" value="${t.icon||''}" placeholder="🍎"></div></div><div class="form-row"><div class="form-group"><label>Image Folder</label><input id="f-tfolder" value="${t.image_folder||''}" placeholder="fruits/"></div><div class="form-group"><label>Sort Order</label><input id="f-torder" type="number" value="${t.sort_order??0}"></div></div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-accent" onclick="saveTopic(${n})">Save</button></div>`);}
+async function saveTopic(n){const d={id:document.getElementById('f-tid').value.trim(),icon:document.getElementById('f-ticon').value.trim(),image_folder:document.getElementById('f-tfolder').value.trim(),sort_order:parseInt(document.getElementById('f-torder').value)||0,updated_at:new Date().toISOString()};if(!d.id){toast('ID is required','error');return;}if(n)d.created_at=new Date().toISOString();const{error}=n?await sb.from('kg_chart_topics').insert(d):await sb.from('kg_chart_topics').update(d).eq('id',d.id);if(error){toast(error.message,'error');return;}toast(n?'Topic added':'Topic updated');closeModal();await loadAll();}
+async function deleteTopic(id){if(!confirm(`Delete topic "${id}"?`))return;const{error}=await sb.from('kg_chart_topics').delete().eq('id',id);if(error){toast(error.message,'error');return;}toast('Topic deleted');await loadAll();}
+function renderVocabulary(el){const to=state.topics.map(t=>`<option value="${t.id}">${t.icon} ${t.id}</option>`).join('');const f=state.vocabulary.filter(v=>{if(state.filters.topic&&v.topic_id!==state.filters.topic)return false;if(state.filters.search&&!v.english_text.toLowerCase().includes(state.filters.search.toLowerCase()))return false;return true;});el.innerHTML=`<div class="filter-bar"><select onchange="state.filters.topic=this.value;renderPage()"><option value="">All Topics</option>${to}</select><input type="text" placeholder="Search..." value="${state.filters.search}" oninput="state.filters.search=this.value;renderPage()"><span class="filter-count">${f.length} items</span></div>${f.length?`<table class="data-table"><thead><tr><th>Order</th><th>Topic</th><th>English</th><th>Image</th><th>Translations</th><th>Actions</th></tr></thead><tbody>${f.map(v=>{const tp=state.topics.find(t=>t.id===v.topic_id);const tc=state.vocabTranslations.filter(t=>t.vocabulary_id===v.id).length;return`<tr><td class="mono">${v.sort_order??''}</td><td>${tp?tp.icon:''} <span class="mono">${v.topic_id}</span></td><td><strong>${v.english_text}</strong></td><td class="mono" style="font-size:11px">${v.image_filename||'—'}</td><td><span class="tag">${tc} lang</span> <button class="btn btn-sm" onclick="manageTranslations('${v.id}')" style="margin-left:4px">✏️</button></td><td><button class="btn btn-sm" onclick="editVocab('${v.id}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="deleteVocab('${v.id}')">Del</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="empty-state"><div class="icon">📖</div><p>No vocabulary items match</p></div>`}`;}
+function editVocab(id){const v=id?state.vocabulary.find(x=>x.id===id):{};const n=!id;const to=state.topics.map(t=>`<option value="${t.id}" ${v.topic_id===t.id?'selected':''}>${t.icon} ${t.id}</option>`).join('');showModal(`<h3><span class="accent-dot"></span>${n?'Add Vocabulary':'Edit Vocabulary'}</h3><div class="form-group"><label>Topic</label><select id="f-vtopic"><option value="">Select...</option>${to}</select></div><div class="form-row"><div class="form-group"><label>English Text</label><input id="f-veng" value="${v.english_text||''}" placeholder="Apple"></div><div class="form-group"><label>Sort Order</label><input id="f-vorder" type="number" value="${v.sort_order??0}"></div></div><div class="form-group"><label>Image Filename</label><input id="f-vimg" value="${v.image_filename||''}" placeholder="apple.png"></div><div class="form-group"><label>Extra Data (JSON)</label><textarea id="f-vextra">${v.extra_data?JSON.stringify(v.extra_data,null,2):''}</textarea></div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-accent" onclick="saveVocab(${n},'${id||''}')">Save</button></div>`);}
+async function saveVocab(n,eid){let ex=null;const es=document.getElementById('f-vextra').value.trim();if(es){try{ex=JSON.parse(es);}catch{toast('Invalid JSON','error');return;}}const d={topic_id:document.getElementById('f-vtopic').value,english_text:document.getElementById('f-veng').value.trim(),sort_order:parseInt(document.getElementById('f-vorder').value)||0,image_filename:document.getElementById('f-vimg').value.trim()||null,extra_data:ex,updated_at:new Date().toISOString()};if(!d.topic_id||!d.english_text){toast('Topic and English text required','error');return;}if(n)d.created_at=new Date().toISOString();const{error}=n?await sb.from('kg_chart_vocabulary').insert(d):await sb.from('kg_chart_vocabulary').update(d).eq('id',eid);if(error){toast(error.message,'error');return;}toast(n?'Vocabulary added':'Vocabulary updated');closeModal();await loadAll();}
+async function deleteVocab(id){const v=state.vocabulary.find(x=>x.id===id);if(!confirm(`Delete "${v?.english_text}"?`))return;const{error}=await sb.from('kg_chart_vocabulary').delete().eq('id',id);if(error){toast(error.message,'error');return;}toast('Deleted');await loadAll();}
+function renderTranslations(el){const to=state.topics.map(t=>`<option value="${t.id}">${t.icon} ${t.id}</option>`).join('');const lo=state.languages.map(l=>`<option value="${l.code}">${l.flag_emoji} ${l.name_english}</option>`).join('');const f=state.vocabulary.filter(v=>!state.filters.topic||v.topic_id===state.filters.topic);el.innerHTML=`<div class="filter-bar"><select onchange="state.filters.topic=this.value;renderPage()"><option value="">All Topics</option>${to}</select><select onchange="state.filters.language=this.value;renderPage()"><option value="">All Languages</option>${lo}</select></div><table class="data-table"><thead><tr><th>English</th><th>Language</th><th>Native</th><th>Devanagari</th><th>Pinyin</th><th>Actions</th></tr></thead><tbody>${f.flatMap(v=>{let tr=state.vocabTranslations.filter(t=>t.vocabulary_id===v.id);if(state.filters.language)tr=tr.filter(t=>t.language_code===state.filters.language);if(!tr.length)return[`<tr><td>${v.english_text}</td><td colspan="4" style="color:var(--text-muted)">No translations</td><td><button class="btn btn-sm" onclick="manageTranslations('${v.id}')">Add</button></td></tr>`];return tr.map(t=>{const lg=state.languages.find(l=>l.code===t.language_code);return`<tr><td><strong>${v.english_text}</strong></td><td>${lg?.flag_emoji||''} <span class="mono">${t.language_code}</span></td><td>${t.native_text||'—'}</td><td style="color:var(--devanagari-color)">${t.devanagari||'—'}</td><td class="mono">${t.pinyin||'—'}</td><td><button class="btn btn-sm" onclick="manageTranslations('${v.id}')">Edit</button></td></tr>`;});}).join('')}</tbody></table>`;}
+function manageTranslations(vid){const v=state.vocabulary.find(x=>x.id===vid);const ex=state.vocabTranslations.filter(t=>t.vocabulary_id===vid);const rows=state.languages.map(l=>{const t=ex.find(e=>e.language_code===l.code)||{};return`<div class="lang-card"><div class="lang-header">${l.flag_emoji} ${l.name_english} <span class="code">(${l.code})</span></div><div class="form-row"><div class="form-group"><label>Native Text</label><input id="ft-${l.code}-native" value="${t.native_text||''}" style="font-size:16px"></div><div class="form-group"><label>Devanagari</label><input id="ft-${l.code}-dev" value="${t.devanagari||''}" style="font-size:16px;color:var(--devanagari-color)"></div></div><div class="form-row"><div class="form-group"><label>Pinyin</label><input id="ft-${l.code}-pinyin" value="${t.pinyin||''}"></div><div class="form-group"><label>Notes</label><input id="ft-${l.code}-notes" value="${t.notes||''}"></div></div></div>`;}).join('');showModal(`<h3><span class="accent-dot"></span>Translations: ${v.english_text}</h3><div style="max-height:55vh;overflow-y:auto;padding-right:4px;">${rows}</div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-accent" onclick="saveAllTranslations('${vid}')">Save All</button></div>`);}
+async function saveAllTranslations(vid){const ex=state.vocabTranslations.filter(t=>t.vocabulary_id===vid);let errs=0;for(const l of state.languages){const nt=document.getElementById(`ft-${l.code}-native`)?.value.trim()||null;const dv=document.getElementById(`ft-${l.code}-dev`)?.value.trim()||null;const py=document.getElementById(`ft-${l.code}-pinyin`)?.value.trim()||null;const no=document.getElementById(`ft-${l.code}-notes`)?.value.trim()||null;if(!nt&&!dv&&!py)continue;const has=ex.find(e=>e.language_code===l.code);const d={vocabulary_id:vid,language_code:l.code,native_text:nt,devanagari:dv,pinyin:py,notes:no,updated_at:new Date().toISOString()};const{error}=has?await sb.from('kg_chart_vocabulary_translations').update(d).eq('vocabulary_id',vid).eq('language_code',l.code):await sb.from('kg_chart_vocabulary_translations').insert({...d,created_at:new Date().toISOString()});if(error){console.error(error);errs++;}}if(errs)toast(`Saved with ${errs} error(s)`,'error');else toast('All translations saved');closeModal();await loadAll();}
+function renderTopicTranslations(el){if(!state.topicTranslations.length){el.innerHTML=`<div class="empty-state"><div class="icon">🏷️</div><p>No topic headers yet</p></div>`;return;}el.innerHTML=`<table class="data-table"><thead><tr><th>Topic</th><th>Language</th><th>Title (Native)</th><th>Question (English)</th><th>Actions</th></tr></thead><tbody>${state.topicTranslations.map(tt=>{const tp=state.topics.find(t=>t.id===tt.topic_id);const lg=state.languages.find(l=>l.code===tt.language_code);return`<tr><td>${tp?.icon||''} <span class="mono">${tt.topic_id}</span></td><td>${lg?.flag_emoji||''} <span class="mono">${tt.language_code}</span></td><td>${tt.title_native||'—'}</td><td>${tt.question_english||'—'}</td><td><button class="btn btn-sm" onclick="editTopicTranslation('${tt.topic_id}','${tt.language_code}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="deleteTopicTranslation('${tt.topic_id}','${tt.language_code}')">Del</button></td></tr>`;}).join('')}</tbody></table>`;}
+function editTopicTranslation(tid,lc){const tt=(tid&&lc)?state.topicTranslations.find(t=>t.topic_id===tid&&t.language_code===lc):{};const n=!tid;const to=state.topics.map(t=>`<option value="${t.id}" ${tt.topic_id===t.id?'selected':''}>${t.icon} ${t.id}</option>`).join('');const lo=state.languages.map(l=>`<option value="${l.code}" ${tt.language_code===l.code?'selected':''}>${l.flag_emoji} ${l.name_english}</option>`).join('');showModal(`<h3><span class="accent-dot"></span>${n?'Add Topic Header':'Edit Topic Header'}</h3><div class="form-row"><div class="form-group"><label>Topic</label><select id="f-tt-topic" ${n?'':'disabled style="opacity:0.5"'}><option value="">Select...</option>${to}</select></div><div class="form-group"><label>Language</label><select id="f-tt-lang" ${n?'':'disabled style="opacity:0.5"'}><option value="">Select...</option>${lo}</select></div></div><div class="form-group"><label>Title (Native)</label><input id="f-tt-title" value="${tt.title_native||''}" style="font-size:16px"></div><div class="form-group"><label>Title (Devanagari)</label><input id="f-tt-dev" value="${tt.title_devanagari||''}" style="font-size:16px;color:var(--devanagari-color)"></div><div class="form-group"><label>Question (English)</label><input id="f-tt-qeng" value="${tt.question_english||''}" placeholder="What is your favorite fruit?"></div><div class="form-group"><label>Question (Native)</label><input id="f-tt-qnat" value="${tt.question_native||''}" style="font-size:16px;color:var(--question-color)"></div><div class="form-group"><label>Question (Devanagari)</label><input id="f-tt-qdev" value="${tt.question_devanagari||''}" style="font-size:16px;color:var(--question-color)"></div><div class="form-group"><label>Pinyin</label><input id="f-tt-pinyin" value="${tt.pinyin||''}"></div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-accent" onclick="saveTopicTranslation(${n},'${tid||''}','${lc||''}')">Save</button></div>`);}
+async function saveTopicTranslation(n,ot,ol){const d={topic_id:document.getElementById('f-tt-topic').value,language_code:document.getElementById('f-tt-lang').value,title_native:document.getElementById('f-tt-title').value.trim()||null,title_devanagari:document.getElementById('f-tt-dev').value.trim()||null,question_english:document.getElementById('f-tt-qeng').value.trim()||null,question_native:document.getElementById('f-tt-qnat').value.trim()||null,question_devanagari:document.getElementById('f-tt-qdev').value.trim()||null,pinyin:document.getElementById('f-tt-pinyin').value.trim()||null,updated_at:new Date().toISOString()};if(!d.topic_id||!d.language_code){toast('Topic and Language required','error');return;}if(n)d.created_at=new Date().toISOString();const{error}=n?await sb.from('kg_chart_topic_translations').insert(d):await sb.from('kg_chart_topic_translations').update(d).eq('topic_id',ot).eq('language_code',ol);if(error){toast(error.message,'error');return;}toast('Saved');closeModal();await loadAll();}
+async function deleteTopicTranslation(tid,lc){if(!confirm('Delete this topic header?'))return;await sb.from('kg_chart_topic_translations').delete().eq('topic_id',tid).eq('language_code',lc);toast('Deleted');await loadAll();}
+function renderChartPreview(el){const to=state.topics.map(t=>`<option value="${t.id}" ${state.filters.topic===t.id?'selected':''}>${t.icon} ${t.id}</option>`).join('');const st2=state.filters.topic||(state.topics[0]?.id||'');const vs=state.vocabulary.filter(v=>v.topic_id===st2);const ti=state.topics.find(t=>t.id===st2);const al=state.languages.filter(l=>l.is_active);const tts=state.topicTranslations.filter(tt=>tt.topic_id===st2);let hdr='';if(ti&&tts.length){const ft=tts[0];hdr=`<div class="chart-header"><div class="chart-header-grid"><div class="chart-header-icon">${ti.icon||'📦'}</div><div class="chart-header-cell"><div style="font-size:20px;font-weight:700">${ft.title_native||''}</div><div style="color:var(--devanagari-color);margin-top:4px">${ft.title_devanagari||''}</div></div><div class="chart-header-cell" style="background:var(--bg-tertiary)"><div style="font-weight:500;color:var(--text-secondary)">${ft.question_english||''}</div></div><div class="chart-header-cell"><div style="font-size:13px;color:var(--question-color)">${ft.question_native||''}</div><div style="font-size:12px;color:var(--question-color);opacity:0.7;margin-top:2px">${ft.question_devanagari||''}</div></div></div></div>`;}let ct='';if(state.chartViewMode==='grid'){ct=`<div class="chart-grid">${vs.map(v=>{const tr=state.vocabTranslations.filter(t=>t.vocabulary_id===v.id);const iu=getImageUrl(v.topic_id,v.image_filename);const cc=v.extra_data?.colorCode;return`<div class="chart-card"><div class="img-area">${cc?`<div style="width:56px;height:56px;border-radius:12px;background:${cc};box-shadow:inset 0 2px 6px rgba(0,0,0,0.15)"></div>`:(v.image_filename?`<img src="${iu}" style="max-width:100%;max-height:100%;object-fit:contain" onerror="this.outerHTML='<span style=font-size:44px>📷</span>'">`:`${ti?.icon||'📷'}`)}</div><div class="text-area">${tr.map(t=>`<div class="native-text">${t.native_text||''}</div>${t.devanagari?`<div class="dev-text">${t.devanagari}</div>`:''}${t.pinyin?`<div class="pinyin-text">${t.pinyin}</div>`:''}`).join('')}<div class="eng-text">${v.english_text}</div></div></div>`;}).join('')}</div>`;}else{ct=`<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>#</th><th>Image</th><th>English</th>${al.map(l=>`<th>${l.flag_emoji} ${l.code}</th>`).join('')}</tr></thead><tbody>${vs.map((v,i)=>{const iu=getImageUrl(v.topic_id,v.image_filename);const cc=v.extra_data?.colorCode;return`<tr><td class="mono">${i+1}</td><td style="width:48px">${cc?`<div style="width:32px;height:32px;border-radius:6px;background:${cc}"></div>`:(v.image_filename?`<img src="${iu}" style="width:32px;height:32px;object-fit:contain" onerror="this.outerHTML='📷'">`:'—')}</td><td><strong>${v.english_text}</strong></td>${al.map(l=>{const t=state.vocabTranslations.find(tr=>tr.vocabulary_id===v.id&&tr.language_code===l.code);return`<td>${t?`${t.native_text||''}${t.devanagari?`<br><small style="color:var(--devanagari-color)">${t.devanagari}</small>`:''}`:'<span style="color:var(--text-muted)">—</span>'}</td>`;}).join('')}</tr>`;}).join('')}</tbody></table></div>`;}el.innerHTML=`<div class="filter-bar"><select onchange="state.filters.topic=this.value;renderPage()"><option value="">Select Topic</option>${to}</select><div class="tabs"><div class="tab ${state.chartViewMode==='grid'?'active':''}" onclick="state.chartViewMode='grid';renderPage()">⊞ Grid</div><div class="tab ${state.chartViewMode==='table'?'active':''}" onclick="state.chartViewMode='table';renderPage()">☰ Table</div></div><span class="filter-count">${vs.length} items</span></div>${vs.length?hdr+ct:`<div class="empty-state"><div class="icon">${ti?.icon||'📊'}</div><p>Select a topic to preview</p></div>`}`;}
+function renderQuizStats(el){if(!state.quizSessions.length){el.innerHTML=`<div class="empty-state"><div class="icon">🧠</div><p>No quiz sessions yet</p></div>`;return;}el.innerHTML=`<p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Showing last ${state.quizSessions.length} sessions (read-only)</p><table class="data-table"><thead><tr><th>Date</th><th>Language</th><th>Topic</th><th>Type</th><th>Score</th><th>Time</th></tr></thead><tbody>${state.quizSessions.map(s=>{const lg=state.languages.find(l=>l.code===s.language_code);const p=s.total_questions?Math.round((s.correct_answers/s.total_questions)*100):0;return`<tr><td class="mono" style="font-size:11px">${new Date(s.created_at).toLocaleDateString()}</td><td>${lg?.flag_emoji||''} ${s.language_code||''}</td><td class="mono">${s.topic_id||'—'}</td><td><span class="tag">${s.quiz_type||'—'}</span></td><td><strong style="color:${p>=80?'var(--success)':p>=50?'var(--warning)':'var(--danger)'}">${s.correct_answers}/${s.total_questions}</strong> (${p}%)</td><td class="mono">${s.time_spent_seconds?`${s.time_spent_seconds}s`:'—'}</td></tr>`;}).join('')}</tbody></table>`;}
+loadAll();
+</script>
+</body>
+</html>
