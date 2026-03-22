@@ -302,7 +302,7 @@ function render(){
     case'translations':t.textContent='Vocabulary Translations';a.innerHTML=`<button class="btn" onclick="exportTrans('csv')">⬇ CSV</button><button class="btn" onclick="exportTrans('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderTrans(c);break;
     case'topic-translations':t.textContent='Topic Headers';a.innerHTML=`<button class="btn" onclick="exportTT('csv')">⬇ CSV</button><button class="btn" onclick="exportTT('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('tt')">⬆ Import</button><button class="btn btn-accent" onclick="editTT()">+ Add</button>`;renderTT(c);break;
     case'chart-preview':t.textContent='Chart Preview';a.innerHTML='';renderChart(c);break;
-    case'flags':t.textContent='Flags';a.innerHTML=`<button class="btn btn-accent" onclick="runConverterScan()">🔍 Scan Conversions</button>`;renderFlags(c);break;
+    case'flags':t.textContent='Flags';a.innerHTML=`<button class="btn" onclick="exportFlags('csv')">⬇ CSV</button><button class="btn" onclick="exportFlags('json')">⬇ JSON</button><button class="btn btn-accent" onclick="runConverterScan()">🔍 Scan Conversions</button>`;renderFlags(c);break;
     case'quiz-stats':t.textContent='Quiz Stats';a.innerHTML='';renderQuiz(c);break;
   }
 }
@@ -552,6 +552,53 @@ async function resolveFlag(id,status){
   const{error}=await sb.from('kg_chart_flags').update(d).eq('id',id);
   if(error){toast(error.message,'error');return;}
   toast(status==='open'?'Reopened':(status==='resolved'?'Resolved':'Dismissed'));await loadAll();
+}
+
+// ===== FLAGS EXPORT =====
+async function exportFlags(fmt) {
+  const filtered = S.flags.filter(f => !S.filters.flagStatus || f.status === S.filters.flagStatus);
+  if (!filtered.length) { toast('No flags to export', 'error'); return; }
+
+  // Try to load converters for each language in the flags
+  const langCodes = [...new Set(filtered.map(f => f.language_code).filter(Boolean))];
+  for (const lc of langCodes) {
+    if (!loadedConverters[lc] && SCRIPT_RANGES[lc]?.file) {
+      try { await loadConverterJS(lc); } catch(e) { console.warn(`Could not load converter for ${lc}:`, e.message); }
+    }
+  }
+
+  const rows = filtered.map(f => {
+    const v = S.vocabulary.find(x => x.id === f.vocabulary_id);
+    const t = S.vocabTrans.find(tr => tr.vocabulary_id === f.vocabulary_id && tr.language_code === f.language_code);
+    const converter = loadedConverters[f.language_code];
+    let generatedDev = '';
+    if (converter && t?.native_text) {
+      const src = converter.usePronunciation ? (t.pinyin || t.native_text) : t.native_text;
+      generatedDev = converter.toDevanagari(src);
+    }
+    const leaked = generatedDev ? findLeakedChars(generatedDev, f.language_code) : [];
+    return {
+      english_text: v?.english_text || '',
+      topic_id: v?.topic_id || '',
+      language_code: f.language_code || '',
+      native_text: t?.native_text || '',
+      generated_devanagari: generatedDev,
+      leaked_characters: leaked.join(' '),
+      leaked_unicode: leaked.map(ch => 'U+' + ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')).join(' '),
+      flag_reason: f.reason,
+      flag_notes: f.notes || '',
+      flag_status: f.status,
+      image_filename: v?.image_filename || ''
+    };
+  });
+
+  const headers = ['english_text','topic_id','language_code','native_text','generated_devanagari','leaked_characters','leaked_unicode','flag_reason','flag_notes','flag_status','image_filename'];
+  if (fmt === 'csv') {
+    downloadFile(`kg_flags_${S.filters.flagStatus || 'all'}.csv`, toCSV(headers, rows), 'text/csv');
+  } else {
+    downloadFile(`kg_flags_${S.filters.flagStatus || 'all'}.json`, JSON.stringify(rows, null, 2), 'application/json');
+  }
+  toast(`Exported ${rows.length} flags as ${fmt.toUpperCase()}`);
 }
 
 // ===== CONVERTER QUALITY SCANNER =====
@@ -841,6 +888,7 @@ async function executeScan() {
       <button class="btn" onclick="closeModal()">Close</button>
       ${issues.length > 0 ? `<button class="btn btn-accent" onclick="createScanFlags('${langCode}')">🚩 Create ${issues.length} Flag${issues.length > 1 ? 's' : ''}</button>` : ''}
       ${uniqueLeaked.length > 0 ? `<button class="btn" onclick="copyScanChars()">📋 Copy Unmapped Chars</button>` : ''}
+      ${issues.length > 0 ? `<button class="btn" onclick="exportScanResults('csv')">⬇ Export CSV</button><button class="btn" onclick="exportScanResults('json')">⬇ Export JSON</button>` : ''}
     </div>
     <div id="scan-data" style="display:none">${JSON.stringify(issues)}</div>
     <div id="scan-chars" style="display:none">${uniqueLeaked.join(' ')}</div>
@@ -887,6 +935,31 @@ function copyScanChars() {
   const el = document.getElementById('scan-chars');
   if (!el) return;
   navigator.clipboard.writeText(el.textContent).then(() => toast('Copied to clipboard'));
+}
+
+function exportScanResults(fmt) {
+  const dataEl = document.getElementById('scan-data');
+  if (!dataEl) return;
+  const issues = JSON.parse(dataEl.textContent);
+  if (!issues.length) { toast('No data to export', 'error'); return; }
+
+  const rows = issues.map(i => ({
+    english_text: i.english,
+    topic_id: i.topic,
+    native_text: i.native,
+    generated_devanagari: i.generatedDev,
+    leaked_characters: i.leaked.join(' '),
+    leaked_unicode: i.leaked.map(ch => 'U+' + ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')).join(' '),
+    issue_type: i.type
+  }));
+
+  if (fmt === 'csv') {
+    const headers = ['english_text', 'topic_id', 'native_text', 'generated_devanagari', 'leaked_characters', 'leaked_unicode', 'issue_type'];
+    downloadFile(`scan_results_${issues[0]?.langCode || 'lang'}.csv`, toCSV(headers, rows), 'text/csv');
+  } else {
+    downloadFile(`scan_results_${issues[0]?.langCode || 'lang'}.json`, JSON.stringify(rows, null, 2), 'application/json');
+  }
+  toast(`Exported ${rows.length} items as ${fmt.toUpperCase()}`);
 }
 
 // ===== QUIZ STATS =====
