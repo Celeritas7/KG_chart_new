@@ -6,7 +6,7 @@ const burmese = {
     fontClass: 'burmese',
     fontFamily: 'Noto Sans Myanmar',
     
-    // Basic Consonants (K, S, T, P Groups) + Independent Vowels
+    // Basic Consonants (K, S, T, P Groups)
     consonants: [
         { char: 'က', roman: 'ka', devanagari: 'क' },
         { char: 'ခ', roman: 'kha', devanagari: 'ख' },
@@ -22,8 +22,7 @@ const burmese = {
         { char: 'ဂျ', roman: 'gya', devanagari: 'ज' },
         { char: 'ဈ', roman: 'jha', devanagari: 'झ' },
         { char: 'ဂြ', roman: 'gra', devanagari: 'झ' },
-        { char: 'ဉ ', roman: 'nya', devanagari: 'ञ' },     // with trailing space (original)
-        { char: 'ဉ', roman: 'nya', devanagari: 'ञ' },      // FIX: without space — was leaking as U+1009
+        { char: 'ဉ ', roman: 'nya', devanagari: 'ञ' },
         { char: 'ည', roman: 'nyya', devanagari: 'ञ' },
         { char: 'ဋ', roman: 'ṭa', devanagari: 'ट' },
         { char: 'ဌ', roman: 'ṭha', devanagari: 'ठ' },
@@ -32,7 +31,7 @@ const burmese = {
         { char: 'ဏ', roman: 'ṇa', devanagari: 'ण' },
         { char: 'တ', roman: 'ta', devanagari: 'त' },
         { char: 'ထ', roman: 'tha', devanagari: 'थ' },
-        { char: 'သ', roman: 'sa', devanagari: 'थ' },
+        { char: 'သ', roman: 'sa', devanagari: 'थ' }, // Mapping based on your provided update
         { char: 'ဒ', roman: 'da', devanagari: 'द' },
         { char: 'ဓ', roman: 'dha', devanagari: 'ध' },
         { char: 'န', roman: 'na', devanagari: 'न' },
@@ -46,20 +45,12 @@ const burmese = {
         { char: 'လ', roman: 'la', devanagari: 'ल' },
         { char: 'ဝ', roman: 'wa', devanagari: 'व' },
         { char: 'ရှ', roman: 'sha', devanagari: 'श' },
-        { char: 'စ', roman: 'ca', devanagari: 'स' },
+        { char: 'စ', roman: 'ca', devanagari: 'स' }, // S-Group adjustment based on your list
         { char: 'ဆ', roman: 'cha', devanagari: 'स' },
         { char: 'ဿ', roman: 'ssa', devanagari: 'स्स' },
         { char: 'ဟ', roman: 'ha', devanagari: 'ह' },
         { char: 'ဠ', roman: 'ḷa', devanagari: 'ळ' },
-        { char: 'အ', roman: 'a', devanagari: 'अ' },
-        // === Independent Vowels (FIX: were missing, causing leaks) ===
-        { char: 'ဥ', roman: 'u', devanagari: 'उ' },       // U+1025 — leaked in Egg, Yogurt, Carrot, Vinegar
-        { char: 'ဦ', roman: 'ū', devanagari: 'ऊ' },       // U+1026 — leaked in Head, Spring, Autumn, Winter
-        { char: 'ဧ', roman: 'e', devanagari: 'ए' },       // U+1027 — leaked in April
-        { char: 'ဣ', roman: 'i', devanagari: 'इ' },       // U+1023 — independent i (preemptive)
-        { char: 'ဤ', roman: 'ī', devanagari: 'ई' },       // U+1024 — independent ii (preemptive)
-        { char: 'ဩ', roman: 'o', devanagari: 'ओ' },       // U+1029 — independent o (preemptive)
-        { char: 'ဪ', roman: 'au', devanagari: 'औ' },      // U+102A — independent au (preemptive)
+        { char: 'အ', roman: 'a', devanagari: 'अ' }
     ],
 
     // Vowel signs (dependent vowels/matras)
@@ -88,12 +79,8 @@ const burmese = {
     finals: [
         { char: '်', roman: '', devanagari: '्', name: 'asat/virama' },
         { char: 'ံ', roman: 'ṃ', devanagari: 'ं', name: 'anusvara' },
-        { char: '့', roman: '', devanagari: '\u200B', name: 'dot-below' },  // FIX: U+1037 — map to zero-width space (consumed but invisible). Was '' which left the Myanmar char in output.
-        { char: 'း', roman: 'ḥ', devanagari: 'ः', name: 'visarga' },
-        // === FIX: Missing markers ===
-        { char: '္', roman: '', devanagari: '्', name: 'stacked/virama' }, // U+1039 — stacked consonant marker → Devanagari virama. Leaked in Orange, Taxi, etc.
-        { char: '။', roman: '.', devanagari: '।', name: 'fullstop' },      // U+104B — Myanmar full stop → Devanagari danda. Leaked in 17 sentence-type words.
-        { char: '၊', roman: ',', devanagari: ',', name: 'comma' },          // U+104A — Myanmar comma (preemptive)
+        { char: '့', roman: '', devanagari: '', name: 'visarga-like' },
+        { char: 'း', roman: 'ḥ', devanagari: 'ः', name: 'visarga' }
     ],
 
     // Common combined forms (for more accurate conversion)
@@ -119,20 +106,7 @@ const burmese = {
         { char: 'င်', roman: 'ng', devanagari: 'ं' },
         { char: 'င်္', roman: 'ng', devanagari: 'ं' },
         { char: 'ွန်', roman: 'un', devanagari: 'ुन', name: 'un' },
-        { char: 'ုန်', roman: 'on', devanagari: 'ोन', name: 'on' },
-        // === FIX: Stacked consonant combinations (္ + consonant) ===
-        { char: '္မ', roman: 'mma', devanagari: '्म', name: 'stacked-ma' },  // For လိမ္မော် (Orange)
-        { char: '္က', roman: 'kka', devanagari: '्क', name: 'stacked-ka' },  // For တက္ကစီ (Taxi)
-        { char: '္စ', roman: 'cca', devanagari: '्स', name: 'stacked-ca' },
-        { char: '္ခ', roman: 'kkha', devanagari: '्ख', name: 'stacked-kha' },
-        { char: '္ဂ', roman: 'gga', devanagari: '्ग', name: 'stacked-ga' },
-        { char: '္တ', roman: 'tta', devanagari: '्त', name: 'stacked-ta' },
-        { char: '္ဒ', roman: 'dda', devanagari: '्द', name: 'stacked-da' },
-        { char: '္ပ', roman: 'ppa', devanagari: '्प', name: 'stacked-pa' },
-        { char: '္ဗ', roman: 'bba', devanagari: '्ब', name: 'stacked-ba' },
-        { char: '္န', roman: 'nna', devanagari: '्न', name: 'stacked-na' },
-        { char: '္လ', roman: 'lla', devanagari: '्ल', name: 'stacked-la' },
-        { char: '္သ', roman: 'ssa', devanagari: '्थ', name: 'stacked-sa' },
+        { char: 'ုန်', roman: 'on', devanagari: 'ोन', name: 'on' }
     ],
 
     hasDevanagari: true
