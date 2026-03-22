@@ -69,27 +69,7 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color: var(--text-primary); display: flex; height: 100vh; overflow: hidden; transition: background var(--transition), color var(--transition); }
 ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
-.sidebar { width: 250px; min-width: 250px; background: var(--sidebar-bg); border-right: 1px solid var(--border); display: flex; flex-direction: column; transition: background var(--transition), border var(--transition), transform 0.3s ease; z-index: 50; }
-.sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 40; }
-.hamburger { display: none; width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-tertiary); color: var(--text-primary); font-size: 20px; cursor: pointer; align-items: center; justify-content: center; transition: all var(--transition); flex-shrink: 0; }
-.hamburger:hover { background: var(--bg-hover); }
-@media (max-width: 768px) {
-  .sidebar { position: fixed; left: 0; top: 0; bottom: 0; transform: translateX(-100%); box-shadow: var(--shadow-lg); }
-  .sidebar.open { transform: translateX(0); }
-  .sidebar-overlay.open { display: block; }
-  .hamburger { display: flex; }
-  .topbar { padding: 14px 16px; }
-  .topbar h2 { font-size: 18px; }
-  .content { padding: 16px; }
-  .filter-bar { gap: 8px; }
-  .topbar-actions { gap: 4px; }
-  .topbar-actions .btn { padding: 6px 10px; font-size: 12px; }
-  .modal { width: 95%; padding: 20px; max-height: 90vh; }
-  .form-row { flex-direction: column; gap: 0; }
-  .chart-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
-  .chart-header-grid { grid-template-columns: 1fr; }
-  .chart-header-icon { padding: 16px; min-width: auto; }
-}
+.sidebar { width: 250px; min-width: 250px; background: var(--sidebar-bg); border-right: 1px solid var(--border); display: flex; flex-direction: column; transition: background var(--transition), border var(--transition); z-index: 10; }
 .sidebar-header { padding: 20px; background: var(--sidebar-header-bg); color: #fff; }
 .sidebar-header .logo-row { display: flex; align-items: center; gap: 12px; }
 .sidebar-header .logo-icon { width: 42px; height: 42px; background: rgba(255,255,255,0.2); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; }
@@ -114,8 +94,8 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
 .theme-btn[data-t="clean-minimal"] { background: linear-gradient(135deg, #fafafa 50%, #111111 50%); }
 .theme-btn[data-t="neon-vapor"] { background: linear-gradient(135deg, #0f0e17 50%, #e53170 50%); }
 .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-.topbar { padding: 18px 28px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--bg-secondary); transition: background var(--transition); }
-.topbar h2 { font-family: 'Playfair Display', serif; font-size: 22px; font-weight: 700; flex: 1; min-width: 0; }
+.topbar { padding: 18px 28px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; background: var(--bg-secondary); transition: background var(--transition); }
+.topbar h2 { font-family: 'Playfair Display', serif; font-size: 22px; font-weight: 700; }
 .topbar-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .content { flex: 1; overflow-y: auto; padding: 24px 28px; }
 .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-tertiary); color: var(--text-primary); font-size: 13px; font-weight: 500; cursor: pointer; transition: all var(--transition); font-family: 'DM Sans', sans-serif; }
@@ -198,8 +178,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
 </style>
 </head>
 <body data-theme="jade">
-<div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
-<aside class="sidebar" id="sidebar">
+<aside class="sidebar">
   <div class="sidebar-header">
     <div class="logo-row">
       <div class="logo-icon">📚</div>
@@ -232,7 +211,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
   </div>
 </aside>
 <div class="main">
-  <div class="topbar"><button class="hamburger" onclick="toggleSidebar()">☰</button><h2 id="page-title">Languages</h2><div class="topbar-actions" id="topbar-actions"></div></div>
+  <div class="topbar"><h2 id="page-title">Languages</h2><div class="topbar-actions" id="topbar-actions"></div></div>
   <div class="content" id="content"><div class="spinner-wrap"><div class="spinner"></div> Connecting to Supabase...</div></div>
 </div>
 <div id="modal-root"></div>
@@ -252,18 +231,8 @@ let S={languages:[],topics:[],vocabulary:[],vocabTrans:[],topicTrans:[],quizSess
 document.querySelectorAll('.theme-btn').forEach(b=>{b.addEventListener('click',()=>{document.body.dataset.theme=b.dataset.t;document.querySelectorAll('.theme-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');localStorage.setItem('kg-admin-theme',b.dataset.t);});});
 const st=localStorage.getItem('kg-admin-theme');if(st){document.body.dataset.theme=st;document.querySelectorAll('.theme-btn').forEach(b=>b.classList.toggle('active',b.dataset.t===st));}
 
-// Sidebar toggle for mobile
-function toggleSidebar(){
-  document.getElementById('sidebar').classList.toggle('open');
-  document.getElementById('sidebar-overlay').classList.toggle('open');
-}
-
 // Nav
-document.querySelectorAll('.nav-item').forEach(item=>{item.addEventListener('click',()=>{document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));item.classList.add('active');S.page=item.dataset.page;render();
-  // Close sidebar on mobile after nav
-  document.getElementById('sidebar').classList.remove('open');
-  document.getElementById('sidebar-overlay').classList.remove('open');
-});});
+document.querySelectorAll('.nav-item').forEach(item=>{item.addEventListener('click',()=>{document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));item.classList.add('active');S.page=item.dataset.page;render();});});
 
 function toast(m,t='success'){const e=document.createElement('div');e.className=`toast ${t}`;e.textContent=m;document.getElementById('toast-root').appendChild(e);setTimeout(()=>e.remove(),3000);}
 function showModal(h){document.getElementById('modal-root').innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal">${h}</div></div>`;}
