@@ -772,15 +772,22 @@
       );
     }
 
-    function VocabCard({ item, topicId, rating, onRate, onClick, showEnglish, fontClass }) {
+    function VocabCard({ item, topicId, rating, onRate, onClick, showEnglish, fontClass, flagMode }) {
       const [imageError, setImageError] = useState(false);
       const currentRating = getRatingById(rating);
       const colorCode = item.extra_data?.colorCode;
 
       return (
         <div onClick={onClick}
-          className="bg-white rounded-xl shadow-md hover:shadow-xl transition-all cursor-pointer group relative overflow-hidden border border-gray-100">
-          {currentRating && (
+          className={`bg-white rounded-xl shadow-md hover:shadow-xl transition-all cursor-pointer group relative overflow-hidden ${
+            flagMode ? 'border-2 border-dashed border-red-300 hover:border-red-500' : 'border border-gray-100'
+          }`}>
+          {flagMode && (
+            <div className="absolute top-2 left-2 w-7 h-7 rounded-full bg-red-500 text-white text-sm flex items-center justify-center z-10 shadow-md animate-pulse">
+              🚩
+            </div>
+          )}
+          {currentRating && !flagMode && (
             <div className={`absolute top-2 right-2 w-7 h-7 rounded-full ${currentRating.color} text-white text-sm flex items-center justify-center z-10 shadow-md`}>
               {currentRating.emoji}
             </div>
@@ -812,6 +819,7 @@
             )}
           </div>
 
+          {!flagMode && (
           <div className="absolute bottom-0 left-0 right-0 bg-white/95 border-t border-gray-200 p-2 opacity-0 group-hover:opacity-100 transition-opacity">
             <div className="flex justify-center gap-1">
               {RATINGS.map((r) => (
@@ -822,6 +830,7 @@
               ))}
             </div>
           </div>
+          )}
         </div>
       );
     }
@@ -968,6 +977,7 @@
     function ChartView({ topic, vocabulary, ratings, onRate, languageCode, showEnglish, onToggleEnglish }) {
       const [selectedItem, setSelectedItem] = useState(null);
       const [flagItem, setFlagItem] = useState(null);
+      const [flagMode, setFlagMode] = useState(false);
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
 
       if (!topic) {
@@ -1002,18 +1012,34 @@
           </div>
 
           <div className="flex items-center justify-between mb-4 bg-white rounded-xl p-3 shadow-sm">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={showEnglish} onChange={(e) => onToggleEnglish(e.target.checked)}
-                className="w-5 h-5 rounded border-gray-300 text-jade-600" />
-              <span className="text-sm text-gray-700 font-medium">Show English</span>
-            </label>
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={showEnglish} onChange={(e) => onToggleEnglish(e.target.checked)}
+                  className="w-5 h-5 rounded border-gray-300 text-jade-600" />
+                <span className="text-sm text-gray-700 font-medium">Show English</span>
+              </label>
+              <button onClick={() => setFlagMode(!flagMode)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                  flagMode ? 'bg-red-500 text-white shadow-md animate-pulse' : 'bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-500'
+                }`}>
+                🚩 {flagMode ? 'Flag Mode ON' : 'Flag Mode'}
+              </button>
+            </div>
             <div className="text-sm text-gray-500">{vocabulary.length} items</div>
           </div>
+
+          {flagMode && (
+            <div className="mb-4 bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700 flex items-center gap-2">
+              <span className="text-lg">🚩</span>
+              <span>Tap any card to flag it for review. Tap "Flag Mode" again to exit.</span>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
             {vocabulary.map((item) => (
               <VocabCard key={item.id} item={item} topicId={topic.id} rating={ratings[item.id]?.rating}
-                onRate={onRate} onClick={() => setSelectedItem(item)} showEnglish={showEnglish} fontClass={fontClass} />
+                onRate={onRate} onClick={() => flagMode ? setFlagItem(item) : setSelectedItem(item)}
+                showEnglish={showEnglish} fontClass={fontClass} flagMode={flagMode} />
             ))}
           </div>
 
