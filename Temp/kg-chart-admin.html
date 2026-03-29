@@ -745,42 +745,13 @@ async function executeScan() {
   const trans = S.vocabTrans.filter(t => t.language_code === langCode);
   const issues = [];
   const allLeakedChars = new Set();
-  let leakedCount = 0, cleanCount = 0, missingNativeCount = 0, emptyDevCount = 0, wrongScriptCount = 0;
-
-  // Detect if native_text is in wrong script (e.g. Latin text for Burmese)
-  function isLatinOnly(text) {
-    if (!text) return false;
-    // Check if text is mostly Latin/ASCII (allowing spaces, digits, punctuation)
-    const latinChars = text.replace(/[\s\d\.,!?;:'"()\-\/]/g, '');
-    if (!latinChars) return false;
-    const latinCount = [...latinChars].filter(ch => {
-      const code = ch.codePointAt(0);
-      return (code >= 0x0041 && code <= 0x007A) || (code >= 0x00C0 && code <= 0x024F); // Basic Latin + Latin Extended
-    }).length;
-    return latinCount / latinChars.length > 0.8; // 80%+ Latin = wrong script
-  }
+  let leakedCount = 0, cleanCount = 0, missingNativeCount = 0, emptyDevCount = 0;
 
   for (const t of trans) {
     const v = S.vocabulary.find(x => x.id === t.vocabulary_id);
     if (!v) continue;
 
     if (!t.native_text) { missingNativeCount++; continue; }
-
-    // Check for wrong script (Latin text in non-Latin language)
-    if (hasScriptRange && isLatinOnly(t.native_text)) {
-      wrongScriptCount++;
-      issues.push({
-        vocabId: t.vocabulary_id,
-        langCode,
-        english: v.english_text,
-        topic: v.topic_id,
-        native: t.native_text,
-        generatedDev: '',
-        type: 'wrong_script',
-        leaked: []
-      });
-      continue;
-    }
 
     // Run real converter
     let sourceText = t.native_text;
@@ -827,10 +798,6 @@ async function executeScan() {
         <div style="font-size:24px;font-weight:700;color:${leakedCount > 0 ? 'var(--danger)' : 'var(--success)'}">${leakedCount}</div>
         <div style="font-size:10px;color:var(--text-secondary)">Leaked Chars</div>
       </div>
-      <div style="padding:14px;border-radius:12px;background:${wrongScriptCount > 0 ? 'var(--danger-dim)' : 'var(--accent-dim)'};text-align:center">
-        <div style="font-size:24px;font-weight:700;color:${wrongScriptCount > 0 ? 'var(--danger)' : 'var(--success)'}">${wrongScriptCount}</div>
-        <div style="font-size:10px;color:var(--text-secondary)">Wrong Script</div>
-      </div>
       <div style="padding:14px;border-radius:12px;background:var(--accent-dim);text-align:center">
         <div style="font-size:24px;font-weight:700;color:var(--success)">${cleanCount}</div>
         <div style="font-size:10px;color:var(--text-secondary)">Clean</div>
@@ -857,16 +824,13 @@ async function executeScan() {
     ${issues.length > 0 ? `
       <div style="margin-bottom:16px;max-height:250px;overflow-y:auto;border:1px solid var(--border);border-radius:12px">
         <table class="data-table" style="font-size:12px">
-          <thead><tr><th>English</th><th>Topic</th><th>Native</th><th>Generated Dev.</th><th>Issue</th></tr></thead>
+          <thead><tr><th>English</th><th>Topic</th><th>Native</th><th>Generated Dev.</th><th>Leaked</th></tr></thead>
           <tbody>${issues.map(i => `<tr>
             <td><strong>${i.english}</strong></td>
             <td class="mono">${i.topic}</td>
             <td>${i.native || '—'}</td>
-            <td>${i.generatedDev || '—'}</td>
-            <td>${i.type === 'wrong_script'
-              ? '<span style="color:var(--danger);font-weight:600;font-size:11px;padding:2px 8px;border-radius:6px;background:var(--danger-dim)">Latin text!</span>'
-              : `<span style="color:var(--danger);font-weight:600;font-size:14px">${i.leaked.join(' ')}</span>`
-            }</td>
+            <td>${i.generatedDev} </td>
+            <td><span style="color:var(--danger);font-weight:600;font-size:14px">${i.leaked.join(' ')}</span></td>
           </tr>`).join('')}</tbody>
         </table>
       </div>
@@ -894,17 +858,14 @@ async function createScanFlags(langCode) {
 
   const flags = [];
   for (const i of issues) {
-    const reason = i.type === 'wrong_script' ? 'wrong_word' : 'needs_review';
+    const reason = 'needs_review';
     const key = `${i.vocabId}_${reason}`;
     if (existingKeys.has(key)) continue;
-    const notes = i.type === 'wrong_script'
-      ? `Auto-scan: native_text "${i.native}" appears to be Latin/English text instead of ${langCode} script`
-      : `Auto-scan: leaked [${i.leaked.join(', ')}] in converter output "${i.generatedDev}" from native "${i.native}"`;
     flags.push({
       vocabulary_id: i.vocabId,
       language_code: langCode,
       reason,
-      notes,
+      notes: `Auto-scan: leaked [${i.leaked.join(', ')}] in converter output "${i.generatedDev}" from native "${i.native}"`,
       status: 'open'
     });
   }
