@@ -535,12 +535,7 @@
                   ? (translation.pronunciation?.pinyin || '')
                   : translation.native_text;
 
-                // DB override → converter fallback
-                // If devanagari column has a human-verified value, use it.
-                // Otherwise auto-generate from the JS converter.
-                const generatedDev = convertToDevanagari(sourceText, languageCode);
-                const devanagari = translation.devanagari || generatedDev;
-                const isDevOverridden = !!translation.devanagari;
+                const devanagari = convertToDevanagari(sourceText, languageCode);
 
                 // Build pronunciation display
                 // For pronunciation-based langs: keep DB pronunciation + add devanagari info
@@ -551,7 +546,7 @@
 
                 return {
                   ...vocab,
-                  translation: { ...translation, devanagari, isDevOverridden, pronunciation }
+                  translation: { ...translation, devanagari, pronunciation }
                 };
               }).filter(v => v.translation);
               setVocabulary(mapped);
@@ -907,48 +902,10 @@
       );
     }
 
-    function DetailModal({ item, topicId, rating, onRate, onClose, onFlag, fontClass, languageCode }) {
-      const { user } = useAuth();
+    function DetailModal({ item, topicId, rating, onRate, onClose, onFlag, fontClass }) {
       const [imageError, setImageError] = useState(false);
-      const [editingDev, setEditingDev] = useState(false);
-      const [devValue, setDevValue] = useState(item.translation?.devanagari || '');
-      const [saving, setSaving] = useState(false);
-      const [saved, setSaved] = useState(false);
       const colorCode = item.extra_data?.colorCode;
       const pronunciation = item.translation?.pronunciation || {};
-      const isOverridden = item.translation?.isDevOverridden;
-
-      const saveDevanagari = async () => {
-        setSaving(true);
-        const val = devValue.trim() || null;
-        const { error } = await supabase
-          .from(TABLES.vocabularyTranslations)
-          .update({ devanagari: val, updated_at: new Date().toISOString() })
-          .eq('vocabulary_id', item.id)
-          .eq('language_code', languageCode);
-        setSaving(false);
-        if (error) { console.error(error); return; }
-        item.translation.devanagari = val || item.translation.devanagari;
-        item.translation.isDevOverridden = !!val;
-        setSaved(true);
-        setEditingDev(false);
-        setTimeout(() => setSaved(false), 2000);
-      };
-
-      const clearOverride = async () => {
-        setSaving(true);
-        const { error } = await supabase
-          .from(TABLES.vocabularyTranslations)
-          .update({ devanagari: null, updated_at: new Date().toISOString() })
-          .eq('vocabulary_id', item.id)
-          .eq('language_code', languageCode);
-        setSaving(false);
-        if (error) { console.error(error); return; }
-        item.translation.isDevOverridden = false;
-        setEditingDev(false);
-        setSaved(true);
-        setTimeout(() => setSaved(false), 2000);
-      };
 
       return (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
@@ -968,37 +925,9 @@
               <h2 className={`text-4xl font-bold text-gray-800 mb-2 ${fontClass}`}>
                 {item.translation?.native_text}
               </h2>
-
-              {editingDev ? (
-                <div className="mb-3">
-                  <input type="text" value={devValue} onChange={e => setDevValue(e.target.value)}
-                    className="w-full text-center text-2xl text-blue-600 font-devanagari px-4 py-2 border-2 border-blue-300 rounded-xl focus:ring-2 focus:ring-blue-400 focus:border-transparent"
-                    placeholder="Enter Devanagari..." autoFocus />
-                  <div className="flex items-center justify-center gap-2 mt-2">
-                    <button onClick={saveDevanagari} disabled={saving}
-                      className="px-4 py-1.5 bg-jade-600 text-white rounded-lg text-sm font-medium hover:bg-jade-700 transition disabled:opacity-50">
-                      {saving ? '...' : '✓ Save'}
-                    </button>
-                    <button onClick={() => setEditingDev(false)}
-                      className="px-4 py-1.5 bg-gray-100 text-gray-600 rounded-lg text-sm font-medium hover:bg-gray-200 transition">Cancel</button>
-                    {isOverridden && (
-                      <button onClick={clearOverride} disabled={saving}
-                        className="px-4 py-1.5 bg-red-50 text-red-500 rounded-lg text-sm font-medium hover:bg-red-100 transition disabled:opacity-50"
-                        title="Remove manual override and use auto-generated">↩ Reset to auto</button>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="mb-2 group relative inline-block">
-                  <span className="text-2xl text-blue-600 font-devanagari">{item.translation?.devanagari}</span>
-                  {isOverridden && <span className="ml-2 text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full align-middle">✓ verified</span>}
-                  {saved && <span className="ml-2 text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full align-middle animate-fade-in">saved!</span>}
-                  {user && (
-                    <button onClick={() => { setDevValue(item.translation?.devanagari || ''); setEditingDev(true); }}
-                      className="ml-2 text-gray-300 hover:text-blue-500 transition align-middle" title="Edit Devanagari">✏️</button>
-                  )}
-                </div>
-              )}
+              <div className="text-2xl text-blue-600 font-devanagari mb-2">
+                {item.translation?.devanagari}
+              </div>
 
               {Object.keys(pronunciation).length > 0 && (
                 <div className="flex flex-wrap justify-center gap-2 mb-3">
@@ -1325,7 +1254,7 @@
 
           {selectedItem && (
             <DetailModal item={selectedItem} topicId={topic.id} rating={ratings[selectedItem.id]?.rating}
-              onRate={onRate} onClose={() => setSelectedItem(null)} onFlag={(item) => { setSelectedItem(null); setFlagMode(true); toggleFlag(item); }} fontClass={fontClass} languageCode={languageCode} />
+              onRate={onRate} onClose={() => setSelectedItem(null)} onFlag={(item) => { setSelectedItem(null); setFlagMode(true); toggleFlag(item); }} fontClass={fontClass} />
           )}
 
           {showBatchFlag && (
