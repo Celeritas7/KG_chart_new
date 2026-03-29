@@ -218,7 +218,6 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
     <div class="nav-item" data-page="chart-preview"><span class="icon">📊</span>Chart Preview</div>
     <div class="nav-section-label">Quality</div>
     <div class="nav-item" data-page="flags"><span class="icon">🚩</span>Flags<span class="badge warn" id="badge-flags">-</span></div>
-    <div class="nav-item" data-page="coverage"><span class="icon">📋</span>Coverage<span class="badge" id="badge-coverage">-</span></div>
     <div class="nav-section-label">Analytics</div>
     <div class="nav-item" data-page="quiz-stats"><span class="icon">🧠</span>Quiz Stats</div>
   </nav>
@@ -247,7 +246,7 @@ const BUCKET='vocabulary-assets';
 const imgUrl=(tid,fn)=>fn?(fn.startsWith('http')?fn:`${SB_URL}/storage/v1/object/public/${BUCKET}/${tid}/${fn}`):null;
 
 let S={languages:[],topics:[],vocabulary:[],vocabTrans:[],topicTrans:[],quizSessions:[],flags:[],
-  page:'languages',filters:{topic:'',language:'',search:'',flagStatus:'open',coverageLang:''},chartView:'grid'};
+  page:'languages',filters:{topic:'',language:'',search:'',flagStatus:'open'},chartView:'grid'};
 
 // Theme
 document.querySelectorAll('.theme-btn').forEach(b=>{b.addEventListener('click',()=>{document.body.dataset.theme=b.dataset.t;document.querySelectorAll('.theme-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');localStorage.setItem('kg-admin-theme',b.dataset.t);});});
@@ -289,11 +288,6 @@ async function loadAll(){
     document.getElementById('badge-vocab').textContent=S.vocabulary.length;
     const openFlags=S.flags.filter(f=>f.status==='open').length;
     document.getElementById('badge-flags').textContent=openFlags||'0';
-    // Coverage badge: count total missing across active languages
-    const activeLangs=S.languages.filter(l=>l.is_active);
-    let totalMissing=0;
-    activeLangs.forEach(l=>{const translated=new Set(S.vocabTrans.filter(t=>t.language_code===l.code).map(t=>t.vocabulary_id));totalMissing+=S.vocabulary.filter(v=>!translated.has(v.id)).length;});
-    document.getElementById('badge-coverage').textContent=totalMissing>0?totalMissing:'✓';
     render();
   }catch(e){document.getElementById('content').innerHTML=`<div class="empty-state"><div class="icon">⚠️</div><p>${e.message}</p></div>`;}
 }
@@ -309,7 +303,6 @@ function render(){
     case'topic-translations':t.textContent='Topic Headers';a.innerHTML=`<button class="btn" onclick="exportTT('csv')">⬇ CSV</button><button class="btn" onclick="exportTT('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('tt')">⬆ Import</button><button class="btn btn-accent" onclick="editTT()">+ Add</button>`;renderTT(c);break;
     case'chart-preview':t.textContent='Chart Preview';a.innerHTML='';renderChart(c);break;
     case'flags':t.textContent='Flags';a.innerHTML=`<button class="btn" onclick="exportFlags('csv')">⬇ CSV</button><button class="btn" onclick="exportFlags('json')">⬇ JSON</button><button class="btn btn-accent" onclick="runConverterScan()">🔍 Scan Conversions</button>`;renderFlags(c);break;
-    case'coverage':t.textContent='Coverage';a.innerHTML=`<button class="btn" onclick="exportMissing('csv')">⬇ Export Missing CSV</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderCoverage(c);break;
     case'quiz-stats':t.textContent='Quiz Stats';a.innerHTML='';renderQuiz(c);break;
   }
 }
@@ -967,111 +960,6 @@ function exportScanResults(fmt) {
     downloadFile(`scan_results_${issues[0]?.langCode || 'lang'}.json`, JSON.stringify(rows, null, 2), 'application/json');
   }
   toast(`Exported ${rows.length} items as ${fmt.toUpperCase()}`);
-}
-
-// ===== COVERAGE =====
-function renderCoverage(el) {
-  const activeLangs = S.languages.filter(l => l.is_active);
-
-  // Calculate missing per language
-  const langStats = activeLangs.map(l => {
-    const translated = new Set(S.vocabTrans.filter(t => t.language_code === l.code).map(t => t.vocabulary_id));
-    const missing = S.vocabulary.filter(v => !translated.has(v.id));
-    const missingTopicHeaders = S.topics.filter(t => !S.topicTrans.some(tt => tt.topic_id === t.id && tt.language_code === l.code));
-    return { lang: l, total: S.vocabulary.length, translated: translated.size, missing, missingCount: missing.length, missingHeaders: missingTopicHeaders };
-  });
-
-  const selectedLang = S.filters.coverageLang || (langStats.find(s => s.missingCount > 0)?.lang.code || activeLangs[0]?.code || '');
-  const selected = langStats.find(s => s.lang.code === selectedLang);
-
-  // Summary cards
-  const summaryHtml = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:20px">${langStats.map(s => {
-    const pct = s.total > 0 ? Math.round((s.translated / s.total) * 100) : 0;
-    const isSelected = s.lang.code === selectedLang;
-    return `<div onclick="S.filters.coverageLang='${s.lang.code}';render()" style="padding:14px;border-radius:14px;background:${isSelected ? 'var(--accent-dim)' : 'var(--bg-card)'};border:2px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};cursor:pointer;transition:all 0.2s;text-align:center">
-      <div style="font-size:22px;margin-bottom:4px">${s.lang.flag_emoji || ''}</div>
-      <div style="font-size:13px;font-weight:600">${s.lang.name_english}</div>
-      <div style="margin:8px 0;height:6px;border-radius:3px;background:var(--border);overflow:hidden">
-        <div style="height:100%;width:${pct}%;border-radius:3px;background:${pct === 100 ? 'var(--success)' : pct > 70 ? 'var(--accent)' : pct > 30 ? 'var(--warning)' : 'var(--danger)'};transition:width 0.3s"></div>
-      </div>
-      <div style="font-size:11px;color:var(--text-muted)">${s.translated}/${s.total} <span style="color:${s.missingCount > 0 ? 'var(--danger)' : 'var(--success)'};">(${s.missingCount > 0 ? s.missingCount + ' missing' : '✓ complete'})</span></div>
-      ${s.missingHeaders.length > 0 ? `<div style="font-size:10px;color:var(--warning);margin-top:2px">⚠ ${s.missingHeaders.length} topic header${s.missingHeaders.length > 1 ? 's' : ''}</div>` : ''}
-    </div>`;
-  }).join('')}</div>`;
-
-  // Detail table for selected language
-  let detailHtml = '';
-  if (selected && selected.missingCount > 0) {
-    // Group by topic
-    const byTopic = {};
-    selected.missing.forEach(v => {
-      if (!byTopic[v.topic_id]) byTopic[v.topic_id] = [];
-      byTopic[v.topic_id].push(v);
-    });
-
-    detailHtml = `<div style="margin-bottom:12px;font-size:14px;font-weight:600">${selected.lang.flag_emoji} ${selected.lang.name_english}: ${selected.missingCount} missing item${selected.missingCount > 1 ? 's' : ''}</div>`;
-
-    // Missing topic headers warning
-    if (selected.missingHeaders.length > 0) {
-      detailHtml += `<div style="padding:12px;border-radius:10px;background:var(--warning-dim);margin-bottom:16px;font-size:13px;color:var(--warning)">
-        ⚠ <strong>${selected.missingHeaders.length} topic headers missing</strong> — these topics won't show in the app for ${selected.lang.name_english}:
-        ${selected.missingHeaders.map(t => `<span style="margin-left:6px">${t.icon || ''} ${t.id}</span>`).join(',')}
-      </div>`;
-    }
-
-    detailHtml += `<table class="data-table"><thead><tr><th>Topic</th><th>English</th><th>Image</th><th>Other Languages</th></tr></thead><tbody>`;
-    Object.entries(byTopic).sort((a, b) => a[0].localeCompare(b[0])).forEach(([topicId, items]) => {
-      const topic = S.topics.find(t => t.id === topicId);
-      items.forEach(v => {
-        // Show which languages DO have translations
-        const existingLangs = S.vocabTrans.filter(t => t.vocabulary_id === v.id).map(t => {
-          const lg = S.languages.find(l => l.code === t.language_code);
-          return lg ? lg.flag_emoji : t.language_code;
-        });
-        detailHtml += `<tr>
-          <td>${topic?.icon || ''} <span class="mono">${topicId}</span></td>
-          <td><strong>${v.english_text}</strong></td>
-          <td class="mono" style="font-size:11px">${v.image_filename || '<span style="color:var(--warning)">none</span>'}</td>
-          <td>${existingLangs.length > 0 ? existingLangs.join(' ') : '<span style="color:var(--danger)">none</span>'}</td>
-        </tr>`;
-      });
-    });
-    detailHtml += `</tbody></table>`;
-  } else if (selected) {
-    detailHtml = `<div class="empty-state"><div class="icon">✅</div><p>${selected.lang.flag_emoji} ${selected.lang.name_english} is fully covered — all ${selected.total} items have translations</p></div>`;
-  }
-
-  el.innerHTML = summaryHtml + detailHtml;
-}
-
-function exportMissing(fmt) {
-  const activeLangs = S.languages.filter(l => l.is_active);
-  const selectedLang = S.filters.coverageLang || activeLangs[0]?.code || '';
-  if (!selectedLang) { toast('Select a language first', 'error'); return; }
-
-  const translated = new Set(S.vocabTrans.filter(t => t.language_code === selectedLang).map(t => t.vocabulary_id));
-  const missing = S.vocabulary.filter(v => !translated.has(v.id));
-
-  if (!missing.length) { toast('No missing items for this language', 'error'); return; }
-
-  const rows = missing.map(v => ({
-    vocabulary_id: v.id,
-    english_text: v.english_text,
-    topic_id: v.topic_id,
-    language_code: selectedLang,
-    native_text: '',
-    devanagari: '',
-    pinyin: '',
-    notes: ''
-  }));
-
-  const headers = ['vocabulary_id', 'english_text', 'topic_id', 'language_code', 'native_text', 'devanagari', 'pinyin', 'notes'];
-  if (fmt === 'csv') {
-    downloadFile(`kg_missing_${selectedLang}.csv`, toCSV(headers, rows), 'text/csv');
-  } else {
-    downloadFile(`kg_missing_${selectedLang}.json`, JSON.stringify(rows, null, 2), 'application/json');
-  }
-  toast(`Exported ${rows.length} missing items for ${selectedLang}`);
 }
 
 // ===== QUIZ STATS =====
