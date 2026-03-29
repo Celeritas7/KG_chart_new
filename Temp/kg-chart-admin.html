@@ -615,7 +615,7 @@ const SCRIPT_RANGES = {
   zh: { name: 'Chinese',  ranges: [[0x4E00, 0x9FFF], [0x3400, 0x4DBF]], file: 'chinese', type: 'chinese' },
   ja: { name: 'Japanese', ranges: [[0x3040, 0x309F], [0x30A0, 0x30FF], [0x4E00, 0x9FFF]], file: null, type: null },
   ko: { name: 'Korean',   ranges: [[0xAC00, 0xD7AF], [0x1100, 0x11FF]], file: null, type: null },
-  te: { name: 'Telugu',   ranges: [[0x0C00, 0x0C7F]], file: 'telugu', type: 'standard' },
+  te: { name: 'Telugu',   ranges: [[0x0C00, 0x0C7F]], file: null, type: null },
   ta: { name: 'Tamil',    ranges: [[0x0B80, 0x0BFF]], file: null, type: null },
   th: { name: 'Thai',     ranges: [[0x0E00, 0x0E7F]], file: null, type: null },
   km: { name: 'Khmer',    ranges: [[0x1780, 0x17FF]], file: null, type: null },
@@ -644,28 +644,91 @@ function findLeakedChars(text, langCode) {
   return [...leaked];
 }
 
-// ---- Shared repo URL ----
-const LANG_UTILS_BASE = 'https://celeritas7.github.io/language-utils';
+// ---- buildConverter (mirrors main app logic) ----
+function scanBuildConverter(langData) {
+  const charToDevanagari = {};
+  ['consonants','vowels','medials','finals','combinations','independentVowels'].forEach(key => {
+    if (langData[key]) langData[key].forEach(c => { if (c.char && c.devanagari) charToDevanagari[c.char] = c.devanagari; });
+  });
+  const sortedKeys = Object.keys(charToDevanagari).sort((a, b) => b.length - a.length);
+  return {
+    toDevanagari: (text) => {
+      if (!text) return '';
+      let result = '', i = 0;
+      while (i < text.length) {
+        let matched = false;
+        for (const key of sortedKeys) {
+          if (text.substring(i, i + key.length) === key) { result += charToDevanagari[key]; i += key.length; matched = true; break; }
+        }
+        if (!matched) { result += text[i]; i++; }
+      }
+      return result;
+    }
+  };
+}
 
-// ---- Dynamic loader (ES module import from shared repo) ----
+function scanBuildChineseConverter(langData) {
+  const { syllables, toneMarks, toneSuffixes } = langData;
+  const syllableKeys = Object.keys(syllables).sort((a, b) => b.length - a.length);
+  return {
+    usePronunciation: true,
+    toDevanagari: (pinyinText) => {
+      if (!pinyinText) return '';
+      const words = pinyinText.trim().split(/\s+/);
+      return words.map(word => {
+        let bare = '';
+        const toneAt = [];
+        for (const ch of word) {
+          const lower = ch.toLowerCase();
+          if (toneMarks[lower]) { toneAt.push({ pos: bare.length, tone: toneMarks[lower].tone }); bare += toneMarks[lower].base; }
+          else { bare += lower; }
+        }
+        const parts = [];
+        let i = 0;
+        while (i < bare.length) {
+          let matched = false;
+          for (const key of syllableKeys) {
+            if (bare.substring(i, i + key.length) === key) {
+              let tone = 0;
+              for (const t of toneAt) { if (t.pos >= i && t.pos < i + key.length) { tone = t.tone; break; } }
+              const dev = syllables[key] || key;
+              const suffix = tone && toneSuffixes[tone] ? toneSuffixes[tone] : '';
+              parts.push(dev + suffix); i += key.length; matched = true; break;
+            }
+          }
+          if (!matched) { parts.push(bare[i]); i++; }
+        }
+        return parts.join('');
+      }).join(' ');
+    }
+  };
+}
+
+// ---- Dynamic loader ----
 const loadedConverters = {};
 
-async function loadConverterJS(langCode) {
-  const scriptInfo = SCRIPT_RANGES[langCode];
-  if (!scriptInfo || !scriptInfo.file) throw new Error(`No JS file mapped for "${langCode}"`);
-  if (loadedConverters[langCode]) return loadedConverters[langCode];
+function loadConverterJS(langCode) {
+  return new Promise((resolve, reject) => {
+    const scriptInfo = SCRIPT_RANGES[langCode];
+    if (!scriptInfo || !scriptInfo.file) { reject(new Error(`No JS file mapped for "${langCode}"`)); return; }
+    if (loadedConverters[langCode]) { resolve(loadedConverters[langCode]); return; }
 
-  try {
-    const mod = await import(`${LANG_UTILS_BASE}/${scriptInfo.file}.js`);
-    const converter = {
-      toDevanagari: mod.toDev || ((t) => t),
-      usePronunciation: scriptInfo.type === 'chinese',
+    const tag = document.createElement('script');
+    tag.src = `./js/languages/${scriptInfo.file}.js`;
+    tag.onload = () => {
+      const varName = scriptInfo.file; // e.g. 'burmese', 'chinese', 'sinhala'
+      const data = window[varName];
+      if (!data) { reject(new Error(`Loaded ${scriptInfo.file}.js but window.${varName} not found`)); return; }
+      let converter;
+      if (scriptInfo.type === 'chinese') converter = scanBuildChineseConverter(data);
+      else converter = scanBuildConverter(data);
+      converter.usePronunciation = scriptInfo.type === 'chinese';
+      loadedConverters[langCode] = converter;
+      resolve(converter);
     };
-    loadedConverters[langCode] = converter;
-    return converter;
-  } catch (e) {
-    throw new Error(`Failed to load ${scriptInfo.file}.js from language-utils: ${e.message}`);
-  }
+    tag.onerror = () => reject(new Error(`Failed to load ./js/languages/${scriptInfo.file}.js`));
+    document.head.appendChild(tag);
+  });
 }
 
 // ---- Scanner UI ----
@@ -687,7 +750,7 @@ function runConverterScan() {
       <select id="scan-lang">${langOpts}</select>
     </div>
     <div style="margin-top:8px;padding:10px 14px;background:var(--bg-tertiary);border-radius:10px;font-size:12px;color:var(--text-secondary)">
-      <strong>How it works:</strong> Loads converter from <code>language-utils</code> repo → runs <code>toDevanagari(native_text)</code> for every item → checks output for leaked source chars.
+      <strong>How it works:</strong> Loads <code>./js/languages/[lang].js</code> → builds converter → runs <code>toDevanagari(native_text)</code> for every item → checks output for leaked source chars.
     </div>
     <div class="form-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -709,7 +772,7 @@ async function executeScan() {
     showModal(`
       <h3><span class="accent-dot"></span>⚠ No Converter File</h3>
       <p style="color:var(--text-secondary);margin-bottom:16px">No JS converter file is mapped for <strong>${lang?.name_english || langCode}</strong>.</p>
-      <p style="color:var(--text-secondary);font-size:13px">To add one, create <code>${langCode}.js</code> in the language-utils repo and add an entry to <code>SCRIPT_RANGES</code> in the admin panel.</p>
+      <p style="color:var(--text-secondary);font-size:13px">To add one, create <code>./js/languages/${langCode}.js</code> and add an entry to <code>SCRIPT_RANGES</code> in the admin panel.</p>
       <div class="form-actions"><button class="btn" onclick="closeModal()">Close</button></div>
     `);
     return;
@@ -728,7 +791,7 @@ async function executeScan() {
     showModal(`
       <h3><span class="accent-dot"></span>❌ Load Failed</h3>
       <p style="color:var(--danger);margin-bottom:16px">${e.message}</p>
-      <p style="color:var(--text-secondary);font-size:13px">Make sure the language-utils repo is published at <code>celeritas7.github.io/language-utils/</code>.</p>
+      <p style="color:var(--text-secondary);font-size:13px">Make sure the admin panel is hosted in the same directory as <code>./js/languages/</code> folder.</p>
       <div class="form-actions"><button class="btn" onclick="closeModal()">Close</button></div>
     `);
     return;

@@ -16,7 +16,17 @@
   <!-- Supabase -->
   <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
   
-  <!-- Language converters loaded dynamically from shared repo -->
+  <!-- Language Files -->
+  <script src="./js/languages/burmese.js"></script>
+  <script src="./js/languages/chinese.js"></script>
+  <script>
+    // Shim: chinese.js uses const (not on window) — ensure it's globally accessible
+    if (typeof chinese !== 'undefined' && typeof window.chinese === 'undefined') window.chinese = chinese;
+  </script>
+  <script src="./js/languages/sinhala.js"></script>
+  <script>
+    if (typeof sinhala !== 'undefined' && typeof window.sinhala === 'undefined') window.sinhala = sinhala;
+  </script>
   
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -115,47 +125,205 @@
     // LANGUAGE CONVERTER SYSTEM
     // ==========================================
     
-    // Shared language-utils repo base URL
-    const LANG_UTILS_BASE = 'https://celeritas7.github.io/language-utils';
-
     // Registry of language converters
     const LanguageConverters = {};
 
-    // Language code → file name + type mapping
-    const LANG_FILES = {
-      my: { file: 'burmese', type: 'standard' },
-      zh: { file: 'chinese', type: 'chinese' },
-      si: { file: 'sinhala', type: 'standard' },
-      te: { file: 'telugu', type: 'standard' },
-    };
-
-    // Load a language converter from the shared repo
-    async function loadLanguageConverter(langCode) {
-      const info = LANG_FILES[langCode];
-      if (!info) return null;
-      if (LanguageConverters[langCode]) return LanguageConverters[langCode];
-
-      try {
-        const mod = await import(`${LANG_UTILS_BASE}/${info.file}.js`);
-        const converter = {
-          toDevanagari: mod.toDev || ((t) => t),
-          toRoman: mod.toRoman || ((t) => t),
-          usePronunciation: info.type === 'chinese',
-        };
-        LanguageConverters[langCode] = converter;
-        console.log(`✓ ${info.file} converter loaded from language-utils`);
-        return converter;
-      } catch (e) {
-        console.warn(`⚠ Failed to load ${info.file}.js:`, e.message);
-        return null;
+    // Build converter from language data (consonants, vowels, medials, finals)
+    function buildConverter(langData) {
+      // Build mapping tables
+      const charToDevanagari = {};
+      const charToRoman = {};
+      
+      // Add consonants
+      if (langData.consonants) {
+        langData.consonants.forEach(c => {
+          if (c.char && c.devanagari) charToDevanagari[c.char] = c.devanagari;
+          if (c.char && c.roman) charToRoman[c.char] = c.roman;
+        });
       }
+      
+      // Add vowels (matras)
+      if (langData.vowels) {
+        langData.vowels.forEach(v => {
+          if (v.char && v.devanagari) charToDevanagari[v.char] = v.devanagari;
+          if (v.char && v.roman) charToRoman[v.char] = v.roman;
+        });
+      }
+      
+      // Add medials
+      if (langData.medials) {
+        langData.medials.forEach(m => {
+          if (m.char && m.devanagari) charToDevanagari[m.char] = m.devanagari;
+          if (m.char && m.roman) charToRoman[m.char] = m.roman;
+        });
+      }
+      
+      // Add finals
+      if (langData.finals) {
+        langData.finals.forEach(f => {
+          if (f.char && f.devanagari) charToDevanagari[f.char] = f.devanagari;
+          if (f.char && f.roman) charToRoman[f.char] = f.roman;
+        });
+      }
+
+      // Add combinations (multi-char sequences like ုန် that must match as a unit)
+      if (langData.combinations) {
+        langData.combinations.forEach(c => {
+          if (c.char && c.devanagari) charToDevanagari[c.char] = c.devanagari;
+          if (c.char && c.roman) charToRoman[c.char] = c.roman;
+        });
+      }
+
+      // Sort keys by length (longer first) for proper multi-char matching
+      const sortedKeys = Object.keys(charToDevanagari).sort((a, b) => b.length - a.length);
+      const sortedRomanKeys = Object.keys(charToRoman).sort((a, b) => b.length - a.length);
+
+      return {
+        toDevanagari: (text) => {
+          if (!text) return '';
+          let result = '';
+          let i = 0;
+          
+          while (i < text.length) {
+            let matched = false;
+            
+            // Try to match longer sequences first
+            for (const key of sortedKeys) {
+              if (text.substring(i, i + key.length) === key) {
+                result += charToDevanagari[key];
+                i += key.length;
+                matched = true;
+                break;
+              }
+            }
+            
+            if (!matched) {
+              // Keep the character as-is if no mapping found
+              result += text[i];
+              i++;
+            }
+          }
+          
+          return result;
+        },
+        
+        toRoman: (text) => {
+          if (!text) return '';
+          let result = '';
+          let i = 0;
+          
+          while (i < text.length) {
+            let matched = false;
+            
+            for (const key of sortedRomanKeys) {
+              if (text.substring(i, i + key.length) === key) {
+                result += charToRoman[key];
+                i += key.length;
+                matched = true;
+                break;
+              }
+            }
+            
+            if (!matched) {
+              result += text[i];
+              i++;
+            }
+          }
+          
+          return result;
+        },
+        
+        langData
+      };
     }
 
-    // Load all converters at startup
-    async function loadAllConverters() {
-      await Promise.all(Object.keys(LANG_FILES).map(loadLanguageConverter));
+    // Register Burmese converter (loaded from ./js/languages/burmese.js)
+    if (typeof burmese !== 'undefined') {
+      LanguageConverters['my'] = buildConverter(burmese);
+      console.log('✓ Burmese converter loaded');
+    } else {
+      console.warn('⚠ Burmese language file not loaded');
     }
-    loadAllConverters();
+
+    // Build Chinese converter (syllable-based: pinyin → Devanagari)
+    // Unlike Burmese (char-based), Chinese converts from PRONUNCIATION, not native text
+    function buildChineseConverter(langData) {
+      const { syllables, toneMarks, toneSuffixes } = langData;
+      const syllableKeys = Object.keys(syllables).sort((a, b) => b.length - a.length);
+
+      return {
+        // Flag: this converter needs pronunciation field, not native_text
+        usePronunciation: true,
+
+        toDevanagari: (pinyinText) => {
+          if (!pinyinText) return '';
+
+          const words = pinyinText.trim().split(/\s+/);
+          return words.map(word => {
+            // Strip tone marks, record tone per character position
+            let bare = '';
+            const toneAt = []; // { pos, tone }
+
+            for (const ch of word) {
+              const lower = ch.toLowerCase();
+              if (toneMarks[lower]) {
+                toneAt.push({ pos: bare.length, tone: toneMarks[lower].tone });
+                bare += toneMarks[lower].base;
+              } else {
+                bare += lower;
+              }
+            }
+
+            // Greedy longest-match split into syllables
+            const parts = [];
+            let i = 0;
+            while (i < bare.length) {
+              let matched = false;
+              for (const key of syllableKeys) {
+                if (bare.substring(i, i + key.length) === key) {
+                  // Find tone that falls within this syllable's range
+                  let tone = 0;
+                  for (const t of toneAt) {
+                    if (t.pos >= i && t.pos < i + key.length) { tone = t.tone; break; }
+                  }
+                  const dev = syllables[key] || key;
+                  const suffix = tone && toneSuffixes[tone] ? toneSuffixes[tone] : '';
+                  parts.push(dev + suffix);
+                  i += key.length;
+                  matched = true;
+                  break;
+                }
+              }
+              if (!matched) { parts.push(bare[i]); i++; }
+            }
+            return parts.join('');
+          }).join(' ');
+        },
+
+        toRoman: (pinyinText) => {
+          // Pinyin IS the romanization — just return it cleaned
+          return pinyinText || '';
+        },
+
+        langData
+      };
+    }
+
+    // Register Chinese converter (loaded from ./js/languages/chinese.js)
+    if (typeof chinese !== 'undefined') {
+      LanguageConverters['zh'] = buildChineseConverter(chinese);
+      console.log('✓ Chinese converter loaded');
+    } else {
+      console.warn('⚠ Chinese language file not loaded');
+    }
+
+    // Register Sinhala converter (loaded from ./js/languages/sinhala.js)
+    if (typeof sinhala !== 'undefined') {
+      LanguageConverters['si'] = buildConverter(sinhala);
+      console.log('✓ Sinhala converter loaded');
+    } else {
+      console.warn('⚠ Sinhala language file not loaded');
+    }
 
     // Get converter for a language code
     function getConverter(langCode) {
@@ -168,7 +336,7 @@
       if (converter) {
         return converter.toDevanagari(text);
       }
-      return text;
+      return text; // Return original if no converter
     }
 
     // Convert text to Roman
