@@ -1011,20 +1011,6 @@ function renderCoverage(el) {
 
     detailHtml = `<div style="margin-bottom:12px;font-size:14px;font-weight:600">${selected.lang.flag_emoji} ${selected.lang.name_english}: ${selected.missingCount} missing item${selected.missingCount > 1 ? 's' : ''}</div>`;
 
-    // Missing topic headers warning
-    if (selected.missingHeaders.length > 0) {
-      detailHtml += `<div style="padding:14px;border-radius:12px;background:var(--warning-dim);margin-bottom:16px;font-size:13px;color:var(--warning)">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-          <div>⚠ <strong>${selected.missingHeaders.length} topic headers missing</strong> — these topics won't show in the app for ${selected.lang.name_english}:
-          ${selected.missingHeaders.map(t => `<span style="margin-left:6px">${t.icon || ''} ${t.id}</span>`).join(',')}</div>
-          <div style="display:flex;gap:6px;flex-shrink:0">
-            <button class="btn btn-sm" onclick="exportMissingHeaders('${selected.lang.code}')">⬇ Export Headers CSV</button>
-            <button class="btn btn-sm btn-accent" onclick="triggerImport('tt')">⬆ Import</button>
-          </div>
-        </div>
-      </div>`;
-    }
-
     detailHtml += `<table class="data-table"><thead><tr><th>Topic</th><th>English</th><th>Image</th><th>Other Languages</th></tr></thead><tbody>`;
     Object.entries(byTopic).sort((a, b) => a[0].localeCompare(b[0])).forEach(([topicId, items]) => {
       const topic = S.topics.find(t => t.id === topicId);
@@ -1045,6 +1031,20 @@ function renderCoverage(el) {
     detailHtml += `</tbody></table>`;
   } else if (selected) {
     detailHtml = `<div class="empty-state"><div class="icon">✅</div><p>${selected.lang.flag_emoji} ${selected.lang.name_english} is fully covered — all ${selected.total} items have translations</p></div>`;
+  }
+
+  // Missing topic headers warning — always show regardless of vocab coverage
+  if (selected && selected.missingHeaders.length > 0) {
+    detailHtml = `<div style="padding:14px;border-radius:12px;background:var(--warning-dim);margin-bottom:16px;font-size:13px;color:var(--warning)">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <div>⚠ <strong>${selected.missingHeaders.length} topic headers missing</strong> — these topics won't show in the app for ${selected.lang.name_english}:
+        ${selected.missingHeaders.map(t => `<span style="margin-left:6px">${t.icon || ''} ${t.id}</span>`).join(',')}</div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          <button class="btn btn-sm" onclick="exportMissingHeaders('${selected.lang.code}')">⬇ Export Headers CSV</button>
+          <button class="btn btn-sm btn-accent" onclick="triggerImport('tt')">⬆ Import</button>
+        </div>
+      </div>
+    </div>` + detailHtml;
   }
 
   el.innerHTML = summaryHtml + detailHtml;
