@@ -647,7 +647,7 @@ function findLeakedChars(text, langCode) {
 // ---- Shared repo URL ----
 const LANG_UTILS_BASE = 'https://celeritas7.github.io/language-utils';
 
-// ---- Dynamic loader (ES module import from shared repo) ----
+// ---- Dynamic loader (fetch + eval from shared repo) ----
 const loadedConverters = {};
 
 async function loadConverterJS(langCode) {
@@ -656,7 +656,15 @@ async function loadConverterJS(langCode) {
   if (loadedConverters[langCode]) return loadedConverters[langCode];
 
   try {
-    const mod = await import(`${LANG_UTILS_BASE}/${scriptInfo.file}.js`);
+    const res = await fetch(`${LANG_UTILS_BASE}/${scriptInfo.file}.js`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    let code = await res.text();
+    // Strip ES module export keywords
+    code = code.replace(/export\s+function\s+/g, 'function ');
+    code = code.replace(/export\s+\{[^}]*\};?/g, '');
+    code = code.replace(/export\s+const\s+/g, 'const ');
+    const wrapper = new Function(`${code}\nreturn { toDev: typeof toDev === 'function' ? toDev : null };`);
+    const mod = wrapper();
     const converter = {
       toDevanagari: mod.toDev || ((t) => t),
       usePronunciation: scriptInfo.type === 'chinese',

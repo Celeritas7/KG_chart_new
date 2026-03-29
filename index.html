@@ -129,14 +129,23 @@
       te: { file: 'telugu', type: 'standard' },
     };
 
-    // Load a language converter from the shared repo
+    // Load a language converter from the shared repo via fetch
     async function loadLanguageConverter(langCode) {
       const info = LANG_FILES[langCode];
       if (!info) return null;
       if (LanguageConverters[langCode]) return LanguageConverters[langCode];
 
       try {
-        const mod = await import(`${LANG_UTILS_BASE}/${info.file}.js`);
+        const res = await fetch(`${LANG_UTILS_BASE}/${info.file}.js`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        let code = await res.text();
+        // Strip ES module export keywords so code runs in browser
+        code = code.replace(/export\s+function\s+/g, 'function ');
+        code = code.replace(/export\s+\{[^}]*\};?/g, '');
+        code = code.replace(/export\s+const\s+/g, 'const ');
+        // Wrap and execute to extract toDev function
+        const wrapper = new Function(`${code}\nreturn { toDev: typeof toDev === 'function' ? toDev : null, toRoman: typeof toRoman === 'function' ? toRoman : null };`);
+        const mod = wrapper();
         const converter = {
           toDevanagari: mod.toDev || ((t) => t),
           toRoman: mod.toRoman || ((t) => t),
