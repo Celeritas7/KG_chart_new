@@ -308,7 +308,7 @@ function render(){
     case'translations':t.textContent='Vocabulary Translations';a.innerHTML=`<button class="btn" onclick="exportTrans('csv')">⬇ CSV</button><button class="btn" onclick="exportTrans('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderTrans(c);break;
     case'topic-translations':t.textContent='Topic Headers';a.innerHTML=`<button class="btn" onclick="exportTT('csv')">⬇ CSV</button><button class="btn" onclick="exportTT('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('tt')">⬆ Import</button><button class="btn btn-accent" onclick="editTT()">+ Add</button>`;renderTT(c);break;
     case'chart-preview':t.textContent='Chart Preview';a.innerHTML='';renderChart(c);break;
-    case'flags':t.textContent='Flags';a.innerHTML=`<button class="btn" onclick="exportFlags('csv')">⬇ CSV</button><button class="btn" onclick="exportFlags('json')">⬇ JSON</button><button class="btn btn-accent" onclick="runConverterScan()">🔍 Scan Conversions</button>`;renderFlags(c);break;
+    case'flags':t.textContent='Flags';a.innerHTML=`<button class="btn" onclick="exportFlags('csv')">⬇ CSV</button><button class="btn" onclick="exportFlags('json')">⬇ JSON</button><button class="btn" onclick="triggerImport('flags')">⬆ Import</button><button class="btn btn-accent" onclick="runConverterScan()">🔍 Scan Conversions</button>`;renderFlags(c);break;
     case'coverage':t.textContent='Coverage';a.innerHTML=`<button class="btn" onclick="exportMissing('csv','selected')">⬇ Selected Lang</button><button class="btn" onclick="exportMissing('csv','all')">⬇ All Languages</button><button class="btn" onclick="copyAIPrompt()">📋 AI Prompt</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderCoverage(c);break;
     case'quiz-stats':t.textContent='Quiz Stats';a.innerHTML='';renderQuiz(c);break;
   }
@@ -345,6 +345,7 @@ document.getElementById('file-import').addEventListener('change',async function(
   if(!rows.length){toast('No data found','error');return;}
   if(importTarget==='trans')await importTrans(rows);
   else if(importTarget==='tt')await importTopicHeaders(rows);
+  else if(importTarget==='flags')await importFlagFixes(rows);
   this.value='';
 });
 
@@ -371,6 +372,37 @@ async function importTopicHeaders(rows){
     if(error){errs++;console.error(error);}else ok++;
   }
   toast(`Imported: ${ok} ok, ${errs} errors`,errs?'error':'success');
+  await loadAll();
+}
+
+async function importFlagFixes(rows) {
+  let updated = 0, resolved = 0, errs = 0;
+  for (const r of rows) {
+    if (!r.vocabulary_id || !r.language_code || !r.native_text) continue;
+
+    // Update the translation's native_text
+    const exists = S.vocabTrans.find(t => t.vocabulary_id === r.vocabulary_id && t.language_code === r.language_code);
+    const transData = { native_text: r.native_text, updated_at: new Date().toISOString() };
+    if (r.pinyin) transData.pinyin = r.pinyin;
+    if (r.devanagari) transData.devanagari = r.devanagari;
+
+    if (exists) {
+      const { error } = await sb.from('kg_chart_vocabulary_translations').update(transData).eq('vocabulary_id', r.vocabulary_id).eq('language_code', r.language_code);
+      if (error) { errs++; console.error(error); continue; }
+      updated++;
+    } else {
+      const { error } = await sb.from('kg_chart_vocabulary_translations').insert({ vocabulary_id: r.vocabulary_id, language_code: r.language_code, ...transData, created_at: new Date().toISOString() });
+      if (error) { errs++; console.error(error); continue; }
+      updated++;
+    }
+
+    // Auto-resolve the flag if flag_id is present
+    if (r.flag_id) {
+      const { error } = await sb.from('kg_chart_flags').update({ status: 'resolved', resolved_at: new Date().toISOString() }).eq('id', r.flag_id);
+      if (!error) resolved++;
+    }
+  }
+  toast(`Updated ${updated} translations, resolved ${resolved} flags${errs ? `, ${errs} errors` : ''}`, errs ? 'error' : 'success');
   await loadAll();
 }
 
@@ -585,6 +617,8 @@ async function exportFlags(fmt) {
     }
     const leaked = generatedDev ? findLeakedChars(generatedDev, f.language_code) : [];
     return {
+      flag_id: f.id,
+      vocabulary_id: f.vocabulary_id,
       english_text: v?.english_text || '',
       topic_id: v?.topic_id || '',
       language_code: f.language_code || '',
@@ -599,7 +633,7 @@ async function exportFlags(fmt) {
     };
   });
 
-  const headers = ['english_text','topic_id','language_code','native_text','generated_devanagari','leaked_characters','leaked_unicode','flag_reason','flag_notes','flag_status','image_filename'];
+  const headers = ['flag_id','vocabulary_id','english_text','topic_id','language_code','native_text','generated_devanagari','leaked_characters','leaked_unicode','flag_reason','flag_notes','flag_status','image_filename'];
   if (fmt === 'csv') {
     downloadFile(`kg_flags_${S.filters.flagStatus || 'all'}.csv`, toCSV(headers, rows), 'text/csv');
   } else {
