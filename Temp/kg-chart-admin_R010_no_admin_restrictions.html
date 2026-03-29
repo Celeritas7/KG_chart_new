@@ -244,25 +244,7 @@ const SB_URL='https://ulgrfumbwjovbjzjiems.supabase.co';
 const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVsZ3JmdW1id2pvdmJqemppZW1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczNzIyNjcsImV4cCI6MjA4Mjk0ODI2N30.ix5Vh4Y3GXNbQbzVtTD_WSko0L3cr5q_eCnTuDEMh7M';
 const sb=supabase.createClient(SB_URL,SB_KEY);
 const BUCKET='vocabulary-assets';
-const ADMIN_USER_ID='d469efb7-f9e1-4b49-8b14-75a42b4d22e0';
 const imgUrl=(tid,fn)=>fn?(fn.startsWith('http')?fn:`${SB_URL}/storage/v1/object/public/${BUCKET}/${tid}/${fn}`):null;
-
-// ===== ADMIN AUTH CHECK =====
-(async function checkAdminAuth(){
-  const{data:{session}}=await sb.auth.getSession();
-  if(!session||session.user.id!==ADMIN_USER_ID){
-    document.getElementById('content').innerHTML=`<div class="empty-state" style="padding:60px 20px">
-      <div class="icon" style="font-size:64px">🔒</div>
-      <p style="font-size:18px;font-weight:600;margin-bottom:8px">Admin Access Required</p>
-      <p style="color:var(--text-muted);margin-bottom:20px">${session?'Your account does not have admin access.':'You need to sign in first.'}</p>
-      <a href="./index.html" style="display:inline-block;padding:12px 24px;background:var(--accent);color:#fff;border-radius:12px;text-decoration:none;font-weight:600">← Back to App</a>
-    </div>`;
-    document.querySelector('.sidebar').style.display='none';
-    document.querySelector('.topbar').style.display='none';
-    return;
-  }
-  loadAll();
-})();
 
 let S={languages:[],topics:[],vocabulary:[],vocabTrans:[],topicTrans:[],quizSessions:[],flags:[],
   page:'languages',filters:{topic:'',language:'',search:'',flagStatus:'open',coverageLang:''},chartView:'grid'};
@@ -1218,7 +1200,8 @@ function renderQuiz(el){
   el.innerHTML=`<p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Last ${S.quizSessions.length} sessions (read-only)</p><table class="data-table"><thead><tr><th>Date</th><th>Language</th><th>Topic</th><th>Type</th><th>Score</th><th>Time</th></tr></thead><tbody>${S.quizSessions.map(s=>{const lg=S.languages.find(l=>l.code===s.language_code);const p=s.total_questions?Math.round((s.correct_answers/s.total_questions)*100):0;return`<tr><td class="mono" style="font-size:11px">${new Date(s.created_at).toLocaleDateString()}</td><td>${lg?.flag_emoji||''} ${s.language_code||''}</td><td class="mono">${s.topic_id||'—'}</td><td><span class="tag">${s.quiz_type||'—'}</span></td><td><strong style="color:${p>=80?'var(--success)':p>=50?'var(--warning)':'var(--danger)'}">${s.correct_answers}/${s.total_questions}</strong> (${p}%)</td><td class="mono">${s.time_spent_seconds?`${s.time_spent_seconds}s`:'—'}</td></tr>`;}).join('')}</tbody></table>`;
 }
 
-// ===== INIT (handled by checkAdminAuth above) =====
+// ===== INIT =====
+loadAll();
 </script>
 </body>
 </html>

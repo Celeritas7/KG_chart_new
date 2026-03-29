@@ -104,12 +104,6 @@
       try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
     };
 
-    // Convert slug to readable label (days_of_week → Days of the Week)
-    const slugToLabel = (slug) => slug.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-
-    // Admin user ID
-    const ADMIN_USER_ID = 'd469efb7-f9e1-4b49-8b14-75a42b4d22e0';
-
     const loadFromStorage = (key, defaultValue) => {
       try {
         const saved = localStorage.getItem(key);
@@ -598,11 +592,9 @@
 
                   {user ? (
                     <div className="flex items-center gap-2">
-                      {user.id === ADMIN_USER_ID && (
-                        <a href="./kg-chart-admin.html" target="_blank" rel="noopener noreferrer"
-                          className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center hover:bg-white/30 transition-all hover:rotate-90 duration-300"
-                          title="Admin Panel">⚙️</a>
-                      )}
+                      <a href="./kg-chart-admin.html" target="_blank" rel="noopener noreferrer"
+                        className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center hover:bg-white/30 transition-all hover:rotate-90 duration-300"
+                        title="Admin Panel">⚙️</a>
                     <div className="relative">
                       <button onClick={() => setShowUserMenu(!showUserMenu)}
                         className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center hover:bg-white/30">👤</button>
@@ -681,7 +673,7 @@
                     activeTopic === topic.id ? 'bg-jade-600 text-white shadow-lg' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                   }`}>
                   <span>{topic.icon}</span>
-                  <span>{showEnglish ? slugToLabel(topic.id) : (topic.translation?.title_native || slugToLabel(topic.id))}</span>
+                  <span>{showEnglish ? topic.id : (topic.translation?.title_native || topic.id)}</span>
                 </button>
               ))}
             </div>
