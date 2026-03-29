@@ -309,7 +309,7 @@ function render(){
     case'topic-translations':t.textContent='Topic Headers';a.innerHTML=`<button class="btn" onclick="exportTT('csv')">⬇ CSV</button><button class="btn" onclick="exportTT('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('tt')">⬆ Import</button><button class="btn btn-accent" onclick="editTT()">+ Add</button>`;renderTT(c);break;
     case'chart-preview':t.textContent='Chart Preview';a.innerHTML='';renderChart(c);break;
     case'flags':t.textContent='Flags';a.innerHTML=`<button class="btn" onclick="exportFlags('csv')">⬇ CSV</button><button class="btn" onclick="exportFlags('json')">⬇ JSON</button><button class="btn btn-accent" onclick="runConverterScan()">🔍 Scan Conversions</button>`;renderFlags(c);break;
-    case'coverage':t.textContent='Coverage';a.innerHTML=`<button class="btn" onclick="exportMissing('csv')">⬇ Export Missing CSV</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderCoverage(c);break;
+    case'coverage':t.textContent='Coverage';a.innerHTML=`<button class="btn" onclick="exportMissing('csv','selected')">⬇ Selected Language</button><button class="btn" onclick="exportMissing('csv','all')">⬇ All Languages</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderCoverage(c);break;
     case'quiz-stats':t.textContent='Quiz Stats';a.innerHTML='';renderQuiz(c);break;
   }
 }
@@ -1044,34 +1044,41 @@ function renderCoverage(el) {
   el.innerHTML = summaryHtml + detailHtml;
 }
 
-function exportMissing(fmt) {
+function exportMissing(fmt, mode) {
   const activeLangs = S.languages.filter(l => l.is_active);
-  const selectedLang = S.filters.coverageLang || activeLangs[0]?.code || '';
-  if (!selectedLang) { toast('Select a language first', 'error'); return; }
-
-  const translated = new Set(S.vocabTrans.filter(t => t.language_code === selectedLang).map(t => t.vocabulary_id));
-  const missing = S.vocabulary.filter(v => !translated.has(v.id));
-
-  if (!missing.length) { toast('No missing items for this language', 'error'); return; }
-
-  const rows = missing.map(v => ({
-    vocabulary_id: v.id,
-    english_text: v.english_text,
-    topic_id: v.topic_id,
-    language_code: selectedLang,
-    native_text: '',
-    devanagari: '',
-    pinyin: '',
-    notes: ''
-  }));
-
   const headers = ['vocabulary_id', 'english_text', 'topic_id', 'language_code', 'native_text', 'devanagari', 'pinyin', 'notes'];
-  if (fmt === 'csv') {
-    downloadFile(`kg_missing_${selectedLang}.csv`, toCSV(headers, rows), 'text/csv');
+  let rows = [];
+  let filename = '';
+
+  if (mode === 'all') {
+    // Export missing for ALL active languages in one file
+    activeLangs.forEach(l => {
+      const translated = new Set(S.vocabTrans.filter(t => t.language_code === l.code).map(t => t.vocabulary_id));
+      S.vocabulary.filter(v => !translated.has(v.id)).forEach(v => {
+        rows.push({ vocabulary_id: v.id, english_text: v.english_text, topic_id: v.topic_id, language_code: l.code, native_text: '', devanagari: '', pinyin: '', notes: '' });
+      });
+    });
+    filename = 'kg_missing_all_languages';
+    if (!rows.length) { toast('No missing items across any language', 'error'); return; }
   } else {
-    downloadFile(`kg_missing_${selectedLang}.json`, JSON.stringify(rows, null, 2), 'application/json');
+    // Export missing for selected language only
+    const selectedLang = S.filters.coverageLang || activeLangs[0]?.code || '';
+    if (!selectedLang) { toast('Select a language first', 'error'); return; }
+    const translated = new Set(S.vocabTrans.filter(t => t.language_code === selectedLang).map(t => t.vocabulary_id));
+    S.vocabulary.filter(v => !translated.has(v.id)).forEach(v => {
+      rows.push({ vocabulary_id: v.id, english_text: v.english_text, topic_id: v.topic_id, language_code: selectedLang, native_text: '', devanagari: '', pinyin: '', notes: '' });
+    });
+    filename = `kg_missing_${selectedLang}`;
+    if (!rows.length) { toast('No missing items for this language', 'error'); return; }
   }
-  toast(`Exported ${rows.length} missing items for ${selectedLang}`);
+
+  if (fmt === 'csv') {
+    downloadFile(`${filename}.csv`, toCSV(headers, rows), 'text/csv');
+  } else {
+    downloadFile(`${filename}.json`, JSON.stringify(rows, null, 2), 'application/json');
+  }
+  const langCount = mode === 'all' ? activeLangs.length : 1;
+  toast(`Exported ${rows.length} missing items across ${langCount} language${langCount > 1 ? 's' : ''}`);
 }
 
 // ===== QUIZ STATS =====
