@@ -107,9 +107,6 @@
     // Convert slug to readable label (days_of_week → Days of the Week)
     const slugToLabel = (slug) => slug.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
-    // Auto-generate image filename from English text (Tissue paper → tissue_paper.jpg)
-    const toImageFilename = (text) => text.trim().toLowerCase().replace(/\s+/g, '_') + '.jpg';
-
     // Admin user ID
     const ADMIN_USER_ID = 'd469efb7-f9e1-4b49-8b14-75a42b4d22e0';
 
@@ -1098,7 +1095,7 @@
           .insert({
             topic_id: topicId,
             english_text: englishText.trim(),
-            image_filename: imageFilename.trim() || toImageFilename(englishText),
+            image_filename: imageFilename.trim() || null,
             sort_order: 999,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
@@ -1159,10 +1156,10 @@
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Image Filename <span className="text-gray-400">(auto-generated if empty)</span></label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Image Filename <span className="text-gray-400">(optional)</span></label>
                 <input type="text" value={imageFilename} onChange={e => setImageFilename(e.target.value)}
                   className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-jade-500 focus:border-transparent font-mono text-sm"
-                  placeholder={englishText ? toImageFilename(englishText) : 'e.g. spinach.jpg'} />
+                  placeholder="e.g. spinach.jpg" />
               </div>
             </div>
 

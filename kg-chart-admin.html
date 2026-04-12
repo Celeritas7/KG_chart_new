@@ -247,6 +247,9 @@ const BUCKET='vocabulary-assets';
 const ADMIN_USER_ID='d469efb7-f9e1-4b49-8b14-75a42b4d22e0';
 const imgUrl=(tid,fn)=>fn?(fn.startsWith('http')?fn:`${SB_URL}/storage/v1/object/public/${BUCKET}/${tid}/${fn}`):null;
 
+// Auto-generate image filename from English text (Tissue paper → tissue_paper.jpg)
+function toImageFilename(text){return text.trim().toLowerCase().replace(/\s+/g,'_')+'.jpg';}
+
 // ===== ADMIN AUTH CHECK =====
 (async function checkAdminAuth(){
   const{data:{session}}=await sb.auth.getSession();
@@ -324,7 +327,7 @@ function render(){
   switch(S.page){
     case'languages':t.textContent='Languages';a.innerHTML=`<button class="btn btn-accent" onclick="editLanguage()">+ Add Language</button>`;renderLanguages(c);break;
     case'topics':t.textContent='Topics';a.innerHTML=`<button class="btn btn-accent" onclick="editTopic()">+ Add Topic</button>`;renderTopics(c);break;
-    case'vocabulary':t.textContent='Vocabulary';a.innerHTML=`<button class="btn btn-accent" onclick="editVocab()">+ Add Item</button>`;renderVocab(c);break;
+    case'vocabulary':t.textContent='Vocabulary';a.innerHTML=`<button class="btn" onclick="fixMissingFilenames()">🔧 Fix Missing Filenames</button><button class="btn btn-accent" onclick="editVocab()">+ Add Item</button>`;renderVocab(c);break;
     case'translations':t.textContent='Vocabulary Translations';a.innerHTML=`<button class="btn" onclick="exportTrans('csv')">⬇ CSV</button><button class="btn" onclick="exportTrans('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderTrans(c);break;
     case'topic-translations':t.textContent='Topic Headers';a.innerHTML=`<button class="btn" onclick="exportTT('csv')">⬇ CSV</button><button class="btn" onclick="exportTT('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('tt')">⬆ Import</button><button class="btn btn-accent" onclick="editTT()">+ Add</button>`;renderTT(c);break;
     case'chart-preview':t.textContent='Chart Preview';a.innerHTML='';renderChart(c);break;
@@ -451,8 +454,22 @@ function renderVocab(el){
   el.innerHTML=`<div class="filter-bar"><select onchange="S.filters.topic=this.value;render()"><option value="">All Topics</option>${to}</select><input type="text" placeholder="Search..." value="${S.filters.search}" oninput="S.filters.search=this.value;render()"><span class="filter-count">${f.length} items</span></div>${f.length?`<table class="data-table"><thead><tr><th>Order</th><th>Topic</th><th>English</th><th>Image</th><th>Trans</th><th>Actions</th></tr></thead><tbody>${f.map(v=>{const tp=S.topics.find(t=>t.id===v.topic_id);const tc=S.vocabTrans.filter(t=>t.vocabulary_id===v.id).length;return`<tr><td class="mono">${v.sort_order??''}</td><td>${tp?tp.icon:''} <span class="mono">${v.topic_id}</span></td><td><strong>${v.english_text}</strong></td><td class="mono" style="font-size:11px">${v.image_filename||'—'}</td><td><span class="tag">${tc}</span> <button class="btn btn-sm" onclick="manageTr('${v.id}')">✏️</button></td><td><button class="btn btn-sm" onclick="editVocab('${v.id}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="delVocab('${v.id}')">Del</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="empty-state"><div class="icon">📖</div><p>No items match</p></div>`}`;
 }
 function editVocab(id){const v=id?S.vocabulary.find(x=>x.id===id):{};const n=!id;const to=S.topics.map(t=>`<option value="${t.id}" ${v.topic_id===t.id?'selected':''}>${t.icon} ${t.id}</option>`).join('');showModal(`<h3><span class="accent-dot"></span>${n?'Add Vocabulary':'Edit Vocabulary'}</h3><div class="form-group"><label>Topic</label><select id="f-vtopic"><option value="">Select...</option>${to}</select></div><div class="form-row"><div class="form-group"><label>English Text</label><input id="f-veng" value="${v.english_text||''}"></div><div class="form-group"><label>Sort Order</label><input id="f-vorder" type="number" value="${v.sort_order??0}"></div></div><div class="form-group"><label>Image Filename</label><input id="f-vimg" value="${v.image_filename||''}"></div><div class="form-group"><label>Extra Data (JSON)</label><textarea id="f-vextra">${v.extra_data?JSON.stringify(v.extra_data,null,2):''}</textarea></div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-accent" onclick="saveVocab(${n},'${id||''}')">Save</button></div>`);}
-async function saveVocab(n,eid){let ex=null;const es=document.getElementById('f-vextra').value.trim();if(es){try{ex=JSON.parse(es);}catch{toast('Invalid JSON','error');return;}}const d={topic_id:document.getElementById('f-vtopic').value,english_text:document.getElementById('f-veng').value.trim(),sort_order:parseInt(document.getElementById('f-vorder').value)||0,image_filename:document.getElementById('f-vimg').value.trim()||null,extra_data:ex,updated_at:new Date().toISOString()};if(!d.topic_id||!d.english_text){toast('Topic + English required','error');return;}if(n)d.created_at=new Date().toISOString();const{error}=n?await sb.from('kg_chart_vocabulary').insert(d):await sb.from('kg_chart_vocabulary').update(d).eq('id',eid);if(error){toast(error.message,'error');return;}toast(n?'Added':'Updated');closeModal();await loadAll();}
+async function saveVocab(n,eid){let ex=null;const es=document.getElementById('f-vextra').value.trim();if(es){try{ex=JSON.parse(es);}catch{toast('Invalid JSON','error');return;}}const engText=document.getElementById('f-veng').value.trim();const d={topic_id:document.getElementById('f-vtopic').value,english_text:engText,sort_order:parseInt(document.getElementById('f-vorder').value)||0,image_filename:document.getElementById('f-vimg').value.trim()||toImageFilename(engText),extra_data:ex,updated_at:new Date().toISOString()};if(!d.topic_id||!d.english_text){toast('Topic + English required','error');return;}if(n)d.created_at=new Date().toISOString();const{error}=n?await sb.from('kg_chart_vocabulary').insert(d):await sb.from('kg_chart_vocabulary').update(d).eq('id',eid);if(error){toast(error.message,'error');return;}toast(n?'Added':'Updated');closeModal();await loadAll();}
 async function delVocab(id){const v=S.vocabulary.find(x=>x.id===id);if(!confirm(`Delete "${v?.english_text}"?`))return;const{error}=await sb.from('kg_chart_vocabulary').delete().eq('id',id);if(error){toast(error.message,'error');return;}toast('Deleted');await loadAll();}
+
+async function fixMissingFilenames(){
+  const missing=S.vocabulary.filter(v=>!v.image_filename);
+  if(!missing.length){toast('All items already have filenames');return;}
+  if(!confirm(`Generate image filenames for ${missing.length} items?\n\nExample: "Tissue paper" → "tissue_paper.jpg"`))return;
+  let ok=0,errs=0;
+  for(const v of missing){
+    const fn=toImageFilename(v.english_text);
+    const{error}=await sb.from('kg_chart_vocabulary').update({image_filename:fn,updated_at:new Date().toISOString()}).eq('id',v.id);
+    if(error){errs++;console.error(error);}else ok++;
+  }
+  toast(`Fixed ${ok} filenames${errs?`, ${errs} errors`:''}`,errs?'error':'success');
+  await loadAll();
+}
 
 // ===== TRANSLATIONS =====
 function renderTrans(el){

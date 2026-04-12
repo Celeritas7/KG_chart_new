@@ -313,8 +313,6 @@ async function loadAll(){
     activeLangs.forEach(l=>{const translated=new Set(S.vocabTrans.filter(t=>t.language_code===l.code).map(t=>t.vocabulary_id));totalMissing+=S.vocabulary.filter(v=>!translated.has(v.id)).length;});
     document.getElementById('badge-coverage').textContent=totalMissing>0?totalMissing:'✓';
     render();
-    // Run auto-scan silently after data loads
-    autoScan();
   }catch(e){document.getElementById('content').innerHTML=`<div class="empty-state"><div class="icon">⚠️</div><p>${e.message}</p></div>`;}
 }
 
@@ -663,19 +661,6 @@ async function exportFlags(fmt) {
 }
 
 // ===== CONVERTER QUALITY SCANNER =====
-
-// Detect if text is in wrong script (e.g. Latin text for a non-Latin language)
-function isLatinOnly(text) {
-  if (!text) return false;
-  const latinChars = text.replace(/[\s\d\.,!?;:'"()\-\/]/g, '');
-  if (!latinChars) return false;
-  const latinCount = [...latinChars].filter(ch => {
-    const code = ch.codePointAt(0);
-    return (code >= 0x0041 && code <= 0x007A) || (code >= 0x00C0 && code <= 0x024F);
-  }).length;
-  return latinCount / latinChars.length > 0.8;
-}
-
 const SCRIPT_RANGES = {
   si: { name: 'Sinhala',  ranges: [[0x0D80, 0x0DFF]], file: 'sinhala', type: 'standard' },
   my: { name: 'Myanmar',  ranges: [[0x1000, 0x109F], [0xAA60, 0xAA7F]], file: 'burmese', type: 'standard' },
@@ -813,6 +798,19 @@ async function executeScan() {
   const issues = [];
   const allLeakedChars = new Set();
   let leakedCount = 0, cleanCount = 0, missingNativeCount = 0, emptyDevCount = 0, wrongScriptCount = 0;
+
+  // Detect if native_text is in wrong script (e.g. Latin text for Burmese)
+  function isLatinOnly(text) {
+    if (!text) return false;
+    // Check if text is mostly Latin/ASCII (allowing spaces, digits, punctuation)
+    const latinChars = text.replace(/[\s\d\.,!?;:'"()\-\/]/g, '');
+    if (!latinChars) return false;
+    const latinCount = [...latinChars].filter(ch => {
+      const code = ch.codePointAt(0);
+      return (code >= 0x0041 && code <= 0x007A) || (code >= 0x00C0 && code <= 0x024F); // Basic Latin + Latin Extended
+    }).length;
+    return latinCount / latinChars.length > 0.8; // 80%+ Latin = wrong script
+  }
 
   for (const t of trans) {
     const v = S.vocabulary.find(x => x.id === t.vocabulary_id);
@@ -1212,88 +1210,6 @@ Please return the completed CSV with the same format and all rows preserved.`;
   navigator.clipboard.writeText(prompt).then(() => {
     toast('Headers AI prompt copied to clipboard');
   });
-}
-
-// ===== AUTO-SCAN (runs silently on load and after import) =====
-async function autoScan() {
-  const activeLangs = S.languages.filter(l => l.is_active);
-  const existingOpenFlags = S.flags.filter(f => f.status === 'open');
-  const existingKeys = new Set(existingOpenFlags.map(f => `${f.vocabulary_id}_${f.language_code}_${f.reason}`));
-  const newFlags = [];
-
-  for (const lang of activeLangs) {
-    const scriptInfo = SCRIPT_RANGES[lang.code];
-    const hasScriptRange = !!scriptInfo;
-    const trans = S.vocabTrans.filter(t => t.language_code === lang.code);
-
-    // Load converter if available
-    let converter = loadedConverters[lang.code] || null;
-    if (!converter && scriptInfo?.file) {
-      try { converter = await loadConverterJS(lang.code); } catch(e) { /* skip */ }
-    }
-
-    for (const t of trans) {
-      const v = S.vocabulary.find(x => x.id === t.vocabulary_id);
-      if (!v || !t.native_text) continue;
-
-      // Check 1: Wrong script (Latin text in non-Latin language)
-      if (hasScriptRange && isLatinOnly(t.native_text)) {
-        const key = `${t.vocabulary_id}_${lang.code}_wrong_word`;
-        if (!existingKeys.has(key)) {
-          newFlags.push({
-            vocabulary_id: t.vocabulary_id,
-            language_code: lang.code,
-            reason: 'wrong_word',
-            notes: `Auto-scan: native_text "${t.native_text}" is Latin/English text instead of ${lang.name_english} script`,
-            status: 'open'
-          });
-          existingKeys.add(key);
-        }
-        continue;
-      }
-
-      // Check 2: Leaked source characters in converter output
-      if (converter && hasScriptRange) {
-        const sourceText = converter.usePronunciation
-          ? (t.pinyin || (t.pronunciation ? (typeof t.pronunciation === 'object' ? t.pronunciation.pinyin : t.pronunciation) : '') || t.native_text)
-          : t.native_text;
-        const generated = converter.toDevanagari(sourceText);
-        if (generated) {
-          const leaked = findLeakedChars(generated, lang.code);
-          if (leaked.length > 0) {
-            const key = `${t.vocabulary_id}_${lang.code}_needs_review`;
-            if (!existingKeys.has(key)) {
-              newFlags.push({
-                vocabulary_id: t.vocabulary_id,
-                language_code: lang.code,
-                reason: 'needs_review',
-                notes: `Auto-scan: leaked [${leaked.join(', ')}] in "${generated}" from "${t.native_text}"`,
-                status: 'open'
-              });
-              existingKeys.add(key);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // Batch insert new flags
-  if (newFlags.length > 0) {
-    let ok = 0;
-    for (let i = 0; i < newFlags.length; i += 10) {
-      const batch = newFlags.slice(i, i + 10);
-      const { error } = await sb.from('kg_chart_flags').insert(batch);
-      if (!error) ok += batch.length;
-    }
-    toast(`Auto-scan: ${ok} new issue${ok > 1 ? 's' : ''} flagged`, 'error');
-    // Refresh flags data and badge
-    const { data } = await sb.from('kg_chart_flags').select('*').order('created_at', { ascending: false });
-    if (data) S.flags = data;
-    const openFlags = S.flags.filter(f => f.status === 'open').length;
-    document.getElementById('badge-flags').textContent = openFlags || '0';
-    if (S.page === 'flags') render();
-  }
 }
 
 // ===== QUIZ STATS =====
