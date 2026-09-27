@@ -6,7 +6,7 @@
 <title>KG Chart — Admin Panel</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Playfair+Display:wght@400;600;700&family=JetBrains+Mono:wght@300;400;500;600&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+Myanmar:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Sans+Sinhala:wght@400;500;700&family=Noto+Sans+Tamil:wght@400;500;700&family=Padauk:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Playfair+Display:wght@400;600;700&family=JetBrains+Mono:wght@300;400;500;600&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+Myanmar:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Sans+Sinhala:wght@400;500;700&family=Padauk:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root { --transition: 0.25s ease; }
@@ -202,24 +202,6 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
 .stat-tile.warn .st-val { color: var(--warning); }
 .stat-tile .st-label { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
 .flag-head { width: 100%; text-align: left; border: none; font-family: inherit; font-size: inherit; color: var(--text-primary); }
-.img-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px}
-.img-card{background:var(--bg-card);border:1px solid var(--border);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;box-shadow:var(--shadow-sm)}
-.img-card.missing{border:1px dashed var(--warning)}
-.img-thumb{aspect-ratio:4/3;background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center;font-size:36px;opacity:1}
-.img-card.missing .img-thumb{opacity:.6}
-.img-thumb img{width:100%;height:100%;object-fit:contain;background:#fff}
-.img-meta{padding:10px 12px 0;display:flex;flex-direction:column;gap:2px;font-size:13px;min-width:0;color:var(--text-primary)}
-.img-meta .mono{font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.img-card .btn{margin:10px 12px 12px;justify-content:center}
-.img-search-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.img-search-row input,.img-search-row select{padding:9px 14px;border-radius:12px;border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary);font-size:13px;font-family:inherit}
-.img-search-row input{flex:1;min-width:180px}
-.img-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin:14px 0;min-height:120px;max-height:48vh;overflow-y:auto}
-.img-result{border:2px solid var(--border);border-radius:10px;overflow:hidden;cursor:pointer;background:#fff;padding:0;display:flex;flex-direction:column;text-align:left;font-family:inherit}
-.img-result:hover,.img-result:focus-visible{border-color:var(--accent);outline:none}
-.img-result img{width:100%;aspect-ratio:1;object-fit:contain;background:#fff}
-.img-result span{font-size:10px;color:#6b7280;padding:4px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.img-status{font-size:12px;color:var(--text-secondary);min-height:18px}
 </style>
 </head>
 <body data-theme="jade">
@@ -239,7 +221,6 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
     <div class="nav-item" data-page="vocabulary"><span class="icon">📖</span>Vocabulary<span class="badge" id="badge-vocab">-</span></div>
     <div class="nav-item" data-page="translations"><span class="icon">🔤</span>Translations</div>
     <div class="nav-item" data-page="topic-translations"><span class="icon">🏷️</span>Topic Headers</div>
-    <div class="nav-item" data-page="images"><span class="icon">🖼️</span>Images<span class="badge warn" id="badge-images">-</span></div>
     <div class="nav-section-label">Preview</div>
     <div class="nav-item" data-page="chart-preview"><span class="icon">📊</span>Chart Preview</div>
     <div class="nav-section-label">Quality</div>
@@ -342,7 +323,6 @@ async function loadAll(){
     activeLangs.forEach(l=>{const translated=new Set(S.vocabTrans.filter(t=>t.language_code===l.code).map(t=>t.vocabulary_id));totalMissing+=S.vocabulary.filter(v=>!translated.has(v.id)).length;});
     document.getElementById('badge-coverage').textContent=totalMissing>0?totalMissing:'✓';
     render();
-    loadAllImageFiles();
     // Run auto-scan silently after data loads
     autoScan();
   }catch(e){document.getElementById('content').innerHTML=`<div class="empty-state"><div class="icon">⚠️</div><p>${e.message}</p></div>`;}
@@ -357,7 +337,6 @@ function render(){
     case'vocabulary':t.textContent='Vocabulary';a.innerHTML=`<button class="btn" onclick="fixMissingFilenames()">🔧 Fix Missing Filenames</button><button class="btn btn-accent" onclick="editVocab()">+ Add Item</button>`;renderVocab(c);break;
     case'translations':t.textContent='Vocabulary Translations';a.innerHTML=`<button class="btn" onclick="exportTrans('csv')">⬇ CSV</button><button class="btn" onclick="exportTrans('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderTrans(c);break;
     case'topic-translations':t.textContent='Topic Headers';a.innerHTML=`<button class="btn" onclick="exportTT('csv')">⬇ CSV</button><button class="btn" onclick="exportTT('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('tt')">⬆ Import</button><button class="btn btn-accent" onclick="editTT()">+ Add</button>`;renderTT(c);break;
-    case'images':t.textContent='Images';a.innerHTML=`<button class="btn" onclick="copyMissingList()">📋 Copy missing list</button><button class="btn" onclick="loadAllImageFiles(true)">↻ Re-check storage</button>`;renderImages(c);break;
     case'chart-preview':t.textContent='Chart Preview';a.innerHTML='';renderChart(c);break;
     case'flags':t.textContent='Flags';a.innerHTML=`<button class="btn" onclick="exportFlags('csv')">⬇ CSV</button><button class="btn" onclick="exportFlags('json')">⬇ JSON</button><button class="btn" onclick="triggerImport('flags')">⬆ Import</button><button class="btn btn-accent" onclick="runConverterScan()">🔍 Scan Conversions</button>`;renderFlags(c);break;
     case'coverage':t.textContent='Coverage';a.innerHTML=`<button class="btn" onclick="exportMissing('csv','selected')">⬇ Selected Lang</button><button class="btn" onclick="exportMissing('csv','all')">⬇ All Languages</button><button class="btn" onclick="copyAIPrompt()">📋 AI Prompt</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderCoverage(c);break;
@@ -475,89 +454,11 @@ function editTopic(id){const t=id?S.topics.find(x=>x.id===id):{};const n=!id;sho
 async function saveTopic(n){const d={id:document.getElementById('f-tid').value.trim(),icon:document.getElementById('f-ticon').value.trim(),image_folder:document.getElementById('f-tfolder').value.trim(),sort_order:parseInt(document.getElementById('f-torder').value)||0,updated_at:new Date().toISOString()};if(!d.id){toast('ID required','error');return;}if(n)d.created_at=new Date().toISOString();const{error}=n?await sb.from('kg_chart_topics').insert(d):await sb.from('kg_chart_topics').update(d).eq('id',d.id);if(error){toast(error.message,'error');return;}toast(n?'Added':'Updated');closeModal();await loadAll();}
 async function delTopic(id){if(!confirm(`Delete "${id}"?`))return;const{error}=await sb.from('kg_chart_topics').delete().eq('id',id);if(error){toast(error.message,'error');return;}toast('Deleted');await loadAll();}
 
-// ===== IMAGES (search + upload to storage) =====
-const IMG={exists:{},files:{},loaded:false,loading:false,missingOnly:true,bust:{},results:[],vid:null,source:'openverse',autoNext:true};
-const escH=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function urlExists(u){try{const r=await fetch(u,{method:'HEAD',cache:'no-store'});return r.ok;}catch{return false;}}
-async function loadAllImageFiles(force){
-  if(IMG.loading)return;IMG.loading=true;if(S.page==='images')render();
-  const todo=S.vocabulary.filter(v=>v.image_filename&&!v.image_filename.startsWith('http')&&!v.extra_data?.colorCode);
-  let i=0;const worker=async()=>{while(i<todo.length){const v=todo[i++];IMG.exists[v.id]=await urlExists(imgUrl(v.topic_id,v.image_filename));}};
-  await Promise.all(Array.from({length:12},worker));
-  IMG.loading=false;IMG.loaded=true;updateImgBadge();if(S.page==='images')render();
-  if(force)toast('Storage re-checked');
-}
-function hasImage(v){if(v.extra_data?.colorCode)return true;if(!v.image_filename)return false;if(v.image_filename.startsWith('http'))return true;return !!IMG.exists[v.id];}
-function copyMissingList(){const l=S.vocabulary.filter(v=>(!S.filters.topic||v.topic_id===S.filters.topic)&&!hasImage(v)).sort((a,b)=>a.topic_id.localeCompare(b.topic_id)||(a.sort_order??0)-(b.sort_order??0)).map(v=>`${v.topic_id} / ${v.english_text}`).join('\n');if(!l){toast('Nothing missing');return;}const done=()=>toast(`Copied ${l.split('\n').length} items`);navigator.clipboard?.writeText(l).then(done,()=>downloadFile('missing-images.txt',l,'text/plain'))??downloadFile('missing-images.txt',l,'text/plain');}
-function updateImgBadge(){const b=document.getElementById('badge-images');if(!b)return;const m=S.vocabulary.filter(v=>!hasImage(v)).length;b.textContent=m||'✓';}
-function imgListFiltered(){return S.vocabulary.filter(v=>(!S.filters.topic||v.topic_id===S.filters.topic)&&(!IMG.missingOnly||!hasImage(v)));}
-function renderImages(el){
-  if(!IMG.loaded){el.innerHTML='<div class="spinner-wrap"><div class="spinner"></div> Checking storage…</div>';return;}
-  const to=S.topics.map(t=>{const miss=S.vocabulary.filter(v=>v.topic_id===t.id&&!hasImage(v)).length;return`<option value="${t.id}" ${S.filters.topic===t.id?'selected':''}>${t.icon} ${t.id}${miss?` (${miss} missing)`:''}</option>`;}).join('');
-  const list=imgListFiltered();
-  const total=S.vocabulary.filter(v=>!S.filters.topic||v.topic_id===S.filters.topic).length;
-  const missing=S.vocabulary.filter(v=>(!S.filters.topic||v.topic_id===S.filters.topic)&&!hasImage(v)).length;
-  el.innerHTML=`<div class="filter-bar"><select onchange="S.filters.topic=this.value;render()"><option value="">All Topics</option>${to}</select><label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary)"><input type="checkbox" ${IMG.missingOnly?'checked':''} onchange="IMG.missingOnly=this.checked;render()"> Missing only</label><span class="filter-count">${missing} of ${total} missing</span>${IMG.loading?'<span class="filter-count">checking…</span>':''}</div>${list.length?`<div class="img-grid">${list.map(v=>{const ok=hasImage(v);const cc=v.extra_data?.colorCode;const tp=S.topics.find(t=>t.id===v.topic_id);const u=ok&&!cc?imgUrl(v.topic_id,v.image_filename)+(IMG.bust[v.id]?'?v='+IMG.bust[v.id]:''):null;return`<div class="img-card ${ok?'':'missing'}"><div class="img-thumb">${cc?`<div style="width:56px;height:56px;border-radius:10px;background:${cc}"></div>`:u?`<img src="${u}" loading="lazy" alt="">`:'📷'}</div><div class="img-meta"><strong>${escH(v.english_text)}</strong><span class="mono">${tp?.icon||''} ${v.topic_id}/${escH(v.image_filename||'—')}</span></div>${cc?'':`<button class="btn btn-sm ${ok?'':'btn-accent'}" onclick="openImageFinder('${v.id}')">${ok?'Replace':'🔍 Find image'}</button>`}</div>`;}).join('')}</div>`:`<div class="empty-state"><div class="icon">🖼️</div><p>${IMG.missingOnly?'No missing images here':'No items'}</p></div>`}`;
-}
-function targetFilename(v){const fn=v.image_filename&&!v.image_filename.startsWith('http')?v.image_filename:toImageFilename(v.english_text);return /\.(jpe?g|png|webp)$/i.test(fn)?fn:fn+'.jpg';}
-function openImageFinder(vid){
-  const v=S.vocabulary.find(x=>x.id===vid);if(!v)return;IMG.vid=vid;IMG.results=[];
-  const fn=targetFilename(v);const cur=hasImage(v)?imgUrl(v.topic_id,v.image_filename)+(IMG.bust[vid]?'?v='+IMG.bust[vid]:''):null;
-  showModal(`<h3><span class="accent-dot"></span>Find image — ${escH(v.english_text)}</h3>
-<div style="display:flex;gap:14px;align-items:center;margin-bottom:16px"><div style="width:64px;height:64px;border-radius:10px;background:var(--bg-tertiary);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0">${cur?`<img src="${cur}" style="width:100%;height:100%;object-fit:contain;background:#fff">`:'📷'}</div><div style="font-size:12px;color:var(--text-secondary)">Saves to <span class="mono" style="color:var(--text-primary)">${BUCKET}/${v.topic_id}/${escH(fn)}</span><br>${cur?'Current image will be replaced.':'No image in storage yet.'}</div></div>
-<div class="img-search-row"><input id="img-q" value="${escH(v.english_text)}" onkeydown="if(event.key==='Enter')runImgSearch()" placeholder="Search images"><select id="img-src" onchange="IMG.source=this.value;runImgSearch()"><option value="openverse" ${IMG.source==='openverse'?'selected':''}>Openverse (CC)</option><option value="wikimedia" ${IMG.source==='wikimedia'?'selected':''}>Wikimedia Commons</option></select><button class="btn btn-accent" onclick="runImgSearch()">Search</button></div>
-<div class="img-results" id="img-results"></div>
-<div class="img-status" id="img-status"></div>
-<label class="import-zone" style="display:block;margin:10px 0" ondragover="event.preventDefault()" ondrop="event.preventDefault();const f=event.dataTransfer.files[0];if(f)uploadVocabImage(IMG.vid,f)"><input type="file" accept="image/*" onchange="if(this.files[0])uploadVocabImage(IMG.vid,this.files[0])"><div style="font-size:13px;color:var(--text-secondary)">Or <strong style="color:var(--accent)">upload a file</strong>, drop one here, or paste an image (Ctrl/⌘+V)</div></label>
-<div class="img-search-row"><input id="img-url" placeholder="…or paste an image URL"><button class="btn" onclick="useImageUrl()">Use URL</button></div>
-<div class="form-actions" style="justify-content:space-between;align-items:center"><label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary)"><input type="checkbox" ${IMG.autoNext?'checked':''} onchange="IMG.autoNext=this.checked"> Open next missing after saving</label><button class="btn" onclick="closeFinder()">Close</button></div>`);
-  const m=document.querySelector('#modal-root .modal');if(m)m.style.maxWidth='880px';
-  runImgSearch();
-}
-function closeFinder(){IMG.vid=null;closeModal();}
-function setImgStatus(t,err){const e=document.getElementById('img-status');if(e){e.textContent=t;e.style.color=err?'var(--danger)':'';}}
-async function searchOpenverse(q){const r=await fetch(`https://api.openverse.org/v1/images/?q=${encodeURIComponent(q)}&page_size=30&mature=false`);if(!r.ok)throw new Error('Openverse '+r.status);const j=await r.json();return(j.results||[]).map(x=>({thumb:x.thumbnail,full:x.thumbnail,alt:x.url,title:x.title||'',credit:[x.creator,x.license?'CC '+String(x.license).toUpperCase()+(x.license_version?' '+x.license_version:''):''].filter(Boolean).join(' · '),page:x.foreign_landing_url||'',source:'openverse'}));}
-async function searchWikimedia(q){const u=`https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrnamespace=6&gsrlimit=30&gsrsearch=${encodeURIComponent(q+' filetype:bitmap')}&prop=imageinfo&iiprop=url|extmetadata&iiurlwidth=640`;const r=await fetch(u);if(!r.ok)throw new Error('Wikimedia '+r.status);const j=await r.json();return Object.values(j.query?.pages||{}).sort((a,b)=>a.index-b.index).map(p=>{const i=p.imageinfo?.[0]||{};const md=i.extmetadata||{};return{thumb:i.thumburl,full:i.thumburl,alt:null,title:p.title.replace(/^File:/,''),credit:[(md.Artist?.value||'').replace(/<[^>]+>/g,'').trim(),md.LicenseShortName?.value].filter(Boolean).join(' · '),page:i.descriptionurl||'',source:'wikimedia'};}).filter(x=>x.thumb);}
-async function runImgSearch(){
-  const q=document.getElementById('img-q')?.value.trim();const box=document.getElementById('img-results');if(!q||!box)return;
-  box.innerHTML='<div class="spinner-wrap" style="grid-column:1/-1;height:120px"><div class="spinner"></div> Searching…</div>';setImgStatus('');
-  try{IMG.results=IMG.source==='wikimedia'?await searchWikimedia(q):await searchOpenverse(q);}catch(e){box.innerHTML='';setImgStatus('Search failed: '+e.message+' — try the other source.',true);return;}
-  if(!document.getElementById('img-results'))return;
-  box.innerHTML=IMG.results.length?IMG.results.map((r,i)=>`<button type="button" class="img-result" title="${escH(r.title+(r.credit?' — '+r.credit:''))}" onclick="pickImgResult(${i})"><img src="${escH(r.thumb)}" loading="lazy" alt="" onerror="this.closest('.img-result').remove()"><span>${escH(r.credit||r.title)}</span></button>`).join(''):'<div style="grid-column:1/-1;color:var(--text-muted);font-size:13px;padding:30px;text-align:center">No results — try a simpler word or the other source.</div>';
-  setImgStatus(IMG.results.length?'Click an image to save it.':'');
-}
-async function fetchBlob(u){const r=await fetch(u,{mode:'cors'});if(!r.ok)throw new Error('HTTP '+r.status);const b=await r.blob();if(!b.type.startsWith('image/'))throw new Error('not an image');return b;}
-async function pickImgResult(i){
-  const r=IMG.results[i];if(!r)return;setImgStatus('Downloading…');
-  let blob=null;for(const u of [r.full,r.alt].filter(Boolean)){try{blob=await fetchBlob(u);break;}catch(e){console.warn(u,e);}}
-  if(!blob){setImgStatus('That image blocks downloads. Pick another, or save it and use Upload.',true);return;}
-  await uploadVocabImage(IMG.vid,blob,{source:r.source,title:r.title,credit:r.credit,page:r.page});
-}
-async function useImageUrl(){const u=document.getElementById('img-url')?.value.trim();if(!u)return;setImgStatus('Downloading…');try{await uploadVocabImage(IMG.vid,await fetchBlob(u),{source:'url',page:u});}catch(e){setImgStatus('Could not download that URL (the site blocks it). Save the image and use Upload instead.',true);}}
-async function encodeImage(blob,mime){const bmp=await createImageBitmap(blob);const s=Math.min(1,800/Math.max(bmp.width,bmp.height));const c=document.createElement('canvas');c.width=Math.round(bmp.width*s);c.height=Math.round(bmp.height*s);const x=c.getContext('2d');if(mime==='image/jpeg'){x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);}x.drawImage(bmp,0,0,c.width,c.height);return await new Promise(r=>c.toBlob(r,mime,0.86));}
-async function uploadVocabImage(vid,blob,meta){
-  const v=S.vocabulary.find(x=>x.id===vid);if(!v)return;
-  const fn=targetFilename(v);const ext=fn.split('.').pop().toLowerCase();const mime=ext==='png'?'image/png':ext==='webp'?'image/webp':'image/jpeg';
-  setImgStatus('Uploading…');
-  let out;try{out=await encodeImage(blob,mime);}catch(e){setImgStatus('Could not read that image.',true);return;}
-  const{error}=await sb.storage.from(BUCKET).upload(`${v.topic_id}/${fn}`,out,{upsert:true,contentType:mime,cacheControl:'3600'});
-  if(error){setImgStatus('Upload failed: '+error.message,true);toast('Upload failed','error');return;}
-  const upd={updated_at:new Date().toISOString()};
-  if(fn!==v.image_filename)upd.image_filename=fn;
-  if(meta)upd.extra_data={...(v.extra_data||{}),image_credit:meta};
-  if(Object.keys(upd).length>1){const{error:e2}=await sb.from('kg_chart_vocabulary').update(upd).eq('id',v.id);if(e2)toast('Image saved, but DB update failed: '+e2.message,'error');else Object.assign(v,upd);}
-  IMG.exists[v.id]=true;IMG.bust[v.id]=Date.now();
-  toast(`Saved ${v.topic_id}/${fn}`);updateImgBadge();
-  const next=IMG.autoNext?S.vocabulary.find(x=>x.id!==v.id&&(!S.filters.topic||x.topic_id===(S.filters.topic||v.topic_id))&&x.topic_id===v.topic_id&&!hasImage(x)):null;
-  render();if(next)openImageFinder(next.id);else closeFinder();
-}
-document.addEventListener('paste',e=>{if(!IMG.vid||!document.getElementById('img-results'))return;if(e.target.matches?.('input,textarea')&&!(e.clipboardData?.files?.length))return;const f=[...(e.clipboardData?.items||[])].find(i=>i.type.startsWith('image/'))?.getAsFile();if(f){e.preventDefault();uploadVocabImage(IMG.vid,f);}});
-
 // ===== VOCABULARY =====
 function renderVocab(el){
   const to=S.topics.map(t=>`<option value="${t.id}">${t.icon} ${t.id}</option>`).join('');
   const f=S.vocabulary.filter(v=>{if(S.filters.topic&&v.topic_id!==S.filters.topic)return false;if(S.filters.search&&!v.english_text.toLowerCase().includes(S.filters.search.toLowerCase()))return false;return true;});
-  el.innerHTML=`<div class="filter-bar"><select onchange="S.filters.topic=this.value;render()"><option value="">All Topics</option>${to}</select><input type="text" placeholder="Search..." value="${S.filters.search}" oninput="S.filters.search=this.value;render()"><span class="filter-count">${f.length} items</span></div>${f.length?`<table class="data-table"><thead><tr><th>Order</th><th>Topic</th><th>English</th><th>Image</th><th>Trans</th><th>Actions</th></tr></thead><tbody>${f.map(v=>{const tp=S.topics.find(t=>t.id===v.topic_id);const tc=S.vocabTrans.filter(t=>t.vocabulary_id===v.id).length;return`<tr><td class="mono">${v.sort_order??''}</td><td>${tp?tp.icon:''} <span class="mono">${v.topic_id}</span></td><td><strong>${v.english_text}</strong></td><td class="mono" style="font-size:11px">${v.image_filename||'—'} <button class="btn btn-sm" title="Find image" onclick="openImageFinder('${v.id}')">🔍</button></td><td><span class="tag">${tc}</span> <button class="btn btn-sm" onclick="manageTr('${v.id}')">✏️</button></td><td><button class="btn btn-sm" onclick="editVocab('${v.id}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="delVocab('${v.id}')">Del</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="empty-state"><div class="icon">📖</div><p>No items match</p></div>`}`;
+  el.innerHTML=`<div class="filter-bar"><select onchange="S.filters.topic=this.value;render()"><option value="">All Topics</option>${to}</select><input type="text" placeholder="Search..." value="${S.filters.search}" oninput="S.filters.search=this.value;render()"><span class="filter-count">${f.length} items</span></div>${f.length?`<table class="data-table"><thead><tr><th>Order</th><th>Topic</th><th>English</th><th>Image</th><th>Trans</th><th>Actions</th></tr></thead><tbody>${f.map(v=>{const tp=S.topics.find(t=>t.id===v.topic_id);const tc=S.vocabTrans.filter(t=>t.vocabulary_id===v.id).length;return`<tr><td class="mono">${v.sort_order??''}</td><td>${tp?tp.icon:''} <span class="mono">${v.topic_id}</span></td><td><strong>${v.english_text}</strong></td><td class="mono" style="font-size:11px">${v.image_filename||'—'}</td><td><span class="tag">${tc}</span> <button class="btn btn-sm" onclick="manageTr('${v.id}')">✏️</button></td><td><button class="btn btn-sm" onclick="editVocab('${v.id}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="delVocab('${v.id}')">Del</button></td></tr>`;}).join('')}</tbody></table>`:`<div class="empty-state"><div class="icon">📖</div><p>No items match</p></div>`}`;
 }
 function editVocab(id){const v=id?S.vocabulary.find(x=>x.id===id):{};const n=!id;const to=S.topics.map(t=>`<option value="${t.id}" ${v.topic_id===t.id?'selected':''}>${t.icon} ${t.id}</option>`).join('');showModal(`<h3><span class="accent-dot"></span>${n?'Add Vocabulary':'Edit Vocabulary'}</h3><div class="form-group"><label>Topic</label><select id="f-vtopic"><option value="">Select...</option>${to}</select></div><div class="form-row"><div class="form-group"><label>English Text</label><input id="f-veng" value="${v.english_text||''}"></div><div class="form-group"><label>Sort Order</label><input id="f-vorder" type="number" value="${v.sort_order??0}"></div></div><div class="form-group"><label>Image Filename</label><input id="f-vimg" value="${v.image_filename||''}"></div><div class="form-group"><label>Extra Data (JSON)</label><textarea id="f-vextra">${v.extra_data?JSON.stringify(v.extra_data,null,2):''}</textarea></div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-accent" onclick="saveVocab(${n},'${id||''}')">Save</button></div>`);}
 async function saveVocab(n,eid){let ex=null;const es=document.getElementById('f-vextra').value.trim();if(es){try{ex=JSON.parse(es);}catch{toast('Invalid JSON','error');return;}}const engText=document.getElementById('f-veng').value.trim();const d={topic_id:document.getElementById('f-vtopic').value,english_text:engText,sort_order:parseInt(document.getElementById('f-vorder').value)||0,image_filename:document.getElementById('f-vimg').value.trim()||toImageFilename(engText),extra_data:ex,updated_at:new Date().toISOString()};if(!d.topic_id||!d.english_text){toast('Topic + English required','error');return;}if(n)d.created_at=new Date().toISOString();const{error}=n?await sb.from('kg_chart_vocabulary').insert(d):await sb.from('kg_chart_vocabulary').update(d).eq('id',eid);if(error){toast(error.message,'error');return;}toast(n?'Added':'Updated');closeModal();await loadAll();}
@@ -811,7 +712,7 @@ const SCRIPT_RANGES = {
   ja: { name: 'Japanese', ranges: [[0x3040, 0x309F], [0x30A0, 0x30FF], [0x4E00, 0x9FFF]], file: null, type: null },
   ko: { name: 'Korean',   ranges: [[0xAC00, 0xD7AF], [0x1100, 0x11FF]], file: null, type: null },
   te: { name: 'Telugu',   ranges: [[0x0C00, 0x0C7F]], file: 'telugu', type: 'standard' },
-  ta: { name: 'Tamil',    ranges: [[0x0B80, 0x0BFF]], file: 'tamil', type: 'standard' },
+  ta: { name: 'Tamil',    ranges: [[0x0B80, 0x0BFF]], file: null, type: null },
   th: { name: 'Thai',     ranges: [[0x0E00, 0x0E7F]], file: null, type: null },
   km: { name: 'Khmer',    ranges: [[0x1780, 0x17FF]], file: null, type: null },
   lo: { name: 'Lao',      ranges: [[0x0E80, 0x0EFF]], file: null, type: null },
