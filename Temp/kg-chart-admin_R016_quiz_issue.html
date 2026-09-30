@@ -293,7 +293,7 @@ function toImageFilename(text){return text.trim().toLowerCase().replace(/\s+/g,'
   loadAll();
 })();
 
-let S={languages:[],topics:[],vocabulary:[],vocabTrans:[],topicTrans:[],quizSessions:[],flags:[],users:[],unlocks:[],bypass:false,pathReady:false,
+let S={languages:[],topics:[],vocabulary:[],vocabTrans:[],topicTrans:[],quizSessions:[],flags:[],
   page:'languages',filters:{topic:'',language:'',search:'',flagStatus:'open',coverageLang:''},chartView:'grid'};
 
 // Theme
@@ -331,13 +331,6 @@ async function loadAll(){
     ]);
     S.languages=a.data||[];S.topics=b.data||[];S.vocabulary=c.data||[];S.vocabTrans=d.data||[];
     S.topicTrans=e.data||[];S.quizSessions=f.data||[];S.flags=g.data||[];
-    // Phase 8: learning path data (empty until kg-chart-phase8.sql is run)
-    const[pu,pl,ps]=await Promise.all([
-      sb.from('kg_chart_users').select('*').order('email'),
-      sb.from('kg_chart_topic_unlocks').select('*'),
-      sb.from('kg_chart_settings').select('*').eq('key','admin_bypass_lock').maybeSingle()
-    ]);
-    S.users=pu.data||[];S.unlocks=pl.data||[];S.bypass=ps.data?.value===true;S.pathReady=!pl.error&&!ps.error;
     document.getElementById('badge-lang').textContent=S.languages.length;
     document.getElementById('badge-topics').textContent=S.topics.length;
     document.getElementById('badge-vocab').textContent=S.vocabulary.length;
@@ -360,7 +353,7 @@ function render(){
   const t=document.getElementById('page-title'),a=document.getElementById('topbar-actions'),c=document.getElementById('content');
   switch(S.page){
     case'languages':t.textContent='Languages';a.innerHTML=`<button class="btn btn-accent" onclick="editLanguage()">+ Add Language</button>`;renderLanguages(c);break;
-    case'topics':t.textContent='Topics';a.innerHTML=`<button class="btn" onclick="openReset()">↺ Reset a learner</button><button class="btn btn-accent" onclick="editTopic()">+ Add Topic</button>`;renderTopics(c);break;
+    case'topics':t.textContent='Topics';a.innerHTML=`<button class="btn btn-accent" onclick="editTopic()">+ Add Topic</button>`;renderTopics(c);break;
     case'vocabulary':t.textContent='Vocabulary';a.innerHTML=`<button class="btn" onclick="fixMissingFilenames()">🔧 Fix Missing Filenames</button><button class="btn btn-accent" onclick="editVocab()">+ Add Item</button>`;renderVocab(c);break;
     case'translations':t.textContent='Vocabulary Translations';a.innerHTML=`<button class="btn" onclick="exportTrans('csv')">⬇ CSV</button><button class="btn" onclick="exportTrans('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderTrans(c);break;
     case'topic-translations':t.textContent='Topic Headers';a.innerHTML=`<button class="btn" onclick="exportTT('csv')">⬇ CSV</button><button class="btn" onclick="exportTT('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('tt')">⬆ Import</button><button class="btn btn-accent" onclick="editTT()">+ Add</button>`;renderTT(c);break;
@@ -476,48 +469,11 @@ async function delLang(code){if(!confirm(`Delete "${code}"?`))return;const{error
 // ===== TOPICS =====
 function renderTopics(el){
   if(!S.topics.length){el.innerHTML=`<div class="empty-state"><div class="icon">📂</div><p>No topics yet</p></div>`;return;}
-  const banner=S.pathReady
-    ?`<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 18px;margin-bottom:18px;border:1px solid var(--border);border-radius:14px;background:var(--bg-card)"><div style="flex:1;min-width:220px"><div style="font-weight:600">Learning path</div><div style="font-size:13px;color:var(--text-muted)">Topics unlock in sort order. The next opens once every word in the previous topic has been quizzed at least once. Hidden topics are skipped.</div></div><button class="btn ${S.bypass?'btn-accent':''}" onclick="toggleBypass()">${S.bypass?'🔓 Admin bypass: ON':'🔒 Admin bypass: OFF'}</button></div>`
-    :`<div style="padding:14px 18px;margin-bottom:18px;border:1px solid var(--border);border-radius:14px;background:var(--warning-dim);color:var(--warning)">Run <b>kg-chart-phase8.sql</b> to enable the learning path (Visible toggle, unlocks, bypass).</div>`;
-  el.innerHTML=banner+`<table class="data-table"><thead><tr><th>ID</th><th>Icon</th><th>Image Folder</th><th>Order</th><th>Vocab</th><th>Learners</th><th>Actions</th></tr></thead><tbody>${S.topics.map(t=>{const c=S.vocabulary.filter(v=>v.topic_id===t.id).length;const un=S.unlocks.filter(u=>u.topic_id===t.id).length;return`<tr style="${t.is_hidden?'opacity:0.55':''}"><td class="mono">${t.id}</td><td style="font-size:28px">${t.icon||''}</td><td class="mono">${t.image_folder||''}</td><td class="mono">${t.sort_order??''}</td><td><span class="tag">${c}</span></td><td style="white-space:nowrap"><button class="btn btn-sm" onclick="toggleTopicHidden('${t.id}')" ${S.pathReady?'':'disabled'}>${t.is_hidden?'🙈 Hidden':'👁 Visible'}</button> <button class="btn btn-sm" onclick="openUnlock('${t.id}')" ${S.pathReady?'':'disabled'}>🔓 Unlock${un?' ('+un+')':''}</button></td><td><button class="btn btn-sm" onclick="editTopic('${t.id}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="delTopic('${t.id}')">Del</button></td></tr>`;}).join('')}</tbody></table>`;
+  el.innerHTML=`<table class="data-table"><thead><tr><th>ID</th><th>Icon</th><th>Image Folder</th><th>Order</th><th>Vocab</th><th>Actions</th></tr></thead><tbody>${S.topics.map(t=>{const c=S.vocabulary.filter(v=>v.topic_id===t.id).length;return`<tr><td class="mono">${t.id}</td><td style="font-size:28px">${t.icon||''}</td><td class="mono">${t.image_folder||''}</td><td class="mono">${t.sort_order??''}</td><td><span class="tag">${c}</span></td><td><button class="btn btn-sm" onclick="editTopic('${t.id}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="delTopic('${t.id}')">Del</button></td></tr>`;}).join('')}</tbody></table>`;
 }
 function editTopic(id){const t=id?S.topics.find(x=>x.id===id):{};const n=!id;showModal(`<h3><span class="accent-dot"></span>${n?'Add Topic':'Edit Topic'}</h3><div class="form-row"><div class="form-group"><label>ID (slug)</label><input id="f-tid" value="${t.id||''}" ${n?'':'readonly style="opacity:0.5"'}></div><div class="form-group"><label>Icon</label><input id="f-ticon" value="${t.icon||''}" placeholder="🍎"></div></div><div class="form-row"><div class="form-group"><label>Image Folder</label><input id="f-tfolder" value="${t.image_folder||''}"></div><div class="form-group"><label>Sort Order</label><input id="f-torder" type="number" value="${t.sort_order??0}"></div></div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-accent" onclick="saveTopic(${n})">Save</button></div>`);}
 async function saveTopic(n){const d={id:document.getElementById('f-tid').value.trim(),icon:document.getElementById('f-ticon').value.trim(),image_folder:document.getElementById('f-tfolder').value.trim(),sort_order:parseInt(document.getElementById('f-torder').value)||0,updated_at:new Date().toISOString()};if(!d.id){toast('ID required','error');return;}if(n)d.created_at=new Date().toISOString();const{error}=n?await sb.from('kg_chart_topics').insert(d):await sb.from('kg_chart_topics').update(d).eq('id',d.id);if(error){toast(error.message,'error');return;}toast(n?'Added':'Updated');closeModal();await loadAll();}
 async function delTopic(id){if(!confirm(`Delete "${id}"?`))return;const{error}=await sb.from('kg_chart_topics').delete().eq('id',id);if(error){toast(error.message,'error');return;}toast('Deleted');await loadAll();}
-
-// ===== LEARNING PATH (Phase 8) =====
-function langOptions(sel){return`<option value="*" ${sel==='*'?'selected':''}>All languages</option>`+S.languages.filter(l=>l.is_active).map(l=>`<option value="${l.code}" ${sel===l.code?'selected':''}>${l.flag_emoji||l.flag||''} ${escH(l.name_english||l.english_name||l.code)}</option>`).join('');}
-async function toggleTopicHidden(id){const t=S.topics.find(x=>x.id===id);const{error}=await sb.from('kg_chart_topics').update({is_hidden:!t.is_hidden,updated_at:new Date().toISOString()}).eq('id',id);if(error){toast(error.message,'error');return;}toast(t.is_hidden?'Topic visible':'Topic hidden');await loadAll();}
-async function toggleBypass(){const v=!S.bypass;const{error}=await sb.from('kg_chart_settings').upsert({key:'admin_bypass_lock',value:v,updated_at:new Date().toISOString()});if(error){toast(error.message,'error');return;}toast(v?'Bypass on: you see every topic':'Bypass off: you follow the path');await loadAll();}
-let UNLOCK={topic:'',lang:'*'};
-function openUnlock(topicId){UNLOCK={topic:topicId,lang:UNLOCK.lang||'*'};renderUnlock();}
-function renderUnlock(){
-  const t=S.topics.find(x=>x.id===UNLOCK.topic);
-  const have=new Set(S.unlocks.filter(u=>u.topic_id===UNLOCK.topic&&u.language_code===UNLOCK.lang).map(u=>u.email));
-  const users=S.users.filter(u=>u.role!=='admin');
-  const list=users.length?users.map(u=>`<label style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;cursor:pointer"><input type="checkbox" class="unl-cb" value="${escH(u.email)}" ${have.has(u.email)?'checked':''}><span style="flex:1">${escH(u.name||u.email)}</span><span class="mono" style="font-size:12px;color:var(--text-muted)">${escH(u.email)}</span></label>`).join(''):'<p style="color:var(--text-muted)">No learners in kg_chart_users yet.</p>';
-  showModal(`<h3><span class="accent-dot"></span>Unlock ${t?.icon||''} ${escH(UNLOCK.topic)}</h3><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Ticked learners get this topic open straight away. Topics after it still follow the path.</p><div class="form-group"><label>Language</label><select id="unl-lang" onchange="UNLOCK.lang=this.value;renderUnlock()">${langOptions(UNLOCK.lang)}</select></div><div style="display:grid;gap:6px;max-height:320px;overflow-y:auto;margin:10px 0">${list}</div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-accent" onclick="saveUnlock()">Save</button></div>`);
-}
-async function saveUnlock(){
-  const want=new Set([...document.querySelectorAll('.unl-cb:checked')].map(c=>c.value));
-  const have=new Set(S.unlocks.filter(u=>u.topic_id===UNLOCK.topic&&u.language_code===UNLOCK.lang).map(u=>u.email));
-  const add=[...want].filter(e=>!have.has(e)).map(email=>({email,topic_id:UNLOCK.topic,language_code:UNLOCK.lang}));
-  const del=[...have].filter(e=>!want.has(e));
-  if(add.length){const{error}=await sb.from('kg_chart_topic_unlocks').upsert(add);if(error){toast(error.message,'error');return;}}
-  if(del.length){const{error}=await sb.from('kg_chart_topic_unlocks').delete().eq('topic_id',UNLOCK.topic).eq('language_code',UNLOCK.lang).in('email',del);if(error){toast(error.message,'error');return;}}
-  toast(`Saved (+${add.length} / −${del.length})`);closeModal();await loadAll();
-}
-function openReset(){
-  if(!S.pathReady){toast('Run kg-chart-phase8.sql first','error');return;}
-  const opts=S.users.map(u=>`<option value="${escH(u.email)}">${escH(u.name||u.email)} · ${escH(u.email)}</option>`).join('');
-  showModal(`<h3><span class="accent-dot"></span>Reset a learner's path</h3><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Re-locks their topics back to the first one. Their quiz history, Quiz Stats and word strength are kept. Only answers after the reset count toward unlocking.</p><div class="form-row"><div class="form-group"><label>Learner</label><select id="rs-email">${opts}</select></div><div class="form-group"><label>Language</label><select id="rs-lang">${langOptions('*')}</select></div></div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-danger" onclick="doReset()">Reset path</button></div>`);
-}
-async function doReset(){
-  const email=document.getElementById('rs-email').value,language_code=document.getElementById('rs-lang').value;
-  if(!email)return;if(!confirm(`Reset ${email}'s learning path (${language_code==='*'?'all languages':language_code})?`))return;
-  const{error}=await sb.from('kg_chart_progress_resets').insert({email,language_code});
-  if(error){toast(error.message,'error');return;}toast('Path reset');closeModal();
-}
 
 // ===== IMAGES (search + upload to storage) =====
 const IMG={exists:{},files:{},loaded:false,loading:false,missingOnly:true,bust:{},results:[],vid:null,source:'openverse',autoNext:true};

@@ -88,10 +88,6 @@
       userRatings: 'kg_chart_user_ratings',
       quizSessions: 'kg_chart_quiz_sessions',
       quizAnswers: 'kg_chart_quiz_answers',
-      settings: 'kg_chart_settings',
-      topicUnlocks: 'kg_chart_topic_unlocks',
-      progressResets: 'kg_chart_progress_resets',
-      topicCompletions: 'kg_chart_topic_completions',
     };
 
     // ==========================================
@@ -679,7 +675,7 @@
       );
     }
 
-    function TopicNav({ topics, activeTopic, onSelect, showEnglish, pathStatus }) {
+    function TopicNav({ topics, activeTopic, onSelect, showEnglish }) {
       const scrollRef = React.useRef(null);
       const [canScrollRight, setCanScrollRight] = useState(false);
       const [canScrollLeft, setCanScrollLeft] = useState(false);
@@ -714,13 +710,10 @@
               {topics.map((topic) => (
                 <button key={topic.id} data-active={activeTopic === topic.id ? 'true' : 'false'} onClick={() => onSelect(topic.id)}
                   className={`px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all flex items-center gap-2 ${
-                    activeTopic === topic.id ? (topic.locked ? 'bg-gray-400 text-white shadow-lg' : 'bg-jade-600 text-white shadow-lg') : topic.locked ? 'bg-gray-50 text-gray-400 hover:bg-gray-100' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    activeTopic === topic.id ? 'bg-jade-600 text-white shadow-lg' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                   }`}>
-                  <span className={topic.locked ? 'grayscale opacity-60' : ''}>{topic.locked ? '🔒' : topic.icon}</span>
+                  <span>{topic.icon}</span>
                   <span>{showEnglish ? slugToLabel(topic.id) : (topic.translation?.title_native || slugToLabel(topic.id))}</span>
-                  {pathStatus?.[topic.id] && !pathStatus[topic.id].empty && (
-                    <span className="text-xs opacity-70">{pathStatus[topic.id].complete ? '✓' : `${pathStatus[topic.id].faced}/${pathStatus[topic.id].total}`}</span>
-                  )}
                 </button>
               ))}
             </div>
@@ -1621,9 +1614,7 @@
       );
     }
 
-    function QuizView({ topics, vocabulary, poolVocabulary, ratings, onRate, languageCode, user, onSessionSaved }) {
-      const pool = poolVocabulary || vocabulary;
-      const savingRef = React.useRef(false);
+    function QuizView({ topics, vocabulary, ratings, onRate, languageCode, user }) {
       const [quizTopic, setQuizTopic] = useState('all');
       const [quizType, setQuizType] = useState('native_to_image');
       const [dailyTarget, setDailyTarget] = useState(() => loadFromStorage(STORAGE_KEYS.quizTarget, 10));
@@ -1651,9 +1642,9 @@
       const wbUnitPool = useMemo(() => {
         if (quizType !== 'word_builder') return [];
         const set = new Set();
-        pool.forEach(v => splitWord(v.translation?.native_text || '', wb.split, languageCode).forEach(u => set.add(u)));
+        vocabulary.forEach(v => splitWord(v.translation?.native_text || '', wb.split, languageCode).forEach(u => set.add(u)));
         return [...set];
-      }, [quizType, pool, wb.split, languageCode]);
+      }, [quizType, vocabulary, wb.split, languageCode]);
 
       useEffect(() => { saveToStorage(STORAGE_KEYS.quizTarget, dailyTarget); }, [dailyTarget]);
       useEffect(() => { saveToStorage(WB_STORAGE_KEY, wb); }, [wb]);
@@ -1671,34 +1662,33 @@
           .then(({ data }) => { if (data) setRecentSessions(data); });
       }, [user, languageCode, sessionSaved]);
 
-      // Save the session once: on completion, or when leaving mid-quiz with answers (so every faced word counts)
-      const persistSession = useCallback(async (sc, answers) => {
-        if (!user || savingRef.current || sc.total === 0) return;
-        savingRef.current = true;
-        const { data: session, error: sessionErr } = await supabase
-          .from(TABLES.quizSessions)
-          .insert({
-            user_id: user.id,
-            language_code: languageCode,
-            topic_id: quizTopic === 'all' ? null : quizTopic,
-            quiz_type: quizType,
-            total_questions: sc.total,
-            correct_answers: sc.correct,
-          })
-          .select('id')
-          .single();
-        if (!sessionErr && session && answers.length > 0) {
-          const rows = answers.map(a => ({ ...a, session_id: session.id }));
-          const { error: ansErr } = await supabase.from(TABLES.quizAnswers).insert(rows);
-          // Fallback if the answer_text column hasn't been added yet
-          if (ansErr) await supabase.from(TABLES.quizAnswers).insert(rows.map(({ answer_text, ...r }) => r));
-        }
-        setSessionSaved(true);
-        if (onSessionSaved) onSessionSaved();
-      }, [user, languageCode, quizTopic, quizType, onSessionSaved]);
-
+      // Save quiz session on completion
       useEffect(() => {
-        if (quizCompleted && !sessionSaved) persistSession(score, quizAnswers);
+        if (!quizCompleted || !user || sessionSaved || score.total === 0) return;
+
+        const saveSession = async () => {
+          const { data: session, error: sessionErr } = await supabase
+            .from(TABLES.quizSessions)
+            .insert({
+              user_id: user.id,
+              language_code: languageCode,
+              topic_id: quizTopic === 'all' ? null : quizTopic,
+              quiz_type: quizType,
+              total_questions: score.total,
+              correct_answers: score.correct,
+            })
+            .select('id')
+            .single();
+
+          if (!sessionErr && session && quizAnswers.length > 0) {
+            const rows = quizAnswers.map(a => ({ ...a, session_id: session.id }));
+            const { error: ansErr } = await supabase.from(TABLES.quizAnswers).insert(rows);
+            // Fallback if the answer_text column hasn't been added yet
+            if (ansErr) await supabase.from(TABLES.quizAnswers).insert(rows.map(({ answer_text, ...r }) => r));
+          }
+          setSessionSaved(true);
+        };
+        saveSession();
       }, [quizCompleted]);
 
       const startQuiz = useCallback(() => {
@@ -1708,7 +1698,7 @@
         // Freeze each question's options now so re-renders can't reshuffle them
         const frozen = selected.map(q => {
           const sameTopic = shuffleArr(filteredVocab.filter(v => v.id !== q.id));
-          const otherTopics = shuffleArr(pool.filter(v => v.id !== q.id && v.topic_id !== q.topic_id));
+          const otherTopics = shuffleArr(vocabulary.filter(v => v.id !== q.id && v.topic_id !== q.topic_id));
           const wrong = [...sameTopic, ...otherTopics.filter(v => !sameTopic.includes(v))].slice(0, 3);
           return shuffleArr([q, ...wrong]);
         });
@@ -1717,14 +1707,13 @@
         setCurrentWordIndex(0);
         setScore({ correct: 0, total: 0 });
         setQuizAnswers([]);
-        savingRef.current = false;
         setSessionSaved(false);
         setQuizCompleted(false);
         setQuizStarted(true);
-      }, [playableVocab, filteredVocab, pool, dailyTarget]);
+      }, [playableVocab, filteredVocab, vocabulary, dailyTarget]);
 
       const generateQuestion = useCallback(() => {
-        if (pool.length < 4 || quizWords.length < 1 || currentWordIndex >= quizWords.length) {
+        if (vocabulary.length < 4 || quizWords.length < 1 || currentWordIndex >= quizWords.length) {
           setQuizCompleted(true);
           return;
         }
@@ -1732,11 +1721,11 @@
         setOptions(quizOptions[currentWordIndex] || []);
         setSelectedAnswer(null);
         setShowResult(false);
-      }, [quizWords, quizOptions, currentWordIndex, pool.length]);
+      }, [quizWords, quizOptions, currentWordIndex, vocabulary.length]);
 
       // Runs only when the quiz starts or the question index changes — not on every render
       useEffect(() => {
-        if (quizStarted && quizWords.length >= 1 && pool.length >= 4 && !quizCompleted) generateQuestion();
+        if (quizStarted && quizWords.length >= 1 && vocabulary.length >= 4 && !quizCompleted) generateQuestion();
       }, [quizStarted, quizWords, quizOptions, currentWordIndex, quizCompleted]);
 
       const handleAnswer = (item) => {
@@ -1775,11 +1764,6 @@
         else setCurrentWordIndex(prev => prev + 1);
       };
 
-      const leaveQuiz = () => {
-        if (!quizCompleted && quizAnswers.length) persistSession(score, quizAnswers);
-        setQuizStarted(false);
-      };
-
       // Keyboard support: 1-4 to pick answer, Enter/Space for next
       useEffect(() => {
         if (!quizStarted || quizCompleted || quizType === 'word_builder') return;
@@ -1810,10 +1794,10 @@
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Topic</label>
                   <select value={quizTopic} onChange={(e) => setQuizTopic(e.target.value)} className="w-full px-4 py-3 border rounded-xl">
-                    <option value="all">{topics.some(t => t.locked) ? 'All unlocked topics' : 'All Topics'} ({vocabulary.length} words)</option>
+                    <option value="all">All Topics ({vocabulary.length} words)</option>
                     {topics.map(t => {
                       const count = vocabulary.filter(v => v.topic_id === t.id).length;
-                      return <option key={t.id} value={t.id} disabled={t.locked}>{t.locked ? '🔒' : t.icon} {t.translation?.title_native} {t.locked ? '(locked)' : `(${count})`}</option>;
+                      return <option key={t.id} value={t.id}>{t.icon} {t.translation?.title_native} ({count})</option>;
                     })}
                   </select>
                 </div>
@@ -1864,9 +1848,9 @@
                   </div>
                 )}
 
-                <button onClick={startQuiz} disabled={playableVocab.length < 1 || pool.length < 4}
+                <button onClick={startQuiz} disabled={playableVocab.length < 1 || vocabulary.length < 4}
                   className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">
-                  {pool.length < 4 ? 'Need 4+ words total' : playableVocab.length < 1 ? 'No words in topic' : `Start Quiz (${dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length)} words)`}
+                  {vocabulary.length < 4 ? 'Need 4+ words total' : playableVocab.length < 1 ? 'No words in topic' : `Start Quiz (${dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length)} words)`}
                 </button>
               </div>
             </div>
@@ -1944,7 +1928,7 @@
         return (
           <WordBuilderRound key={`${wbItem.id}-${currentWordIndex}`} item={wbItem} index={currentWordIndex} total={quizWords.length}
             score={score} settings={wb} languageCode={languageCode} unitPool={wbUnitPool}
-            onBack={leaveQuiz} onAnswered={handleWbAnswer} onNext={nextQuestion} />
+            onBack={() => setQuizStarted(false)} onAnswered={handleWbAnswer} onNext={nextQuestion} />
         );
       }
 
@@ -1954,7 +1938,7 @@
         <div className="max-w-4xl mx-auto p-4">
           <div className="bg-white rounded-2xl shadow-lg p-4 mb-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
-              <button onClick={leaveQuiz} className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">← Back</button>
+              <button onClick={() => setQuizStarted(false)} className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">← Back</button>
               <div className="flex items-center gap-4">
                 <div className="text-sm text-gray-500">{currentWordIndex + 1} / {quizWords.length}</div>
                 <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
@@ -2080,10 +2064,10 @@
         <div className="max-w-2xl mx-auto p-4">
           <div className="bg-white rounded-2xl shadow-lg p-4 mb-6 flex flex-wrap items-center justify-between gap-4">
             <select value={selectedTopic} onChange={(e) => setSelectedTopic(e.target.value)} className="px-4 py-2 border rounded-xl font-medium">
-              <option value="all">{topics.some(t => t.locked) ? 'All unlocked topics' : 'All Topics'} ({vocabulary.length} words)</option>
+              <option value="all">All Topics ({vocabulary.length} words)</option>
               {topics.map(t => {
                 const count = vocabulary.filter(v => v.topic_id === t.id).length;
-                return <option key={t.id} value={t.id} disabled={t.locked}>{t.locked ? '🔒' : t.icon} {t.translation?.title_native} {t.locked ? '(locked)' : `(${count})`}</option>;
+                return <option key={t.id} value={t.id}>{t.icon} {t.translation?.title_native} ({count})</option>;
               })}
             </select>
             <div className="text-gray-600 font-medium">{currentIndex + 1} / {filteredVocab.length}</div>
@@ -2141,7 +2125,7 @@
       );
     }
 
-    function ProgressView({ topics, vocabulary, ratings, languageCode, user, path }) {
+    function ProgressView({ topics, vocabulary, ratings, languageCode, user }) {
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
 
       const stats = useMemo(() => {
@@ -2180,7 +2164,6 @@
 
       return (
         <div className="max-w-4xl mx-auto p-4 space-y-6">
-          {path && <LearningPathCard path={path} vocabulary={vocabulary} ratings={ratings} fontClass={fontClass} />}
           <div className="bg-white rounded-3xl shadow-xl p-6">
             <h2 className="text-2xl font-bold text-gray-800 mb-6">Overall Progress</h2>
             <div className="mb-4">
@@ -2233,284 +2216,6 @@
       );
     }
 
-    // ==========================================
-    // LEARNING PATH (Phase 8): topic unlocking + word strength
-    // ==========================================
-    const STRENGTH_WINDOW = 5;
-    const ratingScore = (r) => (r == null ? null : r <= 2 ? 1 : r === 3 ? 0.5 : 0);
-    function strengthPct(list) {
-      if (!list || !list.length) return null;
-      const last = list.slice(-STRENGTH_WINDOW);
-      return Math.round(100 * last.filter(a => a.c).length / last.length);
-    }
-    function overallPct(byType, rating) {
-      const all = Object.values(byType || {}).flat().sort((a, b) => a.t - b.t).slice(-STRENGTH_WINDOW).map(a => (a.c ? 1 : 0));
-      const rs = ratingScore(rating);
-      if (rs != null) all.push(rs);
-      return all.length ? Math.round(100 * all.reduce((s, x) => s + x, 0) / all.length) : null;
-    }
-    const strengthClass = (p) => (p == null ? 'bg-gray-100 text-gray-400' : p >= 80 ? 'bg-green-500 text-white' : p >= 40 ? 'bg-amber-400 text-gray-900' : 'bg-red-500 text-white');
-    const topicTitle = (t) => t?.translation?.title_native || slugToLabel(t?.id || '');
-
-    function useLearningPath({ user, languageCode, topics, vocabulary }) {
-      const [raw, setRaw] = useState(null);
-      const [tick, setTick] = useState(0);
-      const [celebration, setCelebration] = useState(null);
-      const recordedRef = React.useRef(new Set());
-      const refresh = useCallback(() => setTick(n => n + 1), []);
-
-      useEffect(() => { setRaw(null); recordedRef.current = new Set(); }, [user?.id, languageCode]);
-
-      useEffect(() => {
-        if (!user || !languageCode) return;
-        let cancelled = false;
-        const email = (user.email || '').toLowerCase();
-        Promise.all([
-          supabase.rpc('kg_chart_my_answers', { p_lang: languageCode }),
-          supabase.from(TABLES.topicUnlocks).select('topic_id').eq('email', email).in('language_code', [languageCode, '*']),
-          supabase.from(TABLES.progressResets).select('*').in('language_code', [languageCode, '*']),
-          supabase.from(TABLES.topicCompletions).select('*').eq('user_id', user.id).eq('language_code', languageCode),
-          supabase.from(TABLES.settings).select('value').eq('key', 'admin_bypass_lock').maybeSingle(),
-          supabase.rpc('kg_chart_is_admin'),
-        ]).then(([ans, unl, rst, cmp, set, adm]) => {
-          if (cancelled) return;
-          const failed = [ans, unl, rst, cmp].find(r => r.error);
-          if (failed) console.warn('Learning path is off until kg-chart-phase8.sql is run:', failed.error.message);
-          setRaw({
-            ready: !failed,
-            answers: ans.data || [],
-            unlocks: new Set((unl.data || []).map(u => u.topic_id)),
-            resetAt: Math.max(0, ...(rst.data || []).filter(r => !r.email || r.email === email).map(r => Date.parse(r.reset_at) || 0)),
-            completions: cmp.data || [],
-            bypass: adm.data === true && set.data?.value === true,
-          });
-        });
-        return () => { cancelled = true; };
-      }, [user, languageCode, tick]);
-
-      const computed = useMemo(() => {
-        const visible = topics.filter(t => !t.is_hidden);
-        const visibleIds = new Set(visible.map(t => t.id));
-        const visibleVocab = vocabulary.filter(v => visibleIds.has(v.topic_id));
-        const resetAt = raw?.resetAt || 0;
-        const attempts = {};
-        const faced = new Set();
-        (raw?.answers || []).forEach(a => {
-          const id = String(a.vocabulary_id);
-          const ts = Date.parse(a.answered_at) || 0;
-          const w = (attempts[id] = attempts[id] || {});
-          (w[a.quiz_type] = w[a.quiz_type] || []).push({ c: !!a.is_correct, t: ts });
-          if (ts > resetAt) faced.add(id);
-        });
-        const open = !raw?.ready || raw?.bypass;
-        const done = new Set((raw?.completions || []).filter(c => (Date.parse(c.completed_at) || 0) > resetAt).map(c => c.topic_id));
-        const status = {};
-        const newlyComplete = [];
-        let prevComplete = true;
-        visible.forEach(t => {
-          const words = visibleVocab.filter(v => v.topic_id === t.id);
-          if (!words.length) { status[t.id] = { unlocked: true, complete: true, faced: 0, total: 0, empty: true }; return; }
-          const facedCount = words.filter(w => faced.has(String(w.id))).length;
-          const nowComplete = raw?.ready && facedCount === words.length;
-          const complete = done.has(t.id) || !!nowComplete;
-          const manual = !!raw?.unlocks?.has(t.id);
-          if (nowComplete && !done.has(t.id)) newlyComplete.push(t.id);
-          status[t.id] = { unlocked: open || prevComplete || manual || complete, complete, faced: facedCount, total: words.length, manual };
-          prevComplete = complete;
-        });
-        const annotated = visible.map(t => ({ ...t, locked: !status[t.id].unlocked }));
-        const unlockedIds = new Set(annotated.filter(t => !t.locked).map(t => t.id));
-        const unlockedVocab = visibleVocab.filter(v => unlockedIds.has(v.topic_id));
-        return { topics: annotated, status, attempts, visibleVocab, unlockedVocab, newlyComplete, enabled: !!raw?.ready && !raw?.bypass, bypass: !!raw?.bypass };
-      }, [topics, vocabulary, raw]);
-
-      useEffect(() => {
-        if (!user || !computed.newlyComplete.length) return;
-        const fresh = computed.newlyComplete.filter(id => !recordedRef.current.has(id));
-        if (!fresh.length) return;
-        fresh.forEach(id => recordedRef.current.add(id));
-        const now = new Date().toISOString();
-        supabase.from(TABLES.topicCompletions)
-          .upsert(fresh.map(topic_id => ({ user_id: user.id, language_code: languageCode, topic_id, completed_at: now })), { onConflict: 'user_id,language_code,topic_id' })
-          .then(({ error }) => { if (error) console.warn('Could not save topic completion:', error.message); });
-        const idx = computed.topics.findIndex(t => t.id === fresh[fresh.length - 1]);
-        const next = computed.topics.slice(idx + 1).find(t => !computed.status[t.id].complete && !computed.status[t.id].empty);
-        setCelebration({ topic: computed.topics[idx], next });
-      }, [computed]);
-
-      return { ...computed, loading: !!user && !raw, refresh, celebration, dismissCelebration: () => setCelebration(null) };
-    }
-
-    function LockedTopicPanel({ topic, prevTopic, prevStatus, fontClass, onGoQuiz }) {
-      const pct = prevStatus?.total ? Math.round(100 * prevStatus.faced / prevStatus.total) : 0;
-      return (
-        <div className="max-w-xl mx-auto p-6">
-          <div className="bg-white rounded-3xl shadow-xl p-8 text-center">
-            <div className="text-5xl mb-3">🔒</div>
-            <h2 className="text-2xl font-bold text-gray-800 mb-2">{topic.icon} <span className={fontClass}>{topicTitle(topic)}</span> is locked</h2>
-            {prevTopic ? (
-              <>
-                <p className="text-gray-500 mb-5">Quiz every word in <b className={fontClass}>{topicTitle(prevTopic)}</b> at least once to unlock it.</p>
-                <div className="h-3 bg-gray-100 rounded-full overflow-hidden mb-2"><div className="h-full bg-jade-500 rounded-full" style={{ width: Math.max(pct, 2) + '%' }} /></div>
-                <p className="text-sm text-gray-500 mb-6">{prevStatus.faced} of {prevStatus.total} words faced</p>
-                <button onClick={onGoQuiz} className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Go to Quiz →</button>
-              </>
-            ) : <p className="text-gray-500">Ask the admin to unlock this topic.</p>}
-          </div>
-        </div>
-      );
-    }
-
-    function CelebrationModal({ topic, next, fontClass, onOpen, onClose }) {
-      const [secs, setSecs] = useState(6);
-      useEffect(() => {
-        if (!next) return;
-        if (secs <= 0) { onOpen(); return; }
-        const id = setTimeout(() => setSecs(s => s - 1), 1000);
-        return () => clearTimeout(id);
-      }, [secs, next]);
-      return (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-          <div className="bg-white rounded-3xl shadow-2xl p-8 max-w-md w-full text-center animate-slide-up">
-            <div className="text-6xl mb-3">🎉</div>
-            <h2 className="text-2xl font-bold text-gray-800 mb-1">Topic complete!</h2>
-            <p className="text-gray-500 mb-6">{topic?.icon} <span className={fontClass}>{topicTitle(topic)}</span>: every word faced.</p>
-            {next ? (
-              <>
-                <div className="bg-jade-50 rounded-2xl p-4 mb-6">
-                  <div className="text-xs font-semibold text-jade-700 uppercase tracking-wide mb-1">Unlocked</div>
-                  <div className="text-xl font-bold text-gray-800">{next.icon} <span className={fontClass}>{topicTitle(next)}</span></div>
-                </div>
-                <div className="flex gap-3 justify-center">
-                  <button onClick={onClose} className="px-5 py-3 bg-gray-100 rounded-xl font-medium hover:bg-gray-200">Stay here</button>
-                  <button onClick={onOpen} className="px-5 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Open now ({secs})</button>
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="text-gray-700 font-medium mb-6">You've completed every topic.</p>
-                <button onClick={onClose} className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Close</button>
-              </>
-            )}
-          </div>
-        </div>
-      );
-    }
-
-    function WordStrengthModal({ item, byType, rating, fontClass, onClose }) {
-      const r = getRatingById(rating);
-      const overall = overallPct(byType, rating);
-      return (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-          <div className="bg-white rounded-3xl shadow-2xl p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
-            <div className="flex items-start justify-between gap-4 mb-5">
-              <div>
-                <div className={'text-3xl font-bold text-gray-800 ' + fontClass}>{item.translation?.native_text}</div>
-                <div className="text-gray-500">{item.english_text}</div>
-              </div>
-              <div className={'w-16 h-16 rounded-2xl flex flex-col items-center justify-center shrink-0 ' + strengthClass(overall)}>
-                <div className="text-lg font-bold leading-none">{overall == null ? '–' : overall + '%'}</div>
-                <div className="text-[10px] mt-1 opacity-80">overall</div>
-              </div>
-            </div>
-            <div className="space-y-2">
-              {QUIZ_TYPES.map(q => {
-                const list = byType?.[q.id] || [];
-                const pct = strengthPct(list);
-                const last = list.slice(-STRENGTH_WINDOW);
-                return (
-                  <div key={q.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl">
-                    <span className="text-xl w-7 text-center">{q.icon}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-gray-800">{q.label}</div>
-                      <div className="text-xs text-gray-400">{list.length ? list.length + ' attempt' + (list.length === 1 ? '' : 's') : 'Not faced yet'}</div>
-                    </div>
-                    <div className="flex gap-1">{last.map((a, i) => <span key={i} className={'w-2.5 h-2.5 rounded-full ' + (a.c ? 'bg-green-500' : 'bg-red-500')} />)}</div>
-                    <span className={'w-12 text-center text-xs font-bold py-1 rounded-lg ' + strengthClass(pct)}>{pct == null ? '–' : pct + '%'}</span>
-                  </div>
-                );
-              })}
-              <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl">
-                <span className="text-xl w-7 text-center">🃏</span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-gray-800">Flashcard rating</div>
-                  <div className="text-xs text-gray-400">{r ? r.label : 'Not rated'}</div>
-                </div>
-                <span className="text-lg">{r?.emoji || ''}</span>
-              </div>
-            </div>
-            <p className="text-xs text-gray-400 mt-4">Strength = % correct over the last {STRENGTH_WINDOW} attempts. Overall mixes all quiz types with the flashcard rating counted as one attempt.</p>
-            <button onClick={onClose} className="w-full mt-4 py-3 bg-gray-100 rounded-xl font-medium hover:bg-gray-200">Close</button>
-          </div>
-        </div>
-      );
-    }
-
-    function LearningPathCard({ path, vocabulary, ratings, fontClass }) {
-      const firstOpen = path.topics.find(t => !t.locked && !path.status[t.id].complete && !path.status[t.id].empty);
-      const [open, setOpen] = useState(firstOpen?.id || null);
-      const [word, setWord] = useState(null);
-      const rows = path.topics.filter(t => !path.status[t.id].empty);
-      return (
-        <div className="bg-white rounded-3xl shadow-xl p-6">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-            <h2 className="text-2xl font-bold text-gray-800">Learning Path</h2>
-            {path.bypass && <span className="text-xs font-semibold px-2 py-1 rounded-lg bg-amber-100 text-amber-800">Admin bypass on: all topics open</span>}
-          </div>
-          <div className="flex flex-wrap gap-3 text-xs text-gray-500 mb-4">
-            {[[null, 'Not faced'], [20, '<40%'], [60, '40–79%'], [90, '≥80%']].map(([p, l]) => (
-              <span key={l} className="flex items-center gap-1.5"><span className={'w-3 h-3 rounded ' + strengthClass(p)} />{l}</span>
-            ))}
-            <span>· last {STRENGTH_WINDOW} attempts</span>
-          </div>
-          <div className="space-y-2">
-            {rows.map(t => {
-              const st = path.status[t.id];
-              const isOpen = open === t.id && !t.locked;
-              const words = vocabulary.filter(v => v.topic_id === t.id);
-              return (
-                <div key={t.id} className={'border rounded-2xl ' + (t.locked ? 'bg-gray-50 border-gray-100' : 'border-gray-200')}>
-                  <button disabled={t.locked} onClick={() => setOpen(isOpen ? null : t.id)} className="w-full flex items-center gap-3 p-3 text-left disabled:cursor-not-allowed">
-                    <span className={'text-xl ' + (t.locked ? 'grayscale opacity-50' : '')}>{t.locked ? '🔒' : t.icon}</span>
-                    <span className={'flex-1 font-medium ' + fontClass + (t.locked ? ' text-gray-400' : ' text-gray-800')}>{topicTitle(t)}</span>
-                    <span className={'text-xs font-semibold px-2 py-1 rounded-lg ' + (st.complete ? 'bg-green-100 text-green-700' : t.locked ? 'bg-gray-100 text-gray-400' : 'bg-jade-50 text-jade-700')}>
-                      {st.complete ? '✓ Complete' : t.locked ? 'Locked · ' + st.total + ' words' : st.faced + '/' + st.total + ' faced'}
-                    </span>
-                    {!t.locked && <span className="text-gray-400 text-sm">{isOpen ? '▲' : '▼'}</span>}
-                  </button>
-                  {isOpen && (
-                    <div className="px-3 pb-3 overflow-x-auto">
-                      <table className="w-full text-sm border-separate" style={{ borderSpacing: '4px' }}>
-                        <thead><tr>
-                          <th className="text-left text-xs font-semibold text-gray-400 px-1">Word</th>
-                          {QUIZ_TYPES.map(q => <th key={q.id} title={q.label} className="text-center text-base w-12">{q.icon}</th>)}
-                          <th className="text-center text-xs font-semibold text-gray-400 w-14">Overall</th>
-                        </tr></thead>
-                        <tbody>
-                          {words.map(w => {
-                            const byType = path.attempts[String(w.id)];
-                            const ov = overallPct(byType, ratings[w.id]?.rating);
-                            return (
-                              <tr key={w.id} onClick={() => setWord(w)} className="cursor-pointer hover:opacity-80">
-                                <td className="px-1 py-1"><div className={'font-medium text-gray-800 ' + fontClass}>{w.translation?.native_text}</div><div className="text-xs text-gray-400">{w.english_text}</div></td>
-                                {QUIZ_TYPES.map(q => { const p = strengthPct(byType?.[q.id]); return <td key={q.id} className={'text-center text-xs font-bold rounded-lg ' + strengthClass(p)}>{p == null ? '' : p}</td>; })}
-                                <td className={'text-center text-xs font-bold rounded-lg ' + strengthClass(ov)}>{ov == null ? '–' : ov + '%'}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          {word && <WordStrengthModal item={word} byType={path.attempts[String(word.id)]} rating={ratings[word.id]?.rating} fontClass={fontClass} onClose={() => setWord(null)} />}
-        </div>
-      );
-    }
-
     function AppContent() {
       const { user } = useAuth();
       const [currentLanguage, setCurrentLanguage] = useState(() => loadFromStorage(STORAGE_KEYS.language, 'my'));
@@ -2522,9 +2227,6 @@
       const { topics, loading: loadingTopics } = useTopics(currentLanguage);
       const { vocabulary, loading: loadingVocab } = useVocabulary(currentLanguage);
       const { ratings, updateRating } = useUserRatings(currentLanguage);
-      const path = useLearningPath({ user, languageCode: currentLanguage, topics, vocabulary });
-      const visibleTopics = path.topics;
-      const fontClassApp = LANGUAGE_FONTS[currentLanguage] || 'font-body';
 
       useEffect(() => { saveToStorage(STORAGE_KEYS.language, currentLanguage); }, [currentLanguage]);
       useEffect(() => { saveToStorage(STORAGE_KEYS.view, activeView); }, [activeView]);
@@ -2532,17 +2234,14 @@
       useEffect(() => { saveToStorage(STORAGE_KEYS.showEnglish, showEnglish); }, [showEnglish]);
 
       useEffect(() => {
-        if (visibleTopics.length > 0) {
-          const savedTopicExists = visibleTopics.some(t => t.id === activeTopic);
-          if (!activeTopic || !savedTopicExists) setActiveTopic((visibleTopics.find(t => !t.locked) || visibleTopics[0]).id);
+        if (topics.length > 0) {
+          const savedTopicExists = topics.some(t => t.id === activeTopic);
+          if (!activeTopic || !savedTopicExists) setActiveTopic(topics[0].id);
         }
-      }, [visibleTopics, activeTopic]);
+      }, [topics, activeTopic]);
 
       const topicVocabulary = activeTopic ? vocabulary.filter(v => v.topic_id === activeTopic) : [];
-      const currentTopic = visibleTopics.find(t => t.id === activeTopic);
-      const prevPathTopic = currentTopic?.locked
-        ? visibleTopics.slice(0, visibleTopics.indexOf(currentTopic)).reverse().find(t => !path.status[t.id]?.empty)
-        : null;
+      const currentTopic = topics.find(t => t.id === activeTopic);
 
       if (loadingLangs) return <div className="min-h-screen flex items-center justify-center"><LoadingSpinner message="Loading..." /></div>;
 
@@ -2551,41 +2250,31 @@
           <Header currentLanguage={currentLanguage} languages={languages} onLanguageChange={setCurrentLanguage}
             activeView={activeView} onViewChange={setActiveView} />
 
-          {activeView === 'chart' && !loadingTopics && visibleTopics.length > 0 && (
-            <TopicNav topics={visibleTopics} activeTopic={activeTopic} onSelect={setActiveTopic} showEnglish={showEnglish} pathStatus={path.enabled ? path.status : null} />
+          {activeView === 'chart' && !loadingTopics && topics.length > 0 && (
+            <TopicNav topics={topics} activeTopic={activeTopic} onSelect={setActiveTopic} showEnglish={showEnglish} />
           )}
 
           <main className="pb-8">
-            {(loadingTopics || loadingVocab || path.loading) ? (
+            {(loadingTopics || loadingVocab) ? (
               <div className="py-12"><LoadingSpinner message="Loading vocabulary..." /></div>
             ) : (
               <>
-                {activeView === 'chart' && currentTopic?.locked && (
-                  <LockedTopicPanel topic={currentTopic} prevTopic={prevPathTopic} prevStatus={prevPathTopic ? path.status[prevPathTopic.id] : null}
-                    fontClass={fontClassApp} onGoQuiz={() => setActiveView('quiz')} />
-                )}
-                {activeView === 'chart' && !currentTopic?.locked && (
+                {activeView === 'chart' && (
                   <ChartView topic={currentTopic} vocabulary={topicVocabulary} ratings={ratings} onRate={updateRating}
                     languageCode={currentLanguage} showEnglish={showEnglish} onToggleEnglish={setShowEnglish} />
                 )}
                 {activeView === 'quiz' && (
-                  <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} onSessionSaved={path.refresh} />
+                  <QuizView topics={topics} vocabulary={vocabulary} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} />
                 )}
                 {activeView === 'flashcard' && (
-                  <FlashcardView topics={visibleTopics} vocabulary={path.unlockedVocab} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} />
+                  <FlashcardView topics={topics} vocabulary={vocabulary} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} />
                 )}
                 {activeView === 'progress' && (
-                  <ProgressView topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} languageCode={currentLanguage} user={user} path={path.enabled || path.bypass ? path : null} />
+                  <ProgressView topics={topics} vocabulary={vocabulary} ratings={ratings} languageCode={currentLanguage} user={user} />
                 )}
               </>
             )}
           </main>
-
-          {path.celebration && (
-            <CelebrationModal topic={path.celebration.topic} next={path.celebration.next} fontClass={fontClassApp}
-              onClose={path.dismissCelebration}
-              onOpen={() => { const n = path.celebration.next; path.dismissCelebration(); if (n) { setActiveTopic(n.id); setActiveView('chart'); } }} />
-          )}
 
           <footer className="bg-gray-800 text-white py-6 px-4">
             <div className="max-w-7xl mx-auto text-center">
