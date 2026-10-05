@@ -37,8 +37,8 @@ goto :eof
 
 :node
 call :banner Node
-call :openwhenready
-"%NODE%" kg-serve.js %PORT%
+REM kg-serve.js opens the browser itself the moment it is listening.
+"%NODE%" kg-serve.js %PORT% --open
 goto :stopped
 
 :python
@@ -57,8 +57,9 @@ echo.
 goto :eof
 
 :openwhenready
-REM Opens the browser once the server answers (waits up to ~20s).
-start "" /b powershell -NoProfile -WindowStyle Hidden -Command "for($i=0;$i -lt 80;$i++){try{Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 '%URL%' | Out-Null; break}catch{Start-Sleep -Milliseconds 250}}; Start-Process '%URL%'"
+REM Python fallback only: opens the browser once the port accepts connections.
+REM Plain TCP check on 127.0.0.1 - avoids slow web-request/proxy start-up.
+start "" /b powershell -NoProfile -WindowStyle Hidden -Command "for($i=0;$i -lt 80;$i++){try{(New-Object Net.Sockets.TcpClient).Connect('127.0.0.1',%PORT%); break}catch{Start-Sleep -Milliseconds 250}}; Start-Process 'http://127.0.0.1:%PORT%/'"
 goto :eof
 
 :stopped
