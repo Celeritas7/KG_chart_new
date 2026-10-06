@@ -1701,6 +1701,11 @@
         if (quizCompleted && !sessionSaved) persistSession(score, quizAnswers);
       }, [quizCompleted]);
 
+      // Leaving via a top tab (Chart/Cards/Progress) unmounts this view: save pending answers so faced words still count
+      const pendingRef = React.useRef(null);
+      pendingRef.current = quizStarted && !quizCompleted && quizAnswers.length ? { score, quizAnswers, persistSession } : null;
+      useEffect(() => () => { const p = pendingRef.current; if (p) p.persistSession(p.score, p.quizAnswers); }, []);
+
       const startQuiz = useCallback(() => {
         const targetCount = dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length);
         const shuffled = shuffleArr(playableVocab);

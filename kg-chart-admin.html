@@ -490,7 +490,7 @@ function langOptions(sel){return`<option value="*" ${sel==='*'?'selected':''}>Al
 async function toggleTopicHidden(id){const t=S.topics.find(x=>x.id===id);const{error}=await sb.from('kg_chart_topics').update({is_hidden:!t.is_hidden,updated_at:new Date().toISOString()}).eq('id',id);if(error){toast(error.message,'error');return;}toast(t.is_hidden?'Topic visible':'Topic hidden');await loadAll();}
 async function toggleBypass(){const v=!S.bypass;const{error}=await sb.from('kg_chart_settings').upsert({key:'admin_bypass_lock',value:v,updated_at:new Date().toISOString()});if(error){toast(error.message,'error');return;}toast(v?'Bypass on: you see every topic':'Bypass off: you follow the path');await loadAll();}
 let UNLOCK={topic:'',lang:'*'};
-function openUnlock(topicId){UNLOCK={topic:topicId,lang:UNLOCK.lang||'*'};renderUnlock();}
+function openUnlock(topicId){const ex=S.unlocks.find(u=>u.topic_id===topicId);UNLOCK={topic:topicId,lang:ex?ex.language_code:'*'};renderUnlock();}
 function renderUnlock(){
   const t=S.topics.find(x=>x.id===UNLOCK.topic);
   const have=new Set(S.unlocks.filter(u=>u.topic_id===UNLOCK.topic&&u.language_code===UNLOCK.lang).map(u=>u.email));
@@ -499,7 +499,7 @@ function renderUnlock(){
   showModal(`<h3><span class="accent-dot"></span>Unlock ${t?.icon||''} ${escH(UNLOCK.topic)}</h3><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Ticked learners get this topic open straight away. Topics after it still follow the path.</p><div class="form-group"><label>Language</label><select id="unl-lang" onchange="UNLOCK.lang=this.value;renderUnlock()">${langOptions(UNLOCK.lang)}</select></div><div style="display:grid;gap:6px;max-height:320px;overflow-y:auto;margin:10px 0">${list}</div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-accent" onclick="saveUnlock()">Save</button></div>`);
 }
 async function saveUnlock(){
-  const want=new Set([...document.querySelectorAll('.unl-cb:checked')].map(c=>c.value));
+  const want=new Set([...document.querySelectorAll('.unl-cb:checked')].map(c=>c.value.toLowerCase()));
   const have=new Set(S.unlocks.filter(u=>u.topic_id===UNLOCK.topic&&u.language_code===UNLOCK.lang).map(u=>u.email));
   const add=[...want].filter(e=>!have.has(e)).map(email=>({email,topic_id:UNLOCK.topic,language_code:UNLOCK.lang}));
   const del=[...have].filter(e=>!want.has(e));
@@ -513,7 +513,7 @@ function openReset(){
   showModal(`<h3><span class="accent-dot"></span>Reset a learner's path</h3><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Re-locks their topics back to the first one. Their quiz history, Quiz Stats and word strength are kept. Only answers after the reset count toward unlocking.</p><div class="form-row"><div class="form-group"><label>Learner</label><select id="rs-email">${opts}</select></div><div class="form-group"><label>Language</label><select id="rs-lang">${langOptions('*')}</select></div></div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-danger" onclick="doReset()">Reset path</button></div>`);
 }
 async function doReset(){
-  const email=document.getElementById('rs-email').value,language_code=document.getElementById('rs-lang').value;
+  const email=document.getElementById('rs-email').value.trim().toLowerCase(),language_code=document.getElementById('rs-lang').value;
   if(!email)return;if(!confirm(`Reset ${email}'s learning path (${language_code==='*'?'all languages':language_code})?`))return;
   const{error}=await sb.from('kg_chart_progress_resets').insert({email,language_code});
   if(error){toast(error.message,'error');return;}toast('Path reset');closeModal();
