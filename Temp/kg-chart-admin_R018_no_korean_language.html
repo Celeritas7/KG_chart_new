@@ -6,7 +6,7 @@
 <title>KG Chart — Admin Panel</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Playfair+Display:wght@400;600;700&family=JetBrains+Mono:wght@300;400;500;600&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+Myanmar:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Sans+Sinhala:wght@400;500;700&family=Noto+Sans+Tamil:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&family=Padauk:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Playfair+Display:wght@400;600;700&family=JetBrains+Mono:wght@300;400;500;600&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+Myanmar:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Sans+Sinhala:wght@400;500;700&family=Noto+Sans+Tamil:wght@400;500;700&family=Padauk:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root { --transition: 0.25s ease; }
@@ -140,7 +140,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
 .modal h3 .accent-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: 10px; vertical-align: middle; }
 .form-group { margin-bottom: 16px; }
 .form-group label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
-.form-group input, .form-group select, .form-group textarea { width: 100%; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-primary); font-size: 14px; font-family: 'DM Sans', 'Noto Sans Myanmar', 'Noto Sans Devanagari', 'Noto Sans JP', 'Noto Sans SC', 'Noto Sans Sinhala', 'Noto Sans KR', sans-serif; transition: border var(--transition), box-shadow var(--transition); outline: none; }
+.form-group input, .form-group select, .form-group textarea { width: 100%; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-primary); font-size: 14px; font-family: 'DM Sans', 'Noto Sans Myanmar', 'Noto Sans Devanagari', 'Noto Sans JP', 'Noto Sans SC', 'Noto Sans Sinhala', sans-serif; transition: border var(--transition), box-shadow var(--transition); outline: none; }
 .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-dim); }
 .form-group textarea { resize: vertical; min-height: 70px; }
 .form-row { display: flex; gap: 12px; } .form-row .form-group { flex: 1; }
@@ -869,7 +869,7 @@ const SCRIPT_RANGES = {
   my: { name: 'Myanmar',  ranges: [[0x1000, 0x109F], [0xAA60, 0xAA7F]], file: 'burmese', type: 'standard' },
   zh: { name: 'Chinese',  ranges: [[0x4E00, 0x9FFF], [0x3400, 0x4DBF]], file: 'chinese', type: 'chinese' },
   ja: { name: 'Japanese', ranges: [[0x3040, 0x309F], [0x30A0, 0x30FF], [0x4E00, 0x9FFF]], file: null, type: null },
-  ko: { name: 'Korean',   ranges: [[0xAC00, 0xD7AF], [0x1100, 0x11FF]], file: 'korean', type: 'standard' },
+  ko: { name: 'Korean',   ranges: [[0xAC00, 0xD7AF], [0x1100, 0x11FF]], file: null, type: null },
   te: { name: 'Telugu',   ranges: [[0x0C00, 0x0C7F]], file: 'telugu', type: 'standard' },
   ta: { name: 'Tamil',    ranges: [[0x0B80, 0x0BFF]], file: 'tamil', type: 'standard' },
   th: { name: 'Thai',     ranges: [[0x0E00, 0x0E7F]], file: null, type: null },
@@ -1091,7 +1091,7 @@ async function executeScan() {
       <div style="margin-bottom:16px;padding:14px;border-radius:12px;border:1px solid var(--danger);background:var(--danger-dim)">
         <div style="font-size:12px;font-weight:700;color:var(--danger);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">⚠ Unmapped Characters — add to ${scriptInfo.file}.js (${uniqueLeaked.length} chars)</div>
         <div style="display:flex;flex-wrap:wrap;gap:6px">
-          ${uniqueLeaked.map(ch => `<span style="padding:6px 14px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border);font-size:20px;font-family:'Noto Sans Sinhala','Noto Sans Myanmar','Noto Sans SC','Noto Sans KR',sans-serif;line-height:1" title="U+${ch.codePointAt(0).toString(16).toUpperCase()}">${ch} <span style="font-size:9px;color:var(--text-muted);font-family:'JetBrains Mono',monospace;vertical-align:middle">U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4,'0')}</span></span>`).join('')}
+          ${uniqueLeaked.map(ch => `<span style="padding:6px 14px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border);font-size:20px;font-family:'Noto Sans Sinhala','Noto Sans Myanmar','Noto Sans SC',sans-serif;line-height:1" title="U+${ch.codePointAt(0).toString(16).toUpperCase()}">${ch} <span style="font-size:9px;color:var(--text-muted);font-family:'JetBrains Mono',monospace;vertical-align:middle">U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4,'0')}</span></span>`).join('')}
         </div>
       </div>
     ` : ''}

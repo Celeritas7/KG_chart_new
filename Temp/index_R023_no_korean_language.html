@@ -21,7 +21,7 @@
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@400;600;700&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Sans+Sinhala:wght@400;500;700&family=Noto+Sans+Tamil:wght@400;500;700&family=Padauk:wght@400;700&family=Noto+Sans+Myanmar:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@400;600;700&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Sans+Sinhala:wght@400;500;700&family=Noto+Sans+Tamil:wght@400;500;700&family=Padauk:wght@400;700&family=Noto+Sans+Myanmar:wght@400;500;700&display=swap" rel="stylesheet">
   
   <script>
     tailwind.config = {
@@ -36,7 +36,6 @@
             'chinese': ['Noto Sans SC', 'sans-serif'],
             'sinhala': ['Noto Sans Sinhala', 'sans-serif'],
             'tamil': ['Noto Sans Tamil', 'sans-serif'],
-            'korean': ['Noto Sans KR', 'sans-serif'],
           },
           colors: {
             'jade': {
@@ -143,7 +142,6 @@
       si: { file: 'sinhala', type: 'standard' },
       te: { file: 'telugu', type: 'standard' },
       ta: { file: 'tamil', type: 'standard' },
-      ko: { file: 'korean', type: 'standard' },
     };
 
     // Load a language converter from the shared repo via fetch
@@ -246,7 +244,6 @@
       te: 'font-devanagari',
       si: 'font-sinhala',
       ta: 'font-tamil',
-      ko: 'font-korean',
     };
 
     const getRatingById = (id) => RATINGS.find(r => r.id === id);
@@ -1717,17 +1714,7 @@
         const frozen = selected.map(q => {
           const sameTopic = shuffleArr(filteredVocab.filter(v => v.id !== q.id));
           const otherTopics = shuffleArr(pool.filter(v => v.id !== q.id && v.topic_id !== q.topic_id));
-          // Skip options that read the same as the answer or each other (Korean 배 = pear, ship, stomach)
-          const textOf = v => (v.translation?.native_text || '').trim();
-          const seen = new Set([textOf(q)]);
-          const wrong = [];
-          for (const v of [...sameTopic, ...otherTopics.filter(v => !sameTopic.includes(v))]) {
-            const t = textOf(v);
-            if (t && seen.has(t)) continue;
-            if (t) seen.add(t);
-            wrong.push(v);
-            if (wrong.length === 3) break;
-          }
+          const wrong = [...sameTopic, ...otherTopics.filter(v => !sameTopic.includes(v))].slice(0, 3);
           return shuffleArr([q, ...wrong]);
         });
         setQuizOptions(frozen);
