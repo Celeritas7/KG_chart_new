@@ -239,6 +239,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
     <div class="nav-item" data-page="vocabulary"><span class="icon">📖</span>Vocabulary<span class="badge" id="badge-vocab">-</span></div>
     <div class="nav-item" data-page="translations"><span class="icon">🔤</span>Translations</div>
     <div class="nav-item" data-page="topic-translations"><span class="icon">🏷️</span>Topic Headers</div>
+    <div class="nav-item" data-page="sentences"><span class="icon">💬</span>Sentences<span class="badge" id="badge-sent">-</span></div>
     <div class="nav-item" data-page="images"><span class="icon">🖼️</span>Images<span class="badge warn" id="badge-images">-</span></div>
     <div class="nav-section-label">Preview</div>
     <div class="nav-item" data-page="chart-preview"><span class="icon">📊</span>Chart Preview</div>
@@ -293,8 +294,8 @@ function toImageFilename(text){return text.trim().toLowerCase().replace(/\s+/g,'
   loadAll();
 })();
 
-let S={languages:[],topics:[],vocabulary:[],vocabTrans:[],topicTrans:[],quizSessions:[],flags:[],users:[],unlocks:[],bypass:false,pathReady:false,
-  page:'languages',filters:{topic:'',language:'',search:'',flagStatus:'open',coverageLang:''},chartView:'grid'};
+let S={languages:[],topics:[],vocabulary:[],vocabTrans:[],topicTrans:[],quizSessions:[],flags:[],users:[],unlocks:[],bypass:false,pathReady:false,sentences:[],sentReady:false,
+  page:'languages',filters:{topic:'',language:'',search:'',flagStatus:'open',coverageLang:'',sentLang:'',sentGroup:'',sentSearch:''},chartView:'grid'};
 
 // Theme
 document.querySelectorAll('.theme-btn').forEach(b=>{b.addEventListener('click',()=>{document.body.dataset.theme=b.dataset.t;document.querySelectorAll('.theme-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');localStorage.setItem('kg-admin-theme',b.dataset.t);});});
@@ -338,6 +339,10 @@ async function loadAll(){
       sb.from('kg_chart_settings').select('*').eq('key','admin_bypass_lock').maybeSingle()
     ]);
     S.users=pu.data||[];S.unlocks=pl.data||[];S.bypass=ps.data?.value===true;S.pathReady=!pl.error&&!ps.error;
+    // Sentences (empty until kg-chart-sentences.sql is run)
+    const sn=await sb.from('kg_chart_sentences').select('*').order('language_code').order('sort_order').order('created_at');
+    S.sentences=sn.data||[];S.sentReady=!sn.error;
+    document.getElementById('badge-sent').textContent=S.sentReady?S.sentences.length:'-';
     document.getElementById('badge-lang').textContent=S.languages.length;
     document.getElementById('badge-topics').textContent=S.topics.length;
     document.getElementById('badge-vocab').textContent=S.vocabulary.length;
@@ -364,6 +369,7 @@ function render(){
     case'vocabulary':t.textContent='Vocabulary';a.innerHTML=`<button class="btn" onclick="fixMissingFilenames()">🔧 Fix Missing Filenames</button><button class="btn btn-accent" onclick="editVocab()">+ Add Item</button>`;renderVocab(c);break;
     case'translations':t.textContent='Vocabulary Translations';a.innerHTML=`<button class="btn" onclick="exportTrans('csv')">⬇ CSV</button><button class="btn" onclick="exportTrans('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderTrans(c);break;
     case'topic-translations':t.textContent='Topic Headers';a.innerHTML=`<button class="btn" onclick="exportTT('csv')">⬇ CSV</button><button class="btn" onclick="exportTT('json')">⬇ JSON</button><button class="btn btn-accent" onclick="triggerImport('tt')">⬆ Import</button><button class="btn btn-accent" onclick="editTT()">+ Add</button>`;renderTT(c);break;
+    case'sentences':t.textContent='Sentences';a.innerHTML=S.sentReady?`<button class="btn" onclick="exportSentences()">⬇ CSV</button><button class="btn btn-accent" onclick="triggerImport('sent')">⬆ Import</button><button class="btn btn-accent" onclick="editSentence()">+ Add Sentence</button>`:'';renderSentences(c);break;
     case'images':t.textContent='Images';a.innerHTML=`<button class="btn" onclick="copyMissingList()">📋 Copy missing list</button><button class="btn" onclick="loadAllImageFiles(true)">↻ Re-check storage</button>`;renderImages(c);break;
     case'chart-preview':t.textContent='Chart Preview';a.innerHTML='';renderChart(c);break;
     case'flags':t.textContent='Flags';a.innerHTML=`<button class="btn" onclick="exportFlags('csv')">⬇ CSV</button><button class="btn" onclick="exportFlags('json')">⬇ JSON</button><button class="btn" onclick="triggerImport('flags')">⬆ Import</button><button class="btn btn-accent" onclick="runConverterScan()">🔍 Scan Conversions</button>`;renderFlags(c);break;
@@ -392,6 +398,72 @@ function exportTT(fmt){
   toast(`Exported ${data.length} rows as ${fmt.toUpperCase()}`);
 }
 
+// ===== SENTENCES (sentence quizzes in the app) =====
+function sentLang(){const l=S.filters.sentLang;if(l&&S.languages.some(x=>x.code===l))return l;const first=S.languages.find(x=>x.is_active)||S.languages[0];return first?first.code:'';}
+function renderSentences(el){
+  if(!S.sentReady){el.innerHTML=`<div class="empty-state"><div class="icon">🗄️</div><p>The sentences table isn't there yet. Run <span class="mono">kg-chart-sentences.sql</span> in the Supabase SQL editor, then reload this page.</p></div>`;return;}
+  const lang=sentLang();
+  const inLang=S.sentences.filter(x=>x.language_code===lang);
+  const groups=[...new Set(inLang.map(x=>x.group_name).filter(Boolean))];
+  if(S.filters.sentGroup&&!groups.includes(S.filters.sentGroup))S.filters.sentGroup='';
+  const q=S.filters.sentSearch.toLowerCase();
+  const f=inLang.filter(x=>(!S.filters.sentGroup||x.group_name===S.filters.sentGroup)&&(!q||(x.native_text||'').toLowerCase().includes(q)||(x.english_text||'').toLowerCase().includes(q)));
+  const lo=S.languages.map(l=>{const n=S.sentences.filter(x=>x.language_code===l.code).length;return`<option value="${escH(l.code)}" ${l.code===lang?'selected':''}>${escH(l.name||l.code)} (${n})${l.is_active?'':' · inactive'}</option>`;}).join('');
+  const go=`<option value="">All groups</option>`+groups.map(g=>`<option value="${escH(g)}" ${g===S.filters.sentGroup?'selected':''}>${escH(g)} (${inLang.filter(x=>x.group_name===g).length})</option>`).join('');
+  el.innerHTML=`<div class="filter-bar"><select onchange="S.filters.sentLang=this.value;S.filters.sentGroup='';render()">${lo}</select><select onchange="S.filters.sentGroup=this.value;render()">${go}</select><input id="sent-search" type="text" placeholder="Search..." value="${escH(S.filters.sentSearch)}" oninput="S.filters.sentSearch=this.value;render();const i=document.getElementById('sent-search');i.focus();i.setSelectionRange(i.value.length,i.value.length)"><span class="filter-count">${f.length} sentences</span></div>`+
+  (f.length?`<table class="data-table"><thead><tr><th>Order</th><th>Group</th><th>Sentence</th><th>English</th><th>Notes</th><th>Actions</th></tr></thead><tbody>${f.map(x=>`<tr><td class="mono">${x.sort_order??''}</td><td>${x.group_name?`<span class="tag">${escH(x.group_name)}</span>`:'—'}</td><td><strong>${escH(x.native_text)}</strong></td><td>${escH(x.english_text)}</td><td style="font-size:12px;max-width:220px">${x.notes?escH(x.notes):''}</td><td><button class="btn btn-sm" onclick="editSentence('${x.id}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="delSentence('${x.id}')">Del</button></td></tr>`).join('')}</tbody></table>`
+  :`<div class="empty-state"><div class="icon">💬</div><p>${inLang.length?'No sentences match':'No sentences for this language yet. Use + Add Sentence or ⬆ Import (CSV columns: native_text, english_text, group_name, notes, sort_order).'}</p></div>`);
+}
+function editSentence(id){
+  const x=id?S.sentences.find(s=>s.id===id):{language_code:sentLang(),group_name:S.filters.sentGroup||'',sort_order:(S.sentences.filter(s=>s.language_code===sentLang()).reduce((m,s)=>Math.max(m,s.sort_order||0),0)+1)};
+  const n=!id;
+  const lo=S.languages.map(l=>`<option value="${escH(l.code)}" ${x.language_code===l.code?'selected':''}>${escH(l.name||l.code)}</option>`).join('');
+  const gl=[...new Set(S.sentences.map(s=>s.group_name).filter(Boolean))].map(g=>`<option value="${escH(g)}">`).join('');
+  showModal(`<h3><span class="accent-dot"></span>${n?'Add Sentence':'Edit Sentence'}</h3><div class="form-row"><div class="form-group"><label>Language</label><select id="f-slang">${lo}</select></div><div class="form-group"><label>Sort Order</label><input id="f-sorder" type="number" value="${x.sort_order??0}"></div></div><div class="form-group"><label>Sentence (native script)</label><textarea id="f-snative" rows="2">${escH(x.native_text||'')}</textarea></div><div class="form-group"><label>English meaning</label><input id="f-seng" value="${escH(x.english_text||'')}"></div><div class="form-group"><label>Group (optional)</label><input id="f-sgroup" list="sent-groups" value="${escH(x.group_name||'')}" placeholder="e.g. Keep + object"><datalist id="sent-groups">${gl}</datalist></div><div class="form-group"><label>Notes (optional, shown after answering)</label><textarea id="f-snotes" rows="2">${escH(x.notes||'')}</textarea></div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-accent" onclick="saveSentence(${n},'${id||''}')">Save</button></div>`);
+}
+async function saveSentence(n,eid){
+  const v=k=>document.getElementById(k).value.trim();
+  const d={language_code:v('f-slang'),native_text:v('f-snative'),english_text:v('f-seng'),group_name:v('f-sgroup')||null,notes:v('f-snotes')||null,sort_order:parseInt(v('f-sorder'))||0,updated_at:new Date().toISOString()};
+  if(!d.language_code||!d.native_text||!d.english_text){toast('Language, sentence and English are required','error');return;}
+  const{error}=n?await sb.from('kg_chart_sentences').insert(d):await sb.from('kg_chart_sentences').update(d).eq('id',eid);
+  if(error){toast(error.message,'error');return;}
+  S.filters.sentLang=d.language_code;
+  toast(n?'Added':'Updated');closeModal();await loadAll();
+}
+async function delSentence(id){
+  const x=S.sentences.find(s=>s.id===id);if(!confirm(`Delete "${x?.native_text}"?`))return;
+  const{error}=await sb.from('kg_chart_sentences').delete().eq('id',id);
+  if(error){toast(error.message,'error');return;}
+  toast('Deleted');await loadAll();
+}
+function exportSentences(){
+  const lang=sentLang();
+  const data=S.sentences.filter(x=>x.language_code===lang&&(!S.filters.sentGroup||x.group_name===S.filters.sentGroup)).map(x=>({id:x.id,language_code:x.language_code,group_name:x.group_name||'',native_text:x.native_text||'',english_text:x.english_text||'',notes:x.notes||'',sort_order:x.sort_order??0}));
+  downloadFile(`kg_sentences_${lang}.csv`,toCSV(['id','language_code','group_name','native_text','english_text','notes','sort_order'],data),'text/csv');
+  toast(`Exported ${data.length} sentences`);
+}
+// Rows with a known id are updated; others are added (skipped if the same sentence already exists in that language).
+// language_code defaults to the language picked on the page.
+async function importSentences(rows){
+  let added=0,updated=0,skipped=0,errs=0;
+  const lang=sentLang();
+  for(const raw of rows){
+    const r={};Object.keys(raw).forEach(k=>r[k.trim()]=typeof raw[k]==='string'?raw[k].replace(/\r$/,'').trim():raw[k]);
+    if(!r.native_text||!r.english_text){skipped++;continue;}
+    const d={language_code:r.language_code||lang,native_text:r.native_text,english_text:r.english_text,group_name:r.group_name||null,notes:r.notes||null,updated_at:new Date().toISOString()};
+    if(r.sort_order!==undefined&&r.sort_order!=='')d.sort_order=parseInt(r.sort_order)||0;
+    if(!S.languages.some(l=>l.code===d.language_code)){errs++;console.error('Unknown language',d.language_code);continue;}
+    const byId=r.id&&S.sentences.find(s=>s.id===r.id);
+    let error;
+    if(byId){({error}=await sb.from('kg_chart_sentences').update(d).eq('id',r.id));if(!error)updated++;}
+    else if(S.sentences.some(s=>s.language_code===d.language_code&&s.native_text.trim()===d.native_text)){skipped++;continue;}
+    else{({error}=await sb.from('kg_chart_sentences').insert(d));if(!error){added++;S.sentences.push(d);}}
+    if(error){errs++;console.error(error);}
+  }
+  toast(`Sentences: ${added} added, ${updated} updated, ${skipped} skipped, ${errs} errors`,errs?'error':'success');
+  await loadAll();
+}
+
 let importTarget='';
 function triggerImport(target){importTarget=target;document.getElementById('file-import').click();}
 document.getElementById('file-import').addEventListener('change',async function(e){
@@ -404,6 +476,7 @@ document.getElementById('file-import').addEventListener('change',async function(
   if(importTarget==='trans')await importTrans(rows);
   else if(importTarget==='tt')await importTopicHeaders(rows);
   else if(importTarget==='flags')await importFlagFixes(rows);
+  else if(importTarget==='sent')await importSentences(rows);
   this.value='';
 });
 
