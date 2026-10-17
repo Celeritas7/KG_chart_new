@@ -3,3 +3,4 @@ kg-chart-admin/
 images/
 Temp/
 audio-cache/
+__pycache__/
