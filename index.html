@@ -15,6 +15,9 @@
   
   <!-- Supabase -->
   <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+
+  <!-- Native audio player (Phase 9) -->
+  <script src="./js/kg-audio.js"></script>
   
   <!-- Language converters loaded dynamically from shared repo -->
   
@@ -261,6 +264,60 @@
     };
 
     const getRatingById = (id) => RATINGS.find(r => r.id === id);
+
+    // ==========================================
+    // AUDIO (Phase 9): engine lives in js/kg-audio.js
+    // ==========================================
+    const useAudioState = () => React.useSyncExternalStore(window.KGAudio.subscribe, window.KGAudio.getVersion);
+
+    // 🔊 (+ optional 🐢). A span, not a button, so it can sit inside quiz option buttons and clickable cards.
+    function SpeakButton({ text, lang, slow = false, size = 'md', className = '' }) {
+      useAudioState();
+      const A = window.KGAudio;
+      if (!text) return null;
+      const avail = A.has(text, lang);
+      const dims = { sm: 'w-7 h-7 text-sm', md: 'w-9 h-9 text-base', lg: 'w-11 h-11 text-xl' }[size];
+      const tap = (isSlow) => (e) => {
+        e.stopPropagation(); e.preventDefault();
+        if (avail === true) A.play(text, lang, { slow: isSlow });
+        else if (avail === false) A.toast('No audio for this yet');
+      };
+      const onKey = (isSlow) => (e) => { if (e.key === 'Enter' || e.key === ' ') tap(isSlow)(e); };
+      const cls = (st) => `${dims} inline-flex items-center justify-center rounded-full select-none cursor-pointer transition-all ${
+        avail === false ? 'border-2 border-dashed border-gray-300 text-gray-400 bg-white'
+        : st === 'playing' ? 'bg-jade-600 text-white shadow-md scale-105'
+        : (st === 'loading' || avail === 'loading') ? 'bg-jade-50 text-jade-400 animate-pulse'
+        : 'bg-jade-50 text-jade-700 hover:bg-jade-100 active:scale-95'}`;
+      return (
+        <span className={`inline-flex items-center gap-1.5 align-middle ${className}`}>
+          <span role="button" tabIndex={0} aria-label="Play audio" title={avail === false ? 'No audio for this yet' : 'Play'}
+            onClick={tap(false)} onKeyDown={onKey(false)} className={cls(A.stateOf(text, lang, false))}>
+            {avail === false ? '🔇' : '🔊'}
+          </span>
+          {slow && avail !== false && (
+            <span role="button" tabIndex={0} aria-label="Play slowly" title="Play slowly"
+              onClick={tap(true)} onKeyDown={onKey(true)} className={cls(A.stateOf(text, lang, true))}>🐢</span>
+          )}
+        </span>
+      );
+    }
+
+    // Header: ♀/♂ voice + auto-play mute. Saved on the account (kg_chart_user_prefs).
+    function AudioControls() {
+      useAudioState();
+      const A = window.KGAudio;
+      const p = A.prefs;
+      return (
+        <div className="flex items-center bg-white/20 rounded-lg border border-white/30 overflow-hidden">
+          <button onClick={() => A.setPrefs({ voice: p.voice === 'f' ? 'm' : 'f' })}
+            title={`Voice: ${p.voice === 'f' ? 'female' : 'male'} (tap to switch)`}
+            className="px-3 py-2 hover:bg-white/20 font-bold">{p.voice === 'f' ? '♀' : '♂'}</button>
+          <button onClick={() => A.setPrefs({ muted: !p.muted })}
+            title={p.muted ? 'Auto-play off (🔊 buttons still work)' : 'Auto-play on'}
+            className="px-3 py-2 hover:bg-white/20 border-l border-white/30">{p.muted ? '🔇' : '🔈'}</button>
+        </div>
+      );
+    }
 
     // ==========================================
     // AUTH CONTEXT
@@ -640,6 +697,7 @@
                 </div>
 
                 <div className="flex items-center gap-3">
+                  {user && <AudioControls />}
                   <select value={currentLanguage} onChange={(e) => onLanguageChange(e.target.value)}
                     className="px-4 py-2 bg-white/20 rounded-lg text-white border border-white/30 focus:outline-none">
                     {languages.map(lang => (
@@ -747,7 +805,7 @@
       );
     }
 
-    function VocabCard({ item, topicId, rating, onRate, onClick, showEnglish, fontClass, flagMode, flagSelected }) {
+    function VocabCard({ item, topicId, rating, onRate, onClick, showEnglish, fontClass, flagMode, flagSelected, languageCode }) {
       const [imageError, setImageError] = useState(false);
       const currentRating = getRatingById(rating);
       const colorCode = item.extra_data?.colorCode;
@@ -762,6 +820,11 @@
               flagSelected ? 'bg-red-500 text-white scale-110' : 'bg-white/80 text-gray-400 border border-gray-300'
             }`}>
               {flagSelected ? '✓' : '🚩'}
+            </div>
+          )}
+          {!flagMode && (
+            <div className="absolute top-2 left-2 z-10">
+              <SpeakButton text={item.translation?.native_text} lang={languageCode} size="sm" />
             </div>
           )}
           {currentRating && !flagMode && (
@@ -875,6 +938,9 @@
               <h2 className={`text-4xl font-bold text-gray-800 mb-2 ${fontClass}`}>
                 {item.translation?.native_text}
               </h2>
+              <div className="mb-3">
+                <SpeakButton text={item.translation?.native_text} lang={languageCode} slow size="lg" />
+              </div>
 
               {editingDev ? (
                 <div className="mb-3">
@@ -1292,6 +1358,7 @@
                 <div className="text-xs text-red-500 text-center mt-1 font-devanagari">
                   {topic.translation?.question_devanagari}
                 </div>
+                <SpeakButton text={topic.translation?.question_native} lang={languageCode} slow size="sm" className="mt-2" />
               </div>
             </div>
           </div>
@@ -1336,7 +1403,7 @@
             {vocabulary.map((item) => (
               <VocabCard key={item.id} item={item} topicId={topic.id} rating={ratings[item.id]?.rating}
                 onRate={onRate} onClick={() => flagMode ? toggleFlag(item) : setSelectedItem(item)}
-                showEnglish={showEnglish} fontClass={fontClass} flagMode={flagMode} flagSelected={flaggedIds.has(item.id)} />
+                showEnglish={showEnglish} fontClass={fontClass} flagMode={flagMode} flagSelected={flaggedIds.has(item.id)} languageCode={languageCode} />
             ))}
           </div>
 
@@ -1492,6 +1559,7 @@
         const counted = correct && hintsUsed === 0;
         setResult({ correct: counted, solvedWithHints: correct && hintsUsed > 0 });
         onAnswered(counted, builtText);
+        window.KGAudio.autoPlay(nativeText, languageCode);
       };
 
       const place = (key) => {
@@ -1632,6 +1700,7 @@
               </div>
               {result.solvedWithHints && <div className="text-sm text-gray-500 -mt-2 mb-3">Counted as wrong because a hint was used.</div>}
               <div className={`text-4xl font-bold text-gray-800 ${fontClass}`}>{nativeText}</div>
+              <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>
               {item.translation?.devanagari && <div className="text-xl text-blue-600 font-devanagari mt-1">{item.translation.devanagari}</div>}
               <div className="text-sm text-gray-500 mt-1">{item.english_text}</div>
               {(mistakes > 0 || hinted.length > 0) && (
@@ -1785,6 +1854,7 @@
         if (showResult) return;
         setSelectedAnswer(item);
         setShowResult(true);
+        window.KGAudio.autoPlay(currentQuestion.translation?.native_text, languageCode);
         const isCorrect = item.id === currentQuestion.id;
         setScore(prev => ({ correct: prev.correct + (isCorrect ? 1 : 0), total: prev.total + 1 }));
         // Track answer for session persistence
@@ -2017,6 +2087,7 @@
               <>
                 <div className={`text-4xl font-bold text-gray-800 mb-2 ${fontClass}`}>{currentQuestion.translation?.native_text}</div>
                 <div className="text-xl text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>
+                <div className="mt-4"><SpeakButton text={currentQuestion.translation?.native_text} lang={languageCode} slow size="lg" /></div>
               </>
             )}
             {quizType === 'image_to_native' && (
@@ -2044,7 +2115,7 @@
                 else if (selectedAnswer?.id === opt.id) borderClass = 'border-red-500 border-4 bg-red-50';
               }
               return (
-                <button key={opt.id} onClick={() => handleAnswer(opt)} disabled={showResult}
+                <button key={opt.id} onClick={() => { if (!showResult) handleAnswer(opt); }} aria-disabled={showResult}
                   className={`p-4 rounded-xl border-2 transition-all relative ${borderClass}`}>
                   <span className="absolute top-1.5 left-2 text-xs text-gray-300 font-mono hidden sm:inline">{idx + 1}</span>
                   {(quizType === 'native_to_image' || quizType === 'devanagari_to_image') ? (
@@ -2062,6 +2133,7 @@
                     <>
                       <div className={`text-lg font-semibold text-gray-800 ${fontClass}`}>{opt.translation?.native_text}</div>
                       <div className="text-sm text-blue-600 font-devanagari mt-1">{opt.translation?.devanagari}</div>
+                      <div className="mt-2 flex justify-center"><SpeakButton text={opt.translation?.native_text} lang={languageCode} size="sm" /></div>
                     </>
                   )}
                 </button>
@@ -2073,6 +2145,10 @@
             <div className="text-center animate-slide-up">
               <div className={`text-2xl font-bold mb-4 ${selectedAnswer?.id === currentQuestion.id ? 'text-green-600' : 'text-red-600'}`}>
                 {selectedAnswer?.id === currentQuestion.id ? '✅ Correct!' : `❌ Wrong! It was "${currentQuestion.english_text}"`}
+              </div>
+              <div className="flex items-center justify-center gap-3 mb-4">
+                <span className={`text-2xl font-semibold text-gray-800 ${fontClass}`}>{currentQuestion.translation?.native_text}</span>
+                <SpeakButton text={currentQuestion.translation?.native_text} lang={languageCode} slow />
               </div>
               <button onClick={nextQuestion} className="px-8 py-3 bg-blue-600 text-white rounded-full font-bold hover:bg-blue-700">
                 {currentWordIndex + 1 >= quizWords.length ? 'See Results' : 'Next Question →'} <span className="text-blue-300 text-sm hidden sm:inline ml-1">↵</span>
@@ -2156,6 +2232,10 @@
                 <div className="text-3xl font-bold text-gray-800">{currentItem.english_text}</div>
               </div>
             </div>
+          </div>
+
+          <div className="flex justify-center mb-4">
+            <SpeakButton text={currentItem.translation?.native_text} lang={languageCode} slow size="lg" />
           </div>
 
           <div className="flex justify-center gap-3 mb-6">
@@ -2580,6 +2660,9 @@
       useEffect(() => { saveToStorage(STORAGE_KEYS.view, activeView); }, [activeView]);
       useEffect(() => { saveToStorage(STORAGE_KEYS.topic, activeTopic); }, [activeTopic]);
       useEffect(() => { saveToStorage(STORAGE_KEYS.showEnglish, showEnglish); }, [showEnglish]);
+      useEffect(() => { window.KGAudio.loadManifest(currentLanguage); }, [currentLanguage]);
+      useEffect(() => { if (user) window.KGAudio.initPrefs(supabase, user.id); }, [user]);
+      useEffect(() => { window.KGAudio.stop(); }, [activeView, currentLanguage]);
 
       useEffect(() => {
         if (visibleTopics.length > 0) {
