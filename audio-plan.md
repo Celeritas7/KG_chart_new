@@ -1,6 +1,6 @@
 # Phase 9 — Native audio (Azure Speech, pre-generated)
 
-Status (17 Oct 2026): **step 1 delivered** (generator script). Steps 2–3 not started.
+Status (17 Oct 2026): steps 1–3 built. Clips are live for ta, my, zh, ko. Thai needs a rerun (no clips.json yet). ja, ms, si not generated.
 
 ## Decisions
 - Storage: Supabase Storage, bucket `vocabulary-assets`, folder `audio/`. Loaded on first play, then cached by the browser.
@@ -42,10 +42,11 @@ Troubleshooting
 2. ✅ Generator script `tools/gen_kg_audio.py` (reads DB, generates, uploads, writes clips.json).
 3. ☐ Run step 1 for Tamil (you).
 4. ☐ Step 2: `speak(text, lang)` player in `index.html` + 🔊 buttons (Chart, Flashcards, topic question, quiz prompt + options, Build the Word), auto-play on answer, 🐢 slow, mute, ♂/♀, saved on the account (needs a small SQL file for the settings column).
-5. ☐ Step 3: Listen → Image + Listen → Native text quiz types; unlock rule 2× × 6 types; existing completions kept.
+5. ✅ Step 3: Listen → Image + Listen → Native text quiz types; unlock rule 2× × 6 types; existing completions kept.
+   Also: sentence quizzes (kg-chart-sentences.sql). The generator now includes sentences, so rerun it after adding sentences to get their 🔊.
 6. ☐ Admin: list words with no clip (optional).
 7. ☐ Phone test: ♂/♀, mute, 🐢, a word with no clip, an edited word (new hash → fallback until the generator is rerun).
-8. ☐ Other languages: `python tools/gen_kg_audio.py --lang ms` (and my, zh, ko, th, te, si).
+8. ☐ Other languages: ✅ ta, my, zh, ko. Still to run: `th` (interrupted, rerun finishes it), `ms`, `si`, `ja`, `te`.
 9. ☐ README: "add/edit words → rerun the generator".
 
 ## Rules

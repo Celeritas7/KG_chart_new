@@ -1,7 +1,7 @@
 """KG Chart - Phase 9 step 1: generate native-audio MP3s with Azure Speech and upload them to Supabase Storage.
 
-Adapted from the Burmese app's gen_speak_audio.py. Reads every word (kg_chart_vocabulary_translations.native_text)
-and topic question (kg_chart_topic_translations.question_native) for one language, makes a male + female clip for
+Adapted from the Burmese app's gen_speak_audio.py. Reads every word (kg_chart_vocabulary_translations.native_text),
+topic question (kg_chart_topic_translations.question_native) and sentence (kg_chart_sentences.native_text) for one language, makes a male + female clip for
 each unique text, uploads to  vocabulary-assets/audio/<lang>/<m|f>/<hash>.mp3  and writes  audio/<lang>/clips.json
 (the list the app uses to know which clips exist).
 
@@ -45,6 +45,7 @@ VOICES = {
     "th": ("th-TH", "th-TH-NiwatNeural", "th-TH-PremwadeeNeural"),
     "te": ("te-IN", "te-IN-MohanNeural", "te-IN-ShrutiNeural"),
     "si": ("si-LK", "si-LK-SameeraNeural", "si-LK-ThiliniNeural"),
+    "ja": ("ja-JP", "ja-JP-KeitaNeural", "ja-JP-NanamiNeural"),
 }
 
 
@@ -79,7 +80,12 @@ def fetch_texts(lang: str, key: str) -> list[str]:
     q = urllib.parse.quote(lang)
     words = sb_request("GET", f"/rest/v1/kg_chart_vocabulary_translations?select=native_text&language_code=eq.{q}&limit=10000", key)
     topics = sb_request("GET", f"/rest/v1/kg_chart_topic_translations?select=question_native&language_code=eq.{q}&limit=1000", key)
-    texts = [w["native_text"] for w in words] + [t["question_native"] for t in topics]
+    try:  # sentence quizzes (kg-chart-sentences.sql); skipped if that table isn't there yet
+        sentences = sb_request("GET", f"/rest/v1/kg_chart_sentences?select=native_text&language_code=eq.{q}&limit=10000", key)
+    except urllib.error.HTTPError as e:
+        print(f"   (no sentences table yet: {e.code}, skipping sentences)")
+        sentences = []
+    texts = [w["native_text"] for w in words] + [t["question_native"] for t in topics] + [s["native_text"] for s in sentences]
     seen, out = set(), []
     for t in texts:
         n = norm(t)

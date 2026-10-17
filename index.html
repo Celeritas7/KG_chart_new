@@ -97,6 +97,7 @@
       topicUnlocks: 'kg_chart_topic_unlocks',
       progressResets: 'kg_chart_progress_resets',
       topicCompletions: 'kg_chart_topic_completions',
+      sentences: 'kg_chart_sentences',
     };
 
     // ==========================================
@@ -240,6 +241,8 @@
       { id: 'image_to_native', label: 'Image → Native', icon: '🖼️' },
       { id: 'devanagari_to_image', label: 'Devanagari → Image', icon: '🕉️' },
       { id: 'english_to_native', label: 'English → Native', icon: '🌐' },
+      { id: 'listen_to_image', label: 'Listen → Image', icon: '🔊' },
+      { id: 'listen_to_native', label: 'Listen → Native', icon: '👂' },
       { id: 'word_builder', label: 'Build the Word', icon: '🧩' },
     ];
 
@@ -248,8 +251,9 @@
     // Unlock rule (Phase 8b): a word is "done" once it has been answered, right or wrong,
     // UNLOCK_MIN_ATTEMPTS times in EACH of these quiz types (since the learner's last reset).
     // Build the Word counts toward strength but is not required for unlocking.
-    const UNLOCK_MIN_ATTEMPTS = 3;
-    const UNLOCK_QUIZ_TYPES = ['native_to_image', 'image_to_native', 'devanagari_to_image', 'english_to_native'];
+    // Phase 9 step 3: 2× in each of 6 types (adds the two Listen quizzes). Topics already completed stay completed.
+    const UNLOCK_MIN_ATTEMPTS = 2;
+    const UNLOCK_QUIZ_TYPES = ['native_to_image', 'image_to_native', 'devanagari_to_image', 'english_to_native', 'listen_to_image', 'listen_to_native'];
     const UNLOCK_RULE_TEXT = `${UNLOCK_MIN_ATTEMPTS}× in each of the ${UNLOCK_QUIZ_TYPES.length} quiz types`;
 
     const LANGUAGE_FONTS = {
@@ -1455,6 +1459,16 @@
     }
 
     // ==========================================
+    // LISTEN QUIZZES (Phase 9 step 3): clips come from js/kg-audio.js
+    // ==========================================
+    const LISTEN_TYPES = ['listen_to_image', 'listen_to_native'];
+    const languageName = (langCode) => {
+      try { return new Intl.DisplayNames(['en'], { type: 'language' }).of(langCode) || langCode; } catch (e) { return langCode; }
+    };
+    // Listen quizzes play even when auto-play is muted, and never toast
+    const playListen = (text, lang, slow = false) => { if (text) window.KGAudio.play(text, lang, { slow, silent: true }); };
+
+    // ==========================================
     // WORD BUILDER QUIZ
     // ==========================================
     const WB_STORAGE_KEY = 'kg_chart_word_builder';
@@ -1717,11 +1731,13 @@
       );
     }
 
-    function QuizView({ topics, vocabulary, poolVocabulary, ratings, onRate, languageCode, user, onSessionSaved }) {
+    function WordQuizView({ topics, vocabulary, poolVocabulary, ratings, onRate, languageCode, user, onSessionSaved, modeToggle }) {
       const pool = poolVocabulary || vocabulary;
+      useAudioState();
       const savingRef = React.useRef(false);
       const [quizTopic, setQuizTopic] = useState('all');
       const [quizType, setQuizType] = useState('native_to_image');
+      const isListen = LISTEN_TYPES.includes(quizType);
       const [dailyTarget, setDailyTarget] = useState(() => loadFromStorage(STORAGE_KEYS.quizTarget, 10));
       const [currentQuestion, setCurrentQuestion] = useState(null);
       const [options, setOptions] = useState([]);
@@ -1762,7 +1778,8 @@
           .select('*')
           .eq('user_id', user.id)
           .eq('language_code', languageCode)
-          .order('completed_at', { ascending: false })
+          .in('quiz_type', QUIZ_TYPES.map(q => q.id))
+          .order('created_at', { ascending: false })
           .limit(5)
           .then(({ data }) => { if (data) setRecentSessions(data); });
       }, [user, languageCode, sessionSaved]);
@@ -1780,6 +1797,7 @@
             quiz_type: quizType,
             total_questions: sc.total,
             correct_answers: sc.correct,
+            completed_at: new Date().toISOString(),
           })
           .select('id')
           .single();
@@ -1800,7 +1818,7 @@
       // Leaving via a top tab (Chart/Cards/Progress) unmounts this view: save pending answers so faced words still count
       const pendingRef = React.useRef(null);
       pendingRef.current = quizStarted && !quizCompleted && quizAnswers.length ? { score, quizAnswers, persistSession } : null;
-      useEffect(() => () => { const p = pendingRef.current; if (p) p.persistSession(p.score, p.quizAnswers); }, []);
+      useEffect(() => () => { const p = pendingRef.current; if (p) p.persistSession(p.score, p.quizAnswers); window.KGAudio.stop(); }, []);
 
       const startQuiz = useCallback(() => {
         const targetCount = dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length);
@@ -1825,6 +1843,8 @@
         });
         setQuizOptions(frozen);
         setQuizWords(selected);
+        // Play inside the tap itself: phones block sound that doesn't start from a tap
+        if (isListen && selected[0]) playListen(selected[0].translation?.native_text, languageCode);
         setCurrentWordIndex(0);
         setScore({ correct: 0, total: 0 });
         setQuizAnswers([]);
@@ -1832,7 +1852,7 @@
         setSessionSaved(false);
         setQuizCompleted(false);
         setQuizStarted(true);
-      }, [playableVocab, filteredVocab, pool, dailyTarget]);
+      }, [playableVocab, filteredVocab, pool, dailyTarget, isListen, languageCode]);
 
       const generateQuestion = useCallback(() => {
         if (pool.length < 4 || quizWords.length < 1 || currentWordIndex >= quizWords.length) {
@@ -1885,11 +1905,13 @@
       };
 
       const nextQuestion = () => {
-        if (currentWordIndex + 1 >= quizWords.length) setQuizCompleted(true);
-        else setCurrentWordIndex(prev => prev + 1);
+        if (currentWordIndex + 1 >= quizWords.length) { setQuizCompleted(true); return; }
+        if (isListen) playListen(quizWords[currentWordIndex + 1]?.translation?.native_text, languageCode);
+        setCurrentWordIndex(prev => prev + 1);
       };
 
       const leaveQuiz = () => {
+        window.KGAudio.stop();
         if (!quizCompleted && quizAnswers.length) persistSession(score, quizAnswers);
         setQuizStarted(false);
       };
@@ -1904,6 +1926,7 @@
             const num = parseInt(e.key);
             if (num >= 1 && num <= 4 && options[num - 1]) handleAnswer(options[num - 1]);
           }
+          if ((e.key === 'r' || e.key === 'R') && isListen && currentQuestion) playListen(currentQuestion.translation?.native_text, languageCode);
         };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
@@ -1919,6 +1942,7 @@
                 </div>
                 <h2 className="text-3xl font-bold text-gray-800">Quiz Mode</h2>
               </div>
+              {modeToggle}
 
               <div className="space-y-6">
                 <div>
@@ -1959,6 +1983,20 @@
                   </div>
                 </div>
 
+                {isListen && (() => {
+                  const sample = playableVocab.find(v => v.translation?.native_text);
+                  const avail = sample ? window.KGAudio.has(sample.translation.native_text, languageCode) : false;
+                  return avail === false ? (
+                    <div className="bg-yellow-50 text-yellow-800 rounded-2xl p-4 text-sm">
+                      No recordings for {languageName(languageCode)} yet, so you'll {quizType === 'listen_to_image' ? 'read the word' : 'see the English word or picture'} instead of hearing it. Answers still count.
+                    </div>
+                  ) : (
+                    <div className="bg-blue-50 text-blue-800 rounded-2xl p-4 text-sm">
+                      🔊 You hear the word, then pick {quizType === 'listen_to_image' ? 'its picture' : 'how it is written'}. Turn your sound on. Plays even when auto-play is muted.
+                    </div>
+                  );
+                })()}
+
                 {quizType === 'word_builder' && (
                   <div className="bg-gray-50 rounded-2xl p-4 space-y-4">
                     <WbOption label="Prompt" value={wb.prompt} onChange={v => setWbKey('prompt', v)}
@@ -1993,7 +2031,7 @@
                     const pct = s.total_questions > 0 ? Math.round((s.correct_answers / s.total_questions) * 100) : 0;
                     const topicObj = topics.find(t => t.id === s.topic_id);
                     const topicLabel = s.topic_id ? (topicObj ? `${topicObj.icon} ${topicObj.translation?.title_native}` : s.topic_id) : 'All Topics';
-                    const date = new Date(s.completed_at);
+                    const date = new Date(s.completed_at || s.created_at);
                     const dateStr = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
                     const timeStr = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
                     return (
@@ -2102,6 +2140,50 @@
             {quizType === 'devanagari_to_image' && (
               <div className="text-4xl text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>
             )}
+            {isListen && (() => {
+              const text = currentQuestion.translation?.native_text;
+              const avail = window.KGAudio.has(text, languageCode);
+              if (avail === false) {
+                // No clip yet: show something else to answer from; the answer still counts
+                return quizType === 'listen_to_image' ? (
+                  <>
+                    <div className="text-xs text-gray-400 mb-2">No recording for this word yet</div>
+                    <div className={`text-4xl font-bold text-gray-800 mb-2 ${fontClass}`}>{text}</div>
+                    <div className="text-xl text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-xs text-gray-400 mb-2">No recording for this word yet</div>
+                    {currentQuestion.image_filename || currentQuestion.extra_data?.colorCode ? (
+                      <div className="w-28 h-28 mx-auto flex items-center justify-center mb-2">
+                        {currentQuestion.extra_data?.colorCode
+                          ? <div className="w-24 h-24 rounded-xl shadow-lg" style={{ backgroundColor: currentQuestion.extra_data.colorCode }} />
+                          : <img src={getImageUrl(currentQuestion.topic_id, currentQuestion.image_filename)} alt="" className="max-w-full max-h-full object-contain" />}
+                      </div>
+                    ) : null}
+                    <div className="text-2xl font-bold text-gray-800">{currentQuestion.english_text}</div>
+                  </>
+                );
+              }
+              const st = window.KGAudio.stateOf(text, languageCode, false);
+              return (
+                <>
+                  <div className="flex items-center justify-center gap-4">
+                    <button onClick={() => playListen(text, languageCode)} title="Play (R)" disabled={avail === 'loading'}
+                      className={`w-20 h-20 rounded-full text-white text-3xl shadow-lg active:scale-95 transition-all ${st === 'playing' ? 'bg-jade-700 scale-105' : 'bg-jade-600 hover:bg-jade-700'} ${avail === 'loading' ? 'opacity-50 animate-pulse' : ''}`}>🔊</button>
+                    <button onClick={() => playListen(text, languageCode, true)} title="Play slowly" disabled={avail === 'loading'}
+                      className="w-14 h-14 rounded-full bg-gray-100 text-2xl hover:bg-gray-200 active:scale-95 transition-transform">🐢</button>
+                  </div>
+                  <div className="text-xs text-gray-400 mt-3">Tap 🔊 to hear it again<span className="hidden sm:inline"> (R)</span></div>
+                  {showResult && quizType === 'listen_to_image' && (
+                    <div className="mt-4">
+                      <div className={`text-3xl font-bold text-gray-800 ${fontClass}`}>{text}</div>
+                      <div className="text-lg text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
             {quizType === 'english_to_native' && (
               <div className="text-3xl font-bold text-gray-800">{currentQuestion.english_text}</div>
             )}
@@ -2118,7 +2200,7 @@
                 <button key={opt.id} onClick={() => { if (!showResult) handleAnswer(opt); }} aria-disabled={showResult}
                   className={`p-4 rounded-xl border-2 transition-all relative ${borderClass}`}>
                   <span className="absolute top-1.5 left-2 text-xs text-gray-300 font-mono hidden sm:inline">{idx + 1}</span>
-                  {(quizType === 'native_to_image' || quizType === 'devanagari_to_image') ? (
+                  {(quizType === 'native_to_image' || quizType === 'devanagari_to_image' || quizType === 'listen_to_image') ? (
                     <>
                       <div className="w-20 h-20 mx-auto flex items-center justify-center mb-2">
                         {opt.extra_data?.colorCode ? (
@@ -2133,7 +2215,7 @@
                     <>
                       <div className={`text-lg font-semibold text-gray-800 ${fontClass}`}>{opt.translation?.native_text}</div>
                       <div className="text-sm text-blue-600 font-devanagari mt-1">{opt.translation?.devanagari}</div>
-                      <div className="mt-2 flex justify-center"><SpeakButton text={opt.translation?.native_text} lang={languageCode} size="sm" /></div>
+                      {(quizType !== 'listen_to_native' || showResult) && <div className="mt-2 flex justify-center"><SpeakButton text={opt.translation?.native_text} lang={languageCode} size="sm" /></div>}
                     </>
                   )}
                 </button>
@@ -2153,6 +2235,498 @@
               <button onClick={nextQuestion} className="px-8 py-3 bg-blue-600 text-white rounded-full font-bold hover:bg-blue-700">
                 {currentWordIndex + 1 >= quizWords.length ? 'See Results' : 'Next Question →'} <span className="text-blue-300 text-sm hidden sm:inline ml-1">↵</span>
               </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ==========================================
+    // SENTENCE QUIZ (kg_chart_sentences)
+    // ==========================================
+    // Sentence answers are saved with vocabulary_id = null, so they never count toward word strength or unlocking.
+    const SENTENCE_QUIZ_TYPES = [
+      { id: 'sentence_to_meaning', label: 'Sentence → Meaning', icon: '💬' },
+      { id: 'meaning_to_sentence', label: 'Meaning → Sentence', icon: '🌐' },
+      { id: 'build_sentence', label: 'Build the Sentence', icon: '🧩' },
+    ];
+    const QUIZ_MODE_KEY = 'kg_chart_quiz_mode';
+    const SENTENCE_SETTINGS_KEY = 'kg_chart_sentence_quiz';
+    // Scripts that don't put spaces between words: cut each chunk into words with Intl.Segmenter
+    const NO_SPACE_LANGS = ['th', 'my', 'zh', 'ja', 'lo', 'km'];
+
+    function splitSentence(text, langCode) {
+      const t = (text || '').normalize('NFC').trim();
+      if (!t) return [];
+      let parts = t.split(/\s+/);
+      if (NO_SPACE_LANGS.includes(langCode) && typeof Intl !== 'undefined' && Intl.Segmenter) {
+        const seg = new Intl.Segmenter(langCode, { granularity: 'word' });
+        parts = parts.flatMap(chunk => Array.from(seg.segment(chunk), x => x.segment).filter(x => x.trim()));
+      }
+      // Punctuation never gets a tile of its own: it sticks to the word before it
+      const out = [];
+      for (const p of parts) {
+        if (out.length && /^[\p{P}\p{S}]+$/u.test(p)) out[out.length - 1] += p;
+        else out.push(p);
+      }
+      return out;
+    }
+
+    const joinSentence = (pieces, langCode) => pieces.join(NO_SPACE_LANGS.includes(langCode) ? '' : ' ');
+
+    function sentenceDevanagari(text, langCode) {
+      const conv = getConverter(langCode);
+      if (!conv || conv.usePronunciation || !text) return '';
+      try { const d = conv.toDevanagari(text); return d && d !== text ? d : ''; } catch (e) { return ''; }
+    }
+
+    function QuizModeToggle({ mode, onChange }) {
+      return (
+        <div className="flex bg-gray-100 rounded-2xl p-1 mb-6">
+          {[['words', '🔤 Words'], ['sentences', '💬 Sentences']].map(([id, label]) => (
+            <button key={id} onClick={() => onChange(id)}
+              className={`flex-1 py-2 rounded-xl font-medium transition-all ${mode === id ? 'bg-white shadow text-jade-700' : 'text-gray-500 hover:text-gray-700'}`}>{label}</button>
+          ))}
+        </div>
+      );
+    }
+
+    function QuizView(props) {
+      const [mode, setMode] = useState(() => (loadFromStorage(QUIZ_MODE_KEY, 'words') === 'sentences' ? 'sentences' : 'words'));
+      useEffect(() => { saveToStorage(QUIZ_MODE_KEY, mode); }, [mode]);
+      const toggle = <QuizModeToggle mode={mode} onChange={setMode} />;
+      return mode === 'sentences'
+        ? <SentenceQuizView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />
+        : <WordQuizView {...props} modeToggle={toggle} />;
+    }
+
+    function SentenceQuizView({ languageCode, user, modeToggle }) {
+      const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
+      useAudioState();
+      const savingRef = React.useRef(false);
+      const saved0 = loadFromStorage(SENTENCE_SETTINGS_KEY, {});
+      const [sentences, setSentences] = useState(null); // null = loading
+      const [loadError, setLoadError] = useState(null);
+      const [group, setGroup] = useState('all');
+      const [count, setCount] = useState(() => (DAILY_TARGET_OPTIONS.includes(saved0.count) ? saved0.count : 10));
+      const [sType, setSType] = useState(() => (SENTENCE_QUIZ_TYPES.some(t => t.id === saved0.type) ? saved0.type : 'sentence_to_meaning'));
+      const [started, setStarted] = useState(false);
+      const [completed, setCompleted] = useState(false);
+      const [items, setItems] = useState([]);
+      const [idx, setIdx] = useState(0);
+      const [selected, setSelected] = useState(null);
+      const [showResult, setShowResult] = useState(false);
+      const [placed, setPlaced] = useState([]); // tile ids, build mode
+      const [gaveUp, setGaveUp] = useState(false);
+      const [score, setScore] = useState({ correct: 0, total: 0 });
+      const [answers, setAnswers] = useState([]);
+      const [sessionSaved, setSessionSaved] = useState(false);
+      const [recent, setRecent] = useState([]);
+
+      useEffect(() => { saveToStorage(SENTENCE_SETTINGS_KEY, { count, type: sType }); }, [count, sType]);
+
+      useEffect(() => {
+        let cancelled = false;
+        setSentences(null); setLoadError(null); setGroup('all');
+        supabase.from(TABLES.sentences).select('*').eq('language_code', languageCode)
+          .order('sort_order').order('created_at')
+          .then(({ data, error }) => {
+            if (cancelled) return;
+            if (error) { setLoadError(error); setSentences([]); return; }
+            setSentences((data || []).filter(x => x.native_text?.trim() && x.english_text?.trim()));
+          });
+        return () => { cancelled = true; };
+      }, [languageCode]);
+
+      useEffect(() => {
+        if (!user) return;
+        supabase.from(TABLES.quizSessions).select('*')
+          .eq('user_id', user.id).eq('language_code', languageCode)
+          .in('quiz_type', SENTENCE_QUIZ_TYPES.map(t => t.id))
+          .order('created_at', { ascending: false }).limit(5)
+          .then(({ data }) => { if (data) setRecent(data); });
+      }, [user, languageCode, sessionSaved]);
+
+      const all = sentences || [];
+      const groups = useMemo(() => [...new Set(all.map(x => x.group_name).filter(Boolean))], [sentences]);
+      const filtered = useMemo(() => (group === 'all' ? all : all.filter(x => x.group_name === group)), [sentences, group]);
+      const isBuild = sType === 'build_sentence';
+      const needed = isBuild ? 1 : 4;
+      const n = count === 0 ? filtered.length : Math.min(count, filtered.length);
+
+      const persistSession = useCallback(async (sc, ans, type) => {
+        if (!user || savingRef.current || sc.total === 0) return;
+        savingRef.current = true;
+        const { data: session, error } = await supabase.from(TABLES.quizSessions).insert({
+          user_id: user.id,
+          language_code: languageCode,
+          topic_id: null,
+          quiz_type: type,
+          total_questions: sc.total,
+          correct_answers: sc.correct,
+          completed_at: new Date().toISOString(),
+        }).select('id').single();
+        if (!error && session && ans.length) {
+          const rows = ans.map(a => ({ ...a, session_id: session.id }));
+          const { error: ansErr } = await supabase.from(TABLES.quizAnswers).insert(rows);
+          // Fallback if the sentence_id column hasn't been added yet (kg-chart-sentences.sql)
+          if (ansErr) await supabase.from(TABLES.quizAnswers).insert(rows.map(({ sentence_id, ...r }) => r));
+        }
+        setSessionSaved(true);
+      }, [user, languageCode]);
+
+      useEffect(() => { if (completed && !sessionSaved) persistSession(score, answers, sType); }, [completed]);
+
+      const pendingRef = React.useRef(null);
+      pendingRef.current = started && !completed && answers.length ? { score, answers, sType, persistSession } : null;
+      useEffect(() => () => { const p = pendingRef.current; if (p) p.persistSession(p.score, p.answers, p.sType); window.KGAudio.stop(); }, []);
+
+      const startQuiz = () => {
+        const picked = shuffleArr(filtered).slice(0, n);
+        const frozen = picked.map(s => {
+          if (isBuild) {
+            let pieces = splitSentence(s.native_text, languageCode);
+            if (pieces.length < 2) pieces = Array.from(s.native_text.trim()).filter(c => c.trim());
+            const tiles = pieces.map((text, id) => ({ id, text }));
+            let order = shuffleArr(tiles);
+            for (let k = 0; k < 6 && order.length > 1 && order.every((t, i) => t.text === pieces[i]); k++) order = shuffleArr(tiles);
+            return { s, pieces, tiles: order };
+          }
+          // Wrong options: same group first (same pattern, harder to guess), never two that read the same
+          const key = sType === 'sentence_to_meaning' ? 'english_text' : 'native_text';
+          const norm = x => (x[key] || '').trim().toLowerCase();
+          const same = shuffleArr(all.filter(x => x.id !== s.id && s.group_name && x.group_name === s.group_name));
+          const other = shuffleArr(all.filter(x => x.id !== s.id && !same.includes(x)));
+          const seen = new Set([norm(s)]);
+          const wrong = [];
+          for (const x of [...same, ...other]) {
+            const t = norm(x);
+            if (!t || seen.has(t)) continue;
+            seen.add(t);
+            wrong.push(x);
+            if (wrong.length === 3) break;
+          }
+          return { s, options: shuffleArr([s, ...wrong]) };
+        });
+        setItems(frozen);
+        setIdx(0); setSelected(null); setShowResult(false); setPlaced([]); setGaveUp(false);
+        setScore({ correct: 0, total: 0 }); setAnswers([]);
+        savingRef.current = false; setSessionSaved(false);
+        setCompleted(false); setStarted(true);
+      };
+
+      const item = items[idx];
+      const record = (isCorrect, selectedId, answerText) => {
+        setScore(prev => ({ correct: prev.correct + (isCorrect ? 1 : 0), total: prev.total + 1 }));
+        setAnswers(prev => [...prev, {
+          vocabulary_id: null,
+          sentence_id: item.s.id,
+          selected_vocabulary_id: selectedId,
+          is_correct: isCorrect,
+          answer_text: answerText,
+          answered_at: new Date().toISOString(),
+        }]);
+      };
+
+      const pick = (opt) => {
+        if (showResult || !item) return;
+        setSelected(opt);
+        setShowResult(true);
+        window.KGAudio.autoPlay(item.s.native_text, languageCode);
+        record(opt.id === item.s.id, opt.id, sType === 'sentence_to_meaning' ? opt.english_text : opt.native_text);
+      };
+
+      const placeTile = (id) => { if (!showResult) setPlaced(p => (p.includes(id) ? p : [...p, id])); };
+      const removeTile = (id) => { if (!showResult) setPlaced(p => p.filter(x => x !== id)); };
+      const placedText = () => placed.map(id => item.tiles.find(t => t.id === id).text);
+      const checkBuild = () => {
+        if (showResult || !item || placed.length !== item.tiles.length) return;
+        const built = placedText();
+        const ok = built.length === item.pieces.length && built.every((t, i) => t === item.pieces[i]);
+        setShowResult(true);
+        window.KGAudio.autoPlay(item.s.native_text, languageCode);
+        record(ok, ok ? item.s.id : null, joinSentence(built, languageCode));
+      };
+      const giveUp = () => {
+        if (showResult || !item) return;
+        setGaveUp(true);
+        setShowResult(true);
+        window.KGAudio.autoPlay(item.s.native_text, languageCode);
+        record(false, null, joinSentence(placedText(), languageCode));
+      };
+
+      const next = () => {
+        window.KGAudio.stop();
+        if (idx + 1 >= items.length) { setCompleted(true); return; }
+        setIdx(i => i + 1); setSelected(null); setShowResult(false); setPlaced([]); setGaveUp(false);
+      };
+      const leave = () => {
+        window.KGAudio.stop();
+        if (!completed && answers.length) persistSession(score, answers, sType);
+        setStarted(false);
+      };
+
+      // Keyboard: 1-4 pick, Enter next (MCQ); Enter checks / next (build)
+      useEffect(() => {
+        if (!started || completed || !item) return;
+        const onKey = (e) => {
+          if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+          if (e.key === 'Enter' || (e.key === ' ' && showResult)) {
+            e.preventDefault();
+            if (showResult) next(); else if (isBuild) checkBuild();
+            return;
+          }
+          if (!isBuild && !showResult) {
+            const num = parseInt(e.key);
+            if (num >= 1 && num <= 4 && item.options[num - 1]) pick(item.options[num - 1]);
+          }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+      }, [started, completed, item, showResult, placed, isBuild]);
+
+      // 🔊 only when this sentence has a clip (run tools/gen_kg_audio.py after adding sentences)
+      const SpeakBtn = ({ text, small }) => (window.KGAudio.has(text, languageCode) === true
+        ? <SpeakButton text={text} lang={languageCode} slow={!small} size={small ? 'sm' : 'lg'} />
+        : null);
+
+      const NativeLine = ({ text, size }) => {
+        const dev = sentenceDevanagari(text, languageCode);
+        return (
+          <>
+            <div className={`${size} font-bold text-gray-800 ${fontClass}`}>{text}</div>
+            {dev && <div className="text-base text-blue-600 font-devanagari mt-1">{dev}</div>}
+          </>
+        );
+      };
+
+      // ---------- Setup ----------
+      if (!started) {
+        const typeHelp = {
+          sentence_to_meaning: 'Read the sentence, pick what it means.',
+          meaning_to_sentence: 'Read the English, pick the right sentence.',
+          build_sentence: 'Read the English, tap the words into the right order.',
+        }[sType];
+        return (
+          <div className="max-w-2xl mx-auto p-6">
+            <div className="bg-white rounded-3xl shadow-xl p-8">
+              <div className="text-center mb-8">
+                <div className="w-20 h-20 bg-jade-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <span className="text-4xl">💬</span>
+                </div>
+                <h2 className="text-3xl font-bold text-gray-800">Quiz Mode</h2>
+              </div>
+              {modeToggle}
+
+              {sentences === null ? <LoadingSpinner /> : loadError ? (
+                <div className="bg-yellow-50 text-yellow-800 rounded-2xl p-4 text-sm">
+                  Sentences aren't set up yet. Run <span className="font-mono">kg-chart-sentences.sql</span> in the Supabase SQL editor, then reload.
+                </div>
+              ) : all.length === 0 ? (
+                <div className="text-center text-gray-500 py-6">
+                  <div className="text-4xl mb-2">📭</div>
+                  No sentences for {languageName(languageCode)} yet. Add some in the admin panel under 💬 Sentences.
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {groups.length > 0 && (
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">Group</label>
+                      <select value={group} onChange={(e) => setGroup(e.target.value)} className="w-full px-4 py-3 border rounded-xl">
+                        <option value="all">All sentences ({all.length})</option>
+                        {groups.map(g => <option key={g} value={g}>{g} ({all.filter(x => x.group_name === g).length})</option>)}
+                      </select>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      How many <span className="text-gray-400 font-normal ml-2">({count === 0 ? 'All' : count} sentences)</span>
+                    </label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {DAILY_TARGET_OPTIONS.map(c => (
+                        <button key={c} onClick={() => setCount(c)}
+                          className={`py-3 rounded-xl border-2 font-medium transition-all ${count === c ? 'border-jade-500 bg-jade-50 text-jade-700' : 'border-gray-200 hover:border-gray-300'}`}>{c === 0 ? 'All' : c}</button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Quiz Type</label>
+                    <div className="grid grid-cols-3 gap-3">
+                      {SENTENCE_QUIZ_TYPES.map(t => (
+                        <button key={t.id} onClick={() => setSType(t.id)}
+                          className={`p-3 rounded-xl border-2 transition-all ${sType === t.id ? 'border-jade-500 bg-jade-50' : 'border-gray-200'}`}>
+                          <div className="text-2xl mb-1">{t.icon}</div>
+                          <div className="text-xs sm:text-sm font-medium">{t.label}</div>
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-400 mt-2">{typeHelp}</p>
+                  </div>
+
+                  <button onClick={startQuiz} disabled={n < 1 || all.length < needed}
+                    className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">
+                    {all.length < needed ? `Need ${needed}+ sentences` : n < 1 ? 'No sentences in group' : `Start Quiz (${n} sentences)`}
+                  </button>
+                  <p className="text-xs text-gray-400 text-center">Sentence quizzes don't count toward unlocking topics.</p>
+                </div>
+              )}
+            </div>
+
+            {recent.length > 0 && (
+              <div className="bg-white rounded-2xl shadow-lg p-6 mt-6">
+                <h3 className="text-lg font-bold text-gray-800 mb-4">Recent Sentence Quizzes</h3>
+                <div className="space-y-3">
+                  {recent.map(r => {
+                    const pct = r.total_questions > 0 ? Math.round((r.correct_answers / r.total_questions) * 100) : 0;
+                    const t = SENTENCE_QUIZ_TYPES.find(x => x.id === r.quiz_type);
+                    const date = new Date(r.completed_at || r.created_at);
+                    return (
+                      <div key={r.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-bold ${pct >= 80 ? 'bg-green-500' : pct >= 60 ? 'bg-yellow-500' : 'bg-red-500'}`}>{pct}%</div>
+                          <div>
+                            <div className="text-sm font-medium text-gray-800">{t ? `${t.icon} ${t.label}` : r.quiz_type}</div>
+                            <div className="text-xs text-gray-400">{date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} {date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</div>
+                          </div>
+                        </div>
+                        <div className="text-sm text-gray-600 font-medium">{r.correct_answers}/{r.total_questions}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      // ---------- Done ----------
+      if (completed) {
+        const pct = score.total > 0 ? Math.round(score.correct / score.total * 100) : 0;
+        const [msg, emoji] = pct >= 90 ? ['Excellent!', '🏆'] : pct >= 70 ? ['Great job!', '🌟'] : pct >= 50 ? ['Good effort!', '👍'] : ['Keep practicing!', '💪'];
+        return (
+          <div className="max-w-2xl mx-auto p-6">
+            <div className="bg-white rounded-3xl shadow-xl p-8 text-center">
+              <div className="text-6xl mb-4">{emoji}</div>
+              <h2 className="text-3xl font-bold text-gray-800 mb-2">{msg}</h2>
+              <p className="text-gray-500 mb-6">Sentence Quiz Completed!</p>
+              <div className="bg-gradient-to-r from-jade-500 to-jade-600 text-white rounded-2xl p-6 mb-6">
+                <div className="text-5xl font-bold mb-2">{score.correct}/{score.total}</div>
+                <div className="text-xl opacity-90">{pct}% Correct</div>
+              </div>
+              {user && <p className={`text-sm mb-4 ${sessionSaved ? 'text-green-600' : 'text-gray-400'}`}>{sessionSaved ? '✓ Results saved' : 'Saving...'}</p>}
+              <div className="flex gap-4 justify-center">
+                <button onClick={() => { setStarted(false); setCompleted(false); }} className="px-6 py-3 bg-gray-100 rounded-xl font-medium hover:bg-gray-200">← Back to Setup</button>
+                <button onClick={startQuiz} className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Try Again</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (!item) return <LoadingSpinner />;
+      const s = item.s;
+      const isRight = showResult && (isBuild ? !gaveUp && answers[answers.length - 1]?.is_correct : selected?.id === s.id);
+
+      // ---------- Question ----------
+      return (
+        <div className="max-w-3xl mx-auto p-4">
+          <div className="bg-white rounded-2xl shadow-lg p-4 mb-6">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <button onClick={leave} className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">← Back</button>
+              <div className="flex items-center gap-4">
+                <div className="text-sm text-gray-500">{idx + 1} / {items.length}</div>
+                <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
+                  <div className="h-full bg-jade-500 transition-all duration-300" style={{ width: `${((idx + 1) / items.length) * 100}%` }} />
+                </div>
+                <div className="bg-gradient-to-r from-jade-500 to-jade-600 text-white px-4 py-2 rounded-xl font-bold shadow-md">{score.correct}/{score.total}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-lg p-8 mb-6 text-center">
+            {s.group_name && <div className="text-xs text-gray-400 mb-2">{s.group_name}</div>}
+            {sType === 'sentence_to_meaning' ? (
+              <>
+                <div className="text-sm text-gray-400 mb-4">What does this mean?</div>
+                <NativeLine text={s.native_text} size="text-3xl" />
+                <div className="mt-3"><SpeakBtn text={s.native_text} /></div>
+              </>
+            ) : (
+              <>
+                <div className="text-sm text-gray-400 mb-4">{isBuild ? 'Build this sentence:' : 'Which sentence says this?'}</div>
+                <div className="text-2xl font-bold text-gray-800">{s.english_text}</div>
+              </>
+            )}
+          </div>
+
+          {!isBuild && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+              {item.options.map((opt, i) => {
+                let cls = 'border-gray-200 hover:border-jade-300 hover:shadow-lg';
+                if (showResult) {
+                  if (opt.id === s.id) cls = 'border-green-500 border-4 bg-green-50';
+                  else if (selected?.id === opt.id) cls = 'border-red-500 border-4 bg-red-50';
+                }
+                return (
+                  <button key={opt.id} onClick={() => pick(opt)} disabled={showResult}
+                    className={`p-4 rounded-xl border-2 transition-all relative text-left ${cls}`}>
+                    <span className="absolute top-1.5 right-2 text-xs text-gray-300 font-mono hidden sm:inline">{i + 1}</span>
+                    {sType === 'sentence_to_meaning'
+                      ? <div className="text-base font-medium text-gray-800 pr-4">{opt.english_text}</div>
+                      : <div className="pr-4"><NativeLine text={opt.native_text} size="text-lg" /></div>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {isBuild && (
+            <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
+              <div className={`min-h-[64px] rounded-xl border-2 border-dashed p-3 flex flex-wrap gap-2 mb-4 ${showResult ? (isRight ? 'border-green-400 bg-green-50' : 'border-red-400 bg-red-50') : 'border-gray-300'}`}>
+                {placed.length === 0 && <span className="text-gray-400 text-sm self-center">Tap the words below in order</span>}
+                {placed.map(id => {
+                  const t = item.tiles.find(x => x.id === id);
+                  return <button key={id} onClick={() => removeTile(id)} className={`px-3 py-2 bg-white border-2 border-jade-300 rounded-xl text-xl ${fontClass}`}>{t.text}</button>;
+                })}
+              </div>
+              <div className="flex flex-wrap gap-2 justify-center mb-4">
+                {item.tiles.map(t => {
+                  const used = placed.includes(t.id);
+                  return (
+                    <button key={t.id} onClick={() => placeTile(t.id)} disabled={used || showResult}
+                      className={`px-3 py-2 rounded-xl border-2 text-xl transition-all ${fontClass} ${used ? 'opacity-25 border-gray-200' : 'border-gray-300 bg-gray-50 hover:border-jade-400'}`}>{t.text}</button>
+                  );
+                })}
+              </div>
+              {!showResult && (
+                <div className="flex gap-3 justify-center">
+                  <button onClick={() => setPlaced([])} disabled={!placed.length} className="px-4 py-2 bg-gray-100 rounded-xl font-medium hover:bg-gray-200 disabled:opacity-40">Clear</button>
+                  <button onClick={giveUp} className="px-4 py-2 bg-gray-100 rounded-xl font-medium hover:bg-gray-200">Show answer</button>
+                  <button onClick={checkBuild} disabled={placed.length !== item.tiles.length} className="px-6 py-2 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700 disabled:opacity-50">Check</button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {showResult && (
+            <div className="text-center animate-slide-up">
+              <div className={`text-2xl font-bold mb-3 ${isRight ? 'text-green-600' : 'text-red-600'}`}>{isRight ? '✅ Correct!' : gaveUp ? '👀 Here it is:' : '❌ Not quite. The answer:'}</div>
+              <div className="bg-white rounded-2xl shadow p-4 mb-4 inline-block max-w-full">
+                <div className="flex items-center justify-center gap-3">
+                  <div><NativeLine text={s.native_text} size="text-2xl" /></div>
+                  <SpeakBtn text={s.native_text} small />
+                </div>
+                <div className="text-gray-600 mt-2">{s.english_text}</div>
+                {s.notes && <div className="text-xs text-gray-400 mt-2">📝 {s.notes}</div>}
+              </div>
+              <div>
+                <button onClick={next} className="px-8 py-3 bg-blue-600 text-white rounded-full font-bold hover:bg-blue-700">
+                  {idx + 1 >= items.length ? 'See Results' : 'Next →'} <span className="text-blue-300 text-sm hidden sm:inline ml-1">↵</span>
+                </button>
+              </div>
             </div>
           )}
         </div>
