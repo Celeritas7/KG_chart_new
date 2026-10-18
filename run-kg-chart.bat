@@ -1,7 +1,7 @@
 @echo off
 title KG Chart local server
 REM Double-click to run the KG Chart app locally.
-REM Keep this .bat AND kg-serve.js in the KG_chart_new folder, next to index.html.
+REM Keep this .bat in the KG_chart_new folder, next to index.html. The server is tools\kg-serve.js.
 cd /d "%~dp0"
 
 if exist "index.html" goto :found
@@ -20,7 +20,7 @@ set "NODE="
 if exist "%ProgramFiles%\nodejs\node.exe" set "NODE=%ProgramFiles%\nodejs\node.exe"
 if not defined NODE if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "NODE=%LOCALAPPDATA%\Programs\nodejs\node.exe"
 if not defined NODE for /f "delims=" %%i in ('where node.exe 2^>nul') do if not defined NODE set "NODE=%%i"
-if defined NODE if exist "kg-serve.js" goto :node
+if defined NODE if exist "tools\kg-serve.js" goto :node
 
 REM --- Fall back to Python ---
 set "PY="
@@ -29,7 +29,7 @@ if not defined PY python --version >nul 2>nul && set "PY=python"
 if defined PY goto :python
 
 echo.
-if defined NODE echo kg-serve.js is missing. Put it next to this .bat file.
+if defined NODE echo tools\kg-serve.js is missing. It should be in the tools folder next to this .bat file.
 if not defined NODE echo Could not find Node.js. Install it from https://nodejs.org and run this again.
 echo.
 pause
@@ -37,8 +37,8 @@ goto :eof
 
 :node
 call :banner Node
-REM kg-serve.js opens the browser itself the moment it is listening.
-"%NODE%" kg-serve.js %PORT% --open
+REM tools\kg-serve.js opens the browser itself the moment it is listening.
+"%NODE%" tools\kg-serve.js %PORT% --open
 goto :stopped
 
 :python

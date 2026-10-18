@@ -244,7 +244,11 @@
       { id: 'listen_to_image', label: 'Listen → Image', icon: '🔊' },
       { id: 'listen_to_native', label: 'Listen → Native', icon: '👂' },
       { id: 'word_builder', label: 'Build the Word', icon: '🧩' },
+      { id: 'type_word', label: 'Type the Word', icon: '⌨️' },
     ];
+
+    // Languages whose native script IS Devanagari: no separate Devanagari line / quiz (Phase 11: Marathi)
+    const NO_DEVANAGARI_LANGS = ['mr'];
 
     const DAILY_TARGET_OPTIONS = [5, 10, 15, 20, 25, 30, 50, 0];
 
@@ -1731,6 +1735,224 @@
       );
     }
 
+    // ==========================================
+    // TYPE THE WORD (Phase 10): learner types with the phone's own keyboard
+    // ==========================================
+    const TW_STORAGE_KEY = 'kg_type_word_settings';
+    const TW_DEFAULTS = { level: 'copy', prompt: 'mix', feedback: 'end', hints: true, sound: false };
+    const TW_LEVELS = [['copy', 'Copy'], ['dev', 'From Devanagari'], ['memory', 'From memory']];
+    const twLevelFor = (level, lang) => (level === 'dev' && NO_DEVANAGARI_LANGS.includes(lang) ? 'copy' : level);
+    const twGraphemes = (s) => (typeof Intl !== 'undefined' && Intl.Segmenter)
+      ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s || ''), x => x.segment)
+      : Array.from(s || '');
+    // Same rule for typed text and the stored word
+    function twNorm(s, lang) {
+      let t = (s || '').normalize('NFC').replace(/[\u200B-\u200D\uFEFF]/g, '').trim().replace(/\s+/g, ' ');
+      t = t.replace(/[\u104B\u104A\u0964\u0965.,!?\uFF01\uFF1F\u3002\u3001]+$/u, '').trim();
+      // Marathi: nasal consonant + virama before a consonant = anusvara (सन्त्रे → संत्रे)
+      if (NO_DEVANAGARI_LANGS.includes(lang)) t = t.replace(/[\u0919\u091E\u0923\u0928\u092E]\u094D(?=[\u0915-\u0939])/g, '\u0902');
+      return t;
+    }
+    // Japanese: also accept a kana reading if the pronunciation data has one
+    function twAccepted(translation, lang) {
+      const out = [translation?.native_text || ''];
+      if (lang === 'ja' && translation?.pronunciation && typeof translation.pronunciation === 'object') {
+        Object.values(translation.pronunciation).forEach(v => { if (typeof v === 'string' && /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(v)) out.push(v); });
+      }
+      return out.filter(Boolean);
+    }
+
+    function TypeWordRound({ item, index, total, score, settings, languageCode, trailingWrong, onBack, onAnswered, onNext }) {
+      const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
+      const nativeText = item.translation?.native_text || '';
+      const devText = item.translation?.devanagari || '';
+      const showDev = !!devText && !NO_DEVANAGARI_LANGS.includes(languageCode) && devText !== nativeText;
+      const level = twLevelFor(settings.level, languageCode);
+      const live = settings.feedback === 'live';
+      const target = useMemo(() => twGraphemes(twNorm(nativeText, languageCode)), [nativeText, languageCode]);
+      const hasImage = !!(item.extra_data?.colorCode || item.image_filename);
+      const promptKind = useMemo(() =>
+        settings.prompt === 'english' || !hasImage ? 'english'
+          : settings.prompt === 'image' ? 'image'
+          : (Math.random() < 0.5 ? 'image' : 'english'), [item.id, index]);
+      const [imgFailed, setImgFailed] = useState(false);
+      const [value, setValue] = useState('');
+      const [composing, setComposing] = useState(false);
+      const [hints, setHints] = useState(0);
+      const [result, setResult] = useState(null);
+      const [practice, setPractice] = useState(null); // null | 'typing' | 'ok' | 'wrong'
+      const inputRef = React.useRef(null);
+
+      // Same input element across words so the phone keyboard stays open
+      useEffect(() => {
+        setValue(''); setHints(0); setResult(null); setPractice(null); setImgFailed(false); setComposing(false);
+        inputRef.current?.focus();
+      }, [item.id, index]);
+
+      const typedG = twGraphemes(twNorm(value, languageCode));
+      const isRight = (txt) => twAccepted(item.translation, languageCode).some(a => twNorm(a, languageCode) === twNorm(txt, languageCode));
+
+      const finish = (correct) => {
+        if (result) return;
+        const counted = correct && hints === 0;
+        setResult({ correct: counted, solvedWithHints: correct && hints > 0, typed: value });
+        onAnswered(counted, value);
+        window.KGAudio.autoPlay(nativeText, languageCode);
+      };
+      const check = () => {
+        if (practice === 'typing' || practice === 'wrong') { setPractice(isRight(value) ? 'ok' : 'wrong'); return; }
+        if (result) { onNext(); return; }
+        if (!value.trim()) return;
+        finish(isRight(value));
+      };
+      const hint = () => {
+        if (result) return;
+        let k = 0;
+        while (k < typedG.length && k < target.length && typedG[k] === target[k]) k++;
+        if (k >= target.length) return;
+        setValue(target.slice(0, k + 1).join(''));
+        setHints(h => h + 1);
+        inputRef.current?.focus();
+      };
+      const retype = () => { setPractice('typing'); setValue(''); inputRef.current?.focus(); };
+      const onKeyDown = (e) => {
+        if (e.key !== 'Enter' || composing || e.nativeEvent.isComposing) return;
+        e.preventDefault();
+        if (practice === 'ok') { onNext(); return; }
+        check();
+      };
+      const keep = (e) => e.preventDefault(); // tapping a button must not close the keyboard
+
+      const charClass = (i) => (i >= target.length || typedG[i] !== target[i]) ? 'text-red-600 bg-red-50' : 'text-green-700';
+      const inputLocked = !!result && !practice;
+      const zawgyiHint = languageCode === 'my' && level === 'copy' && trailingWrong >= 3;
+
+      const prompt = () => {
+        if (level === 'copy') return (
+          <>
+            <div className="text-sm text-gray-400 mb-3">Type this word:</div>
+            <div className={`text-4xl font-bold text-gray-800 ${fontClass}`}>{nativeText}</div>
+            {showDev && <div className="text-xl text-blue-600 font-devanagari mt-1">{devText}</div>}
+            <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>
+          </>
+        );
+        if (level === 'dev') return (
+          <>
+            <div className="text-sm text-gray-400 mb-3">Type it in {languageName(languageCode)} script:</div>
+            {devText ? <div className="text-4xl font-bold text-blue-600 font-devanagari">{devText}</div> : <div className="text-3xl font-bold text-gray-800">{item.english_text}</div>}
+            {devText && <div className="text-sm text-gray-500 mt-1">{item.english_text}</div>}
+            <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>
+          </>
+        );
+        return (
+          <>
+            <div className="text-sm text-gray-400 mb-3">Type the word for:</div>
+            {promptKind === 'image' && !imgFailed ? (
+              item.extra_data?.colorCode ? (
+                <div className="w-24 h-24 rounded-xl shadow-lg mx-auto" style={{ backgroundColor: item.extra_data.colorCode }} />
+              ) : (
+                <div className="w-40 h-40 mx-auto flex items-center justify-center">
+                  <img src={getImageUrl(item.topic_id, item.image_filename)} alt="" onError={() => setImgFailed(true)} className="max-w-full max-h-full object-contain" />
+                </div>
+              )
+            ) : (
+              <div className="text-3xl font-bold text-gray-800">{item.english_text}</div>
+            )}
+            {settings.sound && <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>}
+          </>
+        );
+      };
+
+      return (
+        <div className="max-w-3xl mx-auto p-4">
+          <div className="bg-white rounded-2xl shadow-lg p-4 mb-4">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <button onClick={onBack} className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">← Back</button>
+              <div className="flex items-center gap-4">
+                <div className="text-sm text-gray-500">{index + 1} / {total}</div>
+                <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
+                  <div className="h-full bg-jade-500 transition-all duration-300" style={{ width: `${((index + 1) / total) * 100}%` }} />
+                </div>
+                <div className="bg-gradient-to-r from-jade-500 to-jade-600 text-white px-4 py-2 rounded-xl font-bold shadow-md">{score.correct}/{score.total}</div>
+              </div>
+            </div>
+          </div>
+
+          {!result && <div className="bg-white rounded-2xl shadow-lg p-6 mb-4 text-center">{prompt()}</div>}
+
+          <div className="bg-white rounded-2xl shadow-lg p-6 mb-4">
+            <input ref={inputRef} autoFocus value={value} readOnly={inputLocked}
+              onChange={e => setValue(e.target.value)} onKeyDown={onKeyDown}
+              onCompositionStart={() => setComposing(true)} onCompositionEnd={e => { setComposing(false); setValue(e.target.value); }}
+              lang={languageCode} type="text" inputMode="text" enterKeyHint={result && !practice ? 'next' : 'done'}
+              autoComplete="off" autoCorrect="off" autoCapitalize="none" spellCheck={false}
+              placeholder={inputLocked ? '' : `Type in ${languageName(languageCode)}…`}
+              className={`w-full text-center text-4xl font-bold px-4 py-4 rounded-xl border-2 outline-none transition-all ${fontClass} ${
+                result ? (result.correct ? 'border-green-500 bg-green-50' : 'border-red-400 bg-red-50') : 'border-gray-200 focus:border-jade-500'}`} />
+            {live && !result && value && !composing && (
+              <div className={`flex flex-wrap justify-center gap-0.5 mt-3 text-3xl ${fontClass}`}>
+                {typedG.map((g, i) => <span key={i} className={`px-0.5 rounded ${charClass(i)}`}>{g}</span>)}
+              </div>
+            )}
+            {hints > 0 && !result && <p className="text-center text-sm text-amber-700 mt-3">Hint used: this word will count as wrong.</p>}
+            {zawgyiHint && !result && (
+              <p className="text-center text-sm text-gray-500 mt-3">Keep getting it wrong while copying? Your keyboard may be Zawgyi. Switch to a Unicode Myanmar keyboard (e.g. Gboard → Burmese).</p>
+            )}
+          </div>
+
+          {!result && (
+            <div className="flex flex-wrap justify-center gap-3">
+              {settings.hints && (
+                <button onPointerDown={keep} onClick={hint} title="Using a hint marks this word wrong" className="px-5 py-3 bg-amber-50 text-amber-700 border-2 border-amber-200 rounded-xl font-medium hover:bg-amber-100">
+                  💡 Hint{hints ? ` (${hints})` : ''}
+                </button>
+              )}
+              <button onPointerDown={keep} onClick={() => finish(false)} className="px-5 py-3 bg-gray-100 rounded-xl font-medium hover:bg-gray-200">Show word</button>
+              <button onPointerDown={keep} onClick={check} disabled={!value.trim()} className="px-8 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700 disabled:opacity-40">
+                Check <span className="text-jade-200 text-sm hidden sm:inline ml-1">↵</span>
+              </button>
+            </div>
+          )}
+
+          {result && (
+            <div className="bg-white rounded-2xl shadow-lg p-6 text-center animate-slide-up">
+              <div className={`text-2xl font-bold mb-3 ${result.correct ? 'text-green-600' : result.solvedWithHints ? 'text-amber-600' : 'text-red-600'}`}>
+                {result.correct ? '✅ Correct!' : result.solvedWithHints ? '💡 Solved with hints' : '❌ Not quite'}
+              </div>
+              {result.solvedWithHints && <div className="text-sm text-gray-500 -mt-2 mb-3">Counted as wrong because a hint was used.</div>}
+              {!result.correct && !result.solvedWithHints && result.typed.trim() && (
+                <div className="mb-3">
+                  <div className="text-xs text-gray-400 uppercase tracking-wide mb-1">You typed</div>
+                  <div className={`flex flex-wrap justify-center gap-0.5 text-3xl ${fontClass}`}>
+                    {twGraphemes(twNorm(result.typed, languageCode)).map((g, i) => <span key={i} className={`px-0.5 rounded ${(i >= target.length || g !== target[i]) ? 'text-red-600 bg-red-50' : 'text-green-700'}`}>{g}</span>)}
+                  </div>
+                  <div className="text-xs text-gray-400 uppercase tracking-wide mt-3 mb-1">Correct</div>
+                </div>
+              )}
+              <div className={`text-4xl font-bold text-gray-800 ${fontClass}`}>{nativeText}</div>
+              <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>
+              {showDev && <div className="text-xl text-blue-600 font-devanagari mt-1">{devText}</div>}
+              <div className="text-sm text-gray-500 mt-1">{item.english_text}</div>
+              {practice === 'ok' && <div className="text-green-600 font-medium mt-3">✓ Typed correctly. Practice only, the score stays.</div>}
+              {practice === 'wrong' && <div className="text-red-600 font-medium mt-3">Not yet. Try again or go on.</div>}
+              <div className="flex flex-wrap justify-center gap-3 mt-5">
+                {!result.correct && level !== 'copy' && practice !== 'ok' && (
+                  practice ? (
+                    <button onPointerDown={keep} onClick={check} disabled={!value.trim()} className="px-6 py-3 bg-jade-600 text-white rounded-full font-bold hover:bg-jade-700 disabled:opacity-40">Check retype</button>
+                  ) : (
+                    <button onPointerDown={keep} onClick={retype} className="px-6 py-3 bg-gray-100 rounded-full font-medium hover:bg-gray-200">✏️ Retype</button>
+                  )
+                )}
+                <button onPointerDown={keep} onClick={onNext} className="px-8 py-3 bg-blue-600 text-white rounded-full font-bold hover:bg-blue-700">
+                  {index + 1 >= total ? 'See Results' : 'Next Word →'} <span className="text-blue-300 text-sm hidden sm:inline ml-1">↵</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function WordQuizView({ topics, vocabulary, poolVocabulary, ratings, onRate, languageCode, user, onSessionSaved, modeToggle }) {
       const pool = poolVocabulary || vocabulary;
       useAudioState();
@@ -1754,10 +1976,14 @@
 
       const [wb, setWb] = useState(() => ({ ...WB_DEFAULTS, ...loadFromStorage(WB_STORAGE_KEY, {}) }));
       const setWbKey = (k, v) => setWb(s => ({ ...s, [k]: v }));
+      const [tw, setTw] = useState(() => ({ ...TW_DEFAULTS, ...loadFromStorage(TW_STORAGE_KEY, {}) }));
+      const setTwKey = (k, v) => setTw(s => ({ ...s, [k]: v }));
+      const twLevel = twLevelFor(tw.level, languageCode);
+      const isTyped = quizType === 'word_builder' || quizType === 'type_word';
 
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       const filteredVocab = useMemo(() => quizTopic === 'all' ? vocabulary : vocabulary.filter(v => v.topic_id === quizTopic), [vocabulary, quizTopic]);
-      const playableVocab = useMemo(() => quizType === 'word_builder' ? filteredVocab.filter(v => v.translation?.native_text?.trim()) : filteredVocab, [filteredVocab, quizType]);
+      const playableVocab = useMemo(() => isTyped ? filteredVocab.filter(v => v.translation?.native_text?.trim()) : filteredVocab, [filteredVocab, quizType]);
       const [quizOptions, setQuizOptions] = useState([]);
 
       const wbUnitPool = useMemo(() => {
@@ -1769,6 +1995,7 @@
 
       useEffect(() => { saveToStorage(STORAGE_KEYS.quizTarget, dailyTarget); }, [dailyTarget]);
       useEffect(() => { saveToStorage(WB_STORAGE_KEY, wb); }, [wb]);
+      useEffect(() => { saveToStorage(TW_STORAGE_KEY, tw); }, [tw]);
 
       // Load recent quiz sessions
       useEffect(() => {
@@ -1788,19 +2015,22 @@
       const persistSession = useCallback(async (sc, answers) => {
         if (!user || savingRef.current || sc.total === 0) return;
         savingRef.current = true;
-        const { data: session, error: sessionErr } = await supabase
-          .from(TABLES.quizSessions)
-          .insert({
-            user_id: user.id,
-            language_code: languageCode,
-            topic_id: quizTopic === 'all' ? null : quizTopic,
-            quiz_type: quizType,
-            total_questions: sc.total,
-            correct_answers: sc.correct,
-            completed_at: new Date().toISOString(),
-          })
-          .select('id')
-          .single();
+        const sessionRow = {
+          user_id: user.id,
+          language_code: languageCode,
+          topic_id: quizTopic === 'all' ? null : quizTopic,
+          quiz_type: quizType,
+          total_questions: sc.total,
+          correct_answers: sc.correct,
+          completed_at: new Date().toISOString(),
+        };
+        if (quizType === 'type_word') sessionRow.quiz_level = twLevel;
+        let { data: session, error: sessionErr } = await supabase.from(TABLES.quizSessions).insert(sessionRow).select('id').single();
+        // Fallback if kg-chart-phase10.sql (quiz_level column) hasn't been run yet
+        if (sessionErr && sessionRow.quiz_level) {
+          const { quiz_level, ...rest } = sessionRow;
+          ({ data: session, error: sessionErr } = await supabase.from(TABLES.quizSessions).insert(rest).select('id').single());
+        }
         if (!sessionErr && session && answers.length > 0) {
           const rows = answers.map(a => ({ ...a, session_id: session.id }));
           const { error: ansErr } = await supabase.from(TABLES.quizAnswers).insert(rows);
@@ -1809,7 +2039,7 @@
         }
         setSessionSaved(true);
         if (onSessionSaved) onSessionSaved();
-      }, [user, languageCode, quizTopic, quizType, onSessionSaved]);
+      }, [user, languageCode, quizTopic, quizType, twLevel, onSessionSaved]);
 
       useEffect(() => {
         if (quizCompleted && !sessionSaved) persistSession(score, quizAnswers);
@@ -1918,7 +2148,7 @@
 
       // Keyboard support: 1-4 to pick answer, Enter/Space for next
       useEffect(() => {
-        if (!quizStarted || quizCompleted || quizType === 'word_builder') return;
+        if (!quizStarted || quizCompleted || isTyped) return;
         const handleKey = (e) => {
           if (showResult) {
             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); nextQuestion(); }
@@ -1975,7 +2205,7 @@
                   <div className="grid grid-cols-2 gap-3">
                     {QUIZ_TYPES.map(type => (
                       <button key={type.id} onClick={() => setQuizType(type.id)}
-                        className={`p-4 rounded-xl border-2 transition-all ${type.id === 'word_builder' ? 'col-span-2' : ''} ${quizType === type.id ? 'border-jade-500 bg-jade-50' : 'border-gray-200'}`}>
+                        className={`p-4 rounded-xl border-2 transition-all ${quizType === type.id ? 'border-jade-500 bg-jade-50' : 'border-gray-200'}`}>
                         <div className="text-2xl mb-1">{type.icon}</div>
                         <div className="text-sm font-medium">{type.label}</div>
                       </button>
@@ -2013,6 +2243,29 @@
                       options={[['end', 'Check at the end'], ['tile', 'Mark each tile']]} />
                     <WbOption label="Hint button" value={wb.hints} onChange={v => setWbKey('hints', v)}
                       options={[[true, 'On'], [false, 'Off']]} />
+                  </div>
+                )}
+
+                {quizType === 'type_word' && (
+                  <div className="bg-gray-50 rounded-2xl p-4 space-y-4">
+                    <WbOption label="Level" value={twLevel} onChange={v => setTwKey('level', v)}
+                      options={TW_LEVELS.filter(([v]) => !(v === 'dev' && NO_DEVANAGARI_LANGS.includes(languageCode)))} />
+                    <div className="text-xs text-gray-500 -mt-2">
+                      {twLevel === 'copy' ? 'See the word and copy it. Learns the keyboard.' : twLevel === 'dev' ? 'See only the Devanagari, type it in the native script.' : 'See a picture or English word. Type it from memory.'}
+                    </div>
+                    {twLevel === 'memory' && (
+                      <>
+                        <WbOption label="Prompt" value={tw.prompt} onChange={v => setTwKey('prompt', v)}
+                          options={[['image', 'Image'], ['english', 'English word'], ['mix', 'Mix']]} />
+                        <WbOption label="Sound button (plays the answer)" value={tw.sound} onChange={v => setTwKey('sound', v)}
+                          options={[[true, 'On'], [false, 'Off']]} />
+                      </>
+                    )}
+                    <WbOption label="Feedback" value={tw.feedback} onChange={v => setTwKey('feedback', v)}
+                      options={[['end', 'Check at the end'], ['live', 'Mark as you type']]} />
+                    <WbOption label="Hint button" value={tw.hints} onChange={v => setTwKey('hints', v)}
+                      options={[[true, 'On'], [false, 'Off']]} />
+                    <div className="text-xs text-gray-500">⌨️ Add the {languageName(languageCode)} keyboard in your phone settings first. Typing doesn't count toward unlocking topics.</div>
                   </div>
                 )}
 
@@ -2096,6 +2349,19 @@
         return (
           <WordBuilderRound key={`${wbItem.id}-${currentWordIndex}`} item={wbItem} index={currentWordIndex} total={quizWords.length}
             score={score} settings={wb} languageCode={languageCode} unitPool={wbUnitPool}
+            onBack={leaveQuiz} onAnswered={handleWbAnswer} onNext={nextQuestion} />
+        );
+      }
+
+      if (quizType === 'type_word') {
+        const twItem = quizWords[currentWordIndex];
+        if (!twItem) return <LoadingSpinner />;
+        let trailingWrong = 0;
+        for (let i = quizAnswers.length - 1; i >= 0 && !quizAnswers[i].is_correct; i--) trailingWrong++;
+        // No key: the same input stays mounted so the phone keyboard doesn't close between words
+        return (
+          <TypeWordRound item={twItem} index={currentWordIndex} total={quizWords.length}
+            score={score} settings={tw} languageCode={languageCode} trailingWrong={trailingWrong}
             onBack={leaveQuiz} onAnswered={handleWbAnswer} onNext={nextQuestion} />
         );
       }

@@ -4,3 +4,9 @@ images/
 Temp/
 audio-cache/
 __pycache__/
+archive/
+workspace/
+.env
+sql/
+docs/
+run-kg-chart.bat
