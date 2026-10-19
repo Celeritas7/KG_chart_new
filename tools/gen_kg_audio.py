@@ -46,6 +46,7 @@ VOICES = {
     "te": ("te-IN", "te-IN-MohanNeural", "te-IN-ShrutiNeural"),
     "si": ("si-LK", "si-LK-SameeraNeural", "si-LK-ThiliniNeural"),
     "ja": ("ja-JP", "ja-JP-KeitaNeural", "ja-JP-NanamiNeural"),
+    "mr": ("mr-IN", "mr-IN-ManoharNeural", "mr-IN-AarohiNeural"),
 }
 
 

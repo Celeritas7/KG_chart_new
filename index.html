@@ -151,6 +151,7 @@
       ko: { file: 'korean', type: 'standard' },
       th: { file: 'thai', type: 'standard' },
       ms: { file: 'malay', type: 'standard' },
+      mr: { file: 'marathi', type: 'standard' },
     };
 
     // Load a language converter from the shared repo via fetch
@@ -269,9 +270,25 @@
       ta: 'font-tamil',
       ko: 'font-korean',
       th: 'font-thai',
+      mr: 'font-devanagari',
     };
 
     const getRatingById = (id) => RATINGS.find(r => r.id === id);
+
+    // Meanings in the learner's own language instead of English (Marathi → Filipino). The meanings live in the
+    // translations tables under a hidden language row, so they're edited in admin like any other translation.
+    const MEANING_LANGS = { mr: { code: 'fil', name: 'Filipino', short: 'FIL' } };
+    const MEANING_STORAGE_KEY = 'kg_chart_meanings_in_english';
+    const meaningNameFor = (langCode, inEnglish) => (MEANING_LANGS[langCode] && !inEnglish ? MEANING_LANGS[langCode].name : 'English');
+    // Languages already written in Devanagari: the blue hint line shows a plain romanisation instead
+    const ROMAN_HINT_LANGS = ['mr'];
+    const convertToHint = (text, langCode) => (ROMAN_HINT_LANGS.includes(langCode) ? convertToRoman(text, langCode) : convertToDevanagari(text, langCode));
+    // Quiz tile wording per language: "Filipino → Native", "Pronunciation → Image"
+    function quizTypeLabel(type, languageCode, meaningName) {
+      if (type.id === 'english_to_native' && meaningName && meaningName !== 'English') return { ...type, label: `${meaningName} → Native` };
+      if (type.id === 'devanagari_to_image' && ROMAN_HINT_LANGS.includes(languageCode)) return { ...type, label: 'Pronunciation → Image', icon: '🗣️' };
+      return type;
+    }
 
     // ==========================================
     // AUDIO (Phase 9): engine lives in js/kg-audio.js
@@ -422,7 +439,7 @@
       return { languages, loading };
     }
 
-    function useTopics(languageCode) {
+    function useTopics(languageCode, meaningsInEnglish) {
       const [topics, setTopics] = useState([]);
       const [loading, setLoading] = useState(true);
 
@@ -436,9 +453,11 @@
           .order('sort_order')
           .then(({ data, error }) => {
             if (!error && data) {
+              const meaningLang = MEANING_LANGS[languageCode];
               const mapped = data.map(topic => {
                 const translation = topic.translations?.find(t => t.language_code === languageCode);
                 if (!translation) return { ...topic, translation: null };
+                const meaningRow = meaningLang && !meaningsInEnglish ? topic.translations?.find(t => t.language_code === meaningLang.code) : null;
 
                 const converter = getConverter(languageCode);
                 const usesPronunciation = converter?.usePronunciation;
@@ -456,8 +475,9 @@
                   ...topic,
                   translation: {
                     ...translation,
-                    title_devanagari: convertToDevanagari(titleSource, languageCode),
-                    question_devanagari: convertToDevanagari(questionSource, languageCode)
+                    title_devanagari: convertToHint(titleSource, languageCode),
+                    question_devanagari: convertToHint(questionSource, languageCode),
+                    question_display: meaningRow?.question_native?.trim() || translation.question_english
                   }
                 };
               }).filter(t => t.translation);
@@ -465,7 +485,7 @@
             }
             setLoading(false);
           });
-      }, [languageCode]);
+      }, [languageCode, meaningsInEnglish]);
 
       return { topics, loading };
     }
@@ -474,10 +494,10 @@
     function autoDevanagari(translation, languageCode) {
       const usesPronunciation = getConverter(languageCode)?.usePronunciation;
       const sourceText = usesPronunciation ? (translation?.pronunciation?.pinyin || '') : (translation?.native_text || '');
-      return convertToDevanagari(sourceText, languageCode);
+      return convertToHint(sourceText, languageCode);
     }
 
-    function useVocabulary(languageCode) {
+    function useVocabulary(languageCode, meaningsInEnglish) {
       const [vocabulary, setVocabulary] = useState([]);
       const [loading, setLoading] = useState(true);
 
@@ -491,9 +511,11 @@
           .order('sort_order')
           .then(({ data, error }) => {
             if (!error && data) {
+              const meaningLang = MEANING_LANGS[languageCode];
               const mapped = data.map(vocab => {
                 const translation = vocab.translations?.find(t => t.language_code === languageCode);
                 if (!translation) return { ...vocab, translation: null };
+                const meaningRow = meaningLang && !meaningsInEnglish ? vocab.translations?.find(t => t.language_code === meaningLang.code) : null;
 
                 const converter = getConverter(languageCode);
                 const usesPronunciation = converter?.usePronunciation;
@@ -512,10 +534,13 @@
                   ? { ...(translation.pronunciation || {}), roman: translation.pronunciation?.pinyin || '' }
                   : { roman: convertToRoman(translation.native_text, languageCode) };
                 // Latin-script languages (Malay): the roman form is the word itself, so don't show it twice
-                if (pronunciation.roman === translation.native_text) delete pronunciation.roman;
+                // Latin-script languages (Malay), and Devanagari-script ones whose blue line already is the roman form
+                if (pronunciation.roman === translation.native_text || ROMAN_HINT_LANGS.includes(languageCode)) delete pronunciation.roman;
 
                 return {
                   ...vocab,
+                  // What the learner reads as the meaning: Filipino for Marathi (unless switched to English), else English
+                  display_text: meaningRow?.native_text?.trim() || vocab.english_text,
                   translation: { ...translation, devanagari, isDevOverridden, pronunciation }
                 };
               }).filter(v => v.translation);
@@ -523,7 +548,7 @@
             }
             setLoading(false);
           });
-      }, [languageCode]);
+      }, [languageCode, meaningsInEnglish]);
 
       return { vocabulary, loading };
     }
@@ -679,7 +704,7 @@
       );
     }
 
-    function Header({ currentLanguage, languages, onLanguageChange, activeView, onViewChange }) {
+    function Header({ currentLanguage, languages, onLanguageChange, activeView, onViewChange, meaning, meaningsInEnglish, onToggleMeanings }) {
       const { user, signOut } = useAuth();
       const [showAuthModal, setShowAuthModal] = useState(false);
       const [showUserMenu, setShowUserMenu] = useState(false);
@@ -705,6 +730,13 @@
                 </div>
 
                 <div className="flex items-center gap-3">
+                  {meaning && (
+                    <button onClick={() => onToggleMeanings(!meaningsInEnglish)}
+                      title={meaningsInEnglish ? `Meanings in English (tap for ${meaning.name})` : `Meanings in ${meaning.name} (tap for English)`}
+                      className="px-3 py-2 bg-white/20 rounded-lg border border-white/30 hover:bg-white/30 text-sm font-bold">
+                      {meaningsInEnglish ? 'EN' : meaning.short}
+                    </button>
+                  )}
                   {user && <AudioControls />}
                   <select value={currentLanguage} onChange={(e) => onLanguageChange(e.target.value)}
                     className="px-4 py-2 bg-white/20 rounded-lg text-white border border-white/30 focus:outline-none">
@@ -847,7 +879,7 @@
             ) : imageError || !item.image_filename ? (
               <div className="text-5xl opacity-50">📷</div>
             ) : (
-              <img src={getImageUrl(topicId, item.image_filename)} alt={item.english_text}
+              <img src={getImageUrl(topicId, item.image_filename)} alt={item.display_text}
                 className="max-w-full max-h-full object-contain" onError={() => setImageError(true)} />
             )}
           </div>
@@ -861,7 +893,7 @@
             </div>
             {showEnglish && (
               <>
-                <div className="text-center text-xs text-gray-400 mt-1">{item.english_text}</div>
+                <div className="text-center text-xs text-gray-400 mt-1">{item.display_text}</div>
                 <div className="text-center text-xs text-gray-300 mt-0.5 font-mono">{item.image_filename || 'no file'}</div>
               </>
             )}
@@ -938,7 +970,7 @@
                 ) : imageError || !item.image_filename ? (
                   <div className="text-6xl opacity-50">📷</div>
                 ) : (
-                  <img src={getImageUrl(topicId, item.image_filename)} alt={item.english_text}
+                  <img src={getImageUrl(topicId, item.image_filename)} alt={item.display_text}
                     className="max-w-full max-h-full object-contain" onError={() => setImageError(true)} />
                 )}
               </div>
@@ -991,7 +1023,7 @@
                 </div>
               )}
 
-              <div className="text-xl text-gray-600 mb-8">{item.english_text}</div>
+              <div className="text-xl text-gray-600 mb-8">{item.display_text}</div>
 
               <div className="mb-6">
                 <p className="text-sm text-gray-500 mb-3">How well do you know this?</p>
@@ -1313,7 +1345,7 @@
       );
     }
 
-    function ChartView({ topic, vocabulary, ratings, onRate, languageCode, showEnglish, onToggleEnglish }) {
+    function ChartView({ topic, vocabulary, ratings, onRate, languageCode, showEnglish, onToggleEnglish, meaningName }) {
       const { user } = useAuth();
       const [selectedItem, setSelectedItem] = useState(null);
       const [flagMode, setFlagMode] = useState(false);
@@ -1359,7 +1391,7 @@
                 <div className="text-lg text-blue-600 font-devanagari mt-1">{topic.translation?.title_devanagari}</div>
               </div>
               <div className="p-4 flex items-center justify-center border-b md:border-b-0 md:border-r border-gray-100 bg-gray-50">
-                <p className="text-center text-gray-700 font-medium">{topic.translation?.question_english}</p>
+                <p className="text-center text-gray-700 font-medium">{topic.translation?.question_display}</p>
               </div>
               <div className="p-4 flex flex-col justify-center items-center">
                 <div className={`text-sm text-red-700 text-center ${fontClass}`}>{topic.translation?.question_native}</div>
@@ -1376,7 +1408,7 @@
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={showEnglish} onChange={(e) => onToggleEnglish(e.target.checked)}
                   className="w-5 h-5 rounded border-gray-300 text-jade-600" />
-                <span className="text-sm text-gray-700 font-medium">Show English</span>
+                <span className="text-sm text-gray-700 font-medium">Show {meaningName || 'English'}</span>
               </label>
               <button onClick={() => flagMode ? exitFlagMode() : setFlagMode(true)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
@@ -1655,7 +1687,7 @@
                 </div>
               )
             ) : (
-              <div className="text-3xl font-bold text-gray-800">{item.english_text}</div>
+              <div className="text-3xl font-bold text-gray-800">{item.display_text}</div>
             )}
           </div>
 
@@ -1720,7 +1752,7 @@
               <div className={`text-4xl font-bold text-gray-800 ${fontClass}`}>{nativeText}</div>
               <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>
               {item.translation?.devanagari && <div className="text-xl text-blue-600 font-devanagari mt-1">{item.translation.devanagari}</div>}
-              <div className="text-sm text-gray-500 mt-1">{item.english_text}</div>
+              <div className="text-sm text-gray-500 mt-1">{item.display_text}</div>
               {(mistakes > 0 || hinted.length > 0) && (
                 <div className="text-xs text-gray-400 mt-2">
                   {[mistakes > 0 && `${mistakes} wrong tile${mistakes > 1 ? 's' : ''}`, hinted.length > 0 && `${hinted.length} hint${hinted.length > 1 ? 's' : ''}`].filter(Boolean).join(' · ')}
@@ -1839,8 +1871,8 @@
         if (level === 'dev') return (
           <>
             <div className="text-sm text-gray-400 mb-3">Type it in {languageName(languageCode)} script:</div>
-            {devText ? <div className="text-4xl font-bold text-blue-600 font-devanagari">{devText}</div> : <div className="text-3xl font-bold text-gray-800">{item.english_text}</div>}
-            {devText && <div className="text-sm text-gray-500 mt-1">{item.english_text}</div>}
+            {devText ? <div className="text-4xl font-bold text-blue-600 font-devanagari">{devText}</div> : <div className="text-3xl font-bold text-gray-800">{item.display_text}</div>}
+            {devText && <div className="text-sm text-gray-500 mt-1">{item.display_text}</div>}
             <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>
           </>
         );
@@ -1856,7 +1888,7 @@
                 </div>
               )
             ) : (
-              <div className="text-3xl font-bold text-gray-800">{item.english_text}</div>
+              <div className="text-3xl font-bold text-gray-800">{item.display_text}</div>
             )}
             {settings.sound && <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>}
           </>
@@ -1932,7 +1964,7 @@
               <div className={`text-4xl font-bold text-gray-800 ${fontClass}`}>{nativeText}</div>
               <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>
               {showDev && <div className="text-xl text-blue-600 font-devanagari mt-1">{devText}</div>}
-              <div className="text-sm text-gray-500 mt-1">{item.english_text}</div>
+              <div className="text-sm text-gray-500 mt-1">{item.display_text}</div>
               {practice === 'ok' && <div className="text-green-600 font-medium mt-3">✓ Typed correctly. Practice only, the score stays.</div>}
               {practice === 'wrong' && <div className="text-red-600 font-medium mt-3">Not yet. Try again or go on.</div>}
               <div className="flex flex-wrap justify-center gap-3 mt-5">
@@ -1953,7 +1985,7 @@
       );
     }
 
-    function WordQuizView({ topics, vocabulary, poolVocabulary, ratings, onRate, languageCode, user, onSessionSaved, modeToggle }) {
+    function WordQuizView({ topics, vocabulary, poolVocabulary, ratings, onRate, languageCode, user, onSessionSaved, modeToggle, meaningName }) {
       const pool = poolVocabulary || vocabulary;
       useAudioState();
       const savingRef = React.useRef(false);
@@ -2203,7 +2235,7 @@
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Quiz Type</label>
                   <div className="grid grid-cols-2 gap-3">
-                    {QUIZ_TYPES.map(type => (
+                    {QUIZ_TYPES.map(t0 => quizTypeLabel(t0, languageCode, meaningName)).map(type => (
                       <button key={type.id} onClick={() => setQuizType(type.id)}
                         className={`p-4 rounded-xl border-2 transition-all ${quizType === type.id ? 'border-jade-500 bg-jade-50' : 'border-gray-200'}`}>
                         <div className="text-2xl mb-1">{type.icon}</div>
@@ -2427,7 +2459,7 @@
                           : <img src={getImageUrl(currentQuestion.topic_id, currentQuestion.image_filename)} alt="" className="max-w-full max-h-full object-contain" />}
                       </div>
                     ) : null}
-                    <div className="text-2xl font-bold text-gray-800">{currentQuestion.english_text}</div>
+                    <div className="text-2xl font-bold text-gray-800">{currentQuestion.display_text}</div>
                   </>
                 );
               }
@@ -2451,7 +2483,7 @@
               );
             })()}
             {quizType === 'english_to_native' && (
-              <div className="text-3xl font-bold text-gray-800">{currentQuestion.english_text}</div>
+              <div className="text-3xl font-bold text-gray-800">{currentQuestion.display_text}</div>
             )}
           </div>
 
@@ -2475,7 +2507,7 @@
                           <img src={getImageUrl(opt.topic_id, opt.image_filename)} alt="" className="max-w-full max-h-full object-contain" />
                         )}
                       </div>
-                      <div className="text-xs text-gray-500">{opt.english_text}</div>
+                      <div className="text-xs text-gray-500">{opt.display_text}</div>
                     </>
                   ) : (
                     <>
@@ -2492,7 +2524,7 @@
           {showResult && (
             <div className="text-center animate-slide-up">
               <div className={`text-2xl font-bold mb-4 ${selectedAnswer?.id === currentQuestion.id ? 'text-green-600' : 'text-red-600'}`}>
-                {selectedAnswer?.id === currentQuestion.id ? '✅ Correct!' : `❌ Wrong! It was "${currentQuestion.english_text}"`}
+                {selectedAnswer?.id === currentQuestion.id ? '✅ Correct!' : `❌ Wrong! It was "${currentQuestion.display_text}"`}
               </div>
               <div className="flex items-center justify-center gap-3 mb-4">
                 <span className={`text-2xl font-semibold text-gray-800 ${fontClass}`}>{currentQuestion.translation?.native_text}</span>
@@ -3069,7 +3101,7 @@
                     <img src={getImageUrl(currentItem.topic_id, currentItem.image_filename)} alt="" className="max-w-full max-h-full object-contain" />
                   )}
                 </div>
-                <div className="text-3xl font-bold text-gray-800">{currentItem.english_text}</div>
+                <div className="text-3xl font-bold text-gray-800">{currentItem.display_text}</div>
               </div>
             </div>
           </div>
@@ -3105,7 +3137,7 @@
       );
     }
 
-    function ProgressView({ topics, vocabulary, ratings, languageCode, user, path }) {
+    function ProgressView({ topics, vocabulary, ratings, languageCode, user, path , meaningName}) {
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
 
       const stats = useMemo(() => {
@@ -3144,7 +3176,7 @@
 
       return (
         <div className="max-w-4xl mx-auto p-4 space-y-6">
-          {path && <LearningPathCard path={path} vocabulary={vocabulary} ratings={ratings} fontClass={fontClass} />}
+          {path && <LearningPathCard path={path} vocabulary={vocabulary} ratings={ratings} fontClass={fontClass} languageCode={languageCode} meaningName={meaningName} />}
           <div className="bg-white rounded-3xl shadow-xl p-6">
             <h2 className="text-2xl font-bold text-gray-800 mb-6">Overall Progress</h2>
             <div className="mb-4">
@@ -3365,7 +3397,7 @@
       );
     }
 
-    function WordStrengthModal({ item, byType, rating, fontClass, onClose }) {
+    function WordStrengthModal({ item, byType, rating, fontClass, onClose, languageCode, meaningName }) {
       const r = getRatingById(rating);
       const overall = overallPct(byType, rating);
       return (
@@ -3374,7 +3406,7 @@
             <div className="flex items-start justify-between gap-4 mb-5">
               <div>
                 <div className={'text-3xl font-bold text-gray-800 ' + fontClass}>{item.translation?.native_text}</div>
-                <div className="text-gray-500">{item.english_text}</div>
+                <div className="text-gray-500">{item.display_text}</div>
               </div>
               <div className={'w-16 h-16 rounded-2xl flex flex-col items-center justify-center shrink-0 ' + strengthClass(overall)}>
                 <div className="text-lg font-bold leading-none">{overall == null ? '–' : overall + '%'}</div>
@@ -3382,7 +3414,7 @@
               </div>
             </div>
             <div className="space-y-2">
-              {QUIZ_TYPES.map(q => {
+              {QUIZ_TYPES.map(q0 => quizTypeLabel(q0, languageCode, meaningName)).map(q => {
                 const list = byType?.[q.id] || [];
                 const pct = strengthPct(list);
                 const last = list.slice(-STRENGTH_WINDOW);
@@ -3414,7 +3446,7 @@
       );
     }
 
-    function LearningPathCard({ path, vocabulary, ratings, fontClass }) {
+    function LearningPathCard({ path, vocabulary, ratings, fontClass, languageCode, meaningName }) {
       const firstOpen = path.topics.find(t => !t.locked && !path.status[t.id].complete && !path.status[t.id].empty);
       const [open, setOpen] = useState(firstOpen?.id || null);
       const [word, setWord] = useState(null);
@@ -3462,7 +3494,7 @@
                             const ov = overallPct(byType, ratings[w.id]?.rating);
                             return (
                               <tr key={w.id} onClick={() => setWord(w)} className="cursor-pointer hover:opacity-80">
-                                <td className="px-1 py-1"><div className={'font-medium text-gray-800 ' + fontClass}>{w.translation?.native_text}</div><div className="text-xs text-gray-400">{w.english_text}</div></td>
+                                <td className="px-1 py-1"><div className={'font-medium text-gray-800 ' + fontClass}>{w.translation?.native_text}</div><div className="text-xs text-gray-400">{w.display_text}</div></td>
                                 {QUIZ_TYPES.map(q => { const p = strengthPct(byType?.[q.id]); const req = UNLOCK_QUIZ_TYPES.includes(q.id); const n = cnt[q.id] || 0; return <td key={q.id} title={req ? n + '/' + UNLOCK_MIN_ATTEMPTS + ' answers toward unlock' : n + ' answers (not needed to unlock)'} className={'text-center text-xs font-bold rounded-lg ' + strengthClass(p)}>{p == null ? '' : p}{req && n >= UNLOCK_MIN_ATTEMPTS ? '★' : ''}</td>; })}
                                 <td className={'text-center text-xs font-bold rounded-lg ' + strengthClass(ov)}>{ov == null ? '–' : ov + '%'}</td>
                               </tr>
@@ -3476,7 +3508,7 @@
               );
             })}
           </div>
-          {word && <WordStrengthModal item={word} byType={path.attempts[String(word.id)]} rating={ratings[word.id]?.rating} fontClass={fontClass} onClose={() => setWord(null)} />}
+          {word && <WordStrengthModal item={word} byType={path.attempts[String(word.id)]} rating={ratings[word.id]?.rating} fontClass={fontClass} onClose={() => setWord(null)} languageCode={languageCode} meaningName={meaningName} />}
         </div>
       );
     }
@@ -3487,10 +3519,12 @@
       const [activeView, setActiveView] = useState(() => loadFromStorage(STORAGE_KEYS.view, 'chart'));
       const [activeTopic, setActiveTopic] = useState(() => loadFromStorage(STORAGE_KEYS.topic, null));
       const [showEnglish, setShowEnglish] = useState(() => loadFromStorage(STORAGE_KEYS.showEnglish, true));
+      const [meaningsInEnglish, setMeaningsInEnglish] = useState(() => loadFromStorage(MEANING_STORAGE_KEY, false));
+      const meaningName = meaningNameFor(currentLanguage, meaningsInEnglish);
 
       const { languages, loading: loadingLangs } = useLanguages();
-      const { topics, loading: loadingTopics } = useTopics(currentLanguage);
-      const { vocabulary, loading: loadingVocab } = useVocabulary(currentLanguage);
+      const { topics, loading: loadingTopics } = useTopics(currentLanguage, meaningsInEnglish);
+      const { vocabulary, loading: loadingVocab } = useVocabulary(currentLanguage, meaningsInEnglish);
       const { ratings, updateRating } = useUserRatings(currentLanguage);
       const path = useLearningPath({ user, languageCode: currentLanguage, topics, vocabulary });
       const visibleTopics = path.topics;
@@ -3500,6 +3534,7 @@
       useEffect(() => { saveToStorage(STORAGE_KEYS.view, activeView); }, [activeView]);
       useEffect(() => { saveToStorage(STORAGE_KEYS.topic, activeTopic); }, [activeTopic]);
       useEffect(() => { saveToStorage(STORAGE_KEYS.showEnglish, showEnglish); }, [showEnglish]);
+      useEffect(() => { saveToStorage(MEANING_STORAGE_KEY, meaningsInEnglish); }, [meaningsInEnglish]);
       useEffect(() => { window.KGAudio.loadManifest(currentLanguage); }, [currentLanguage]);
       useEffect(() => { if (user) window.KGAudio.initPrefs(supabase, user.id); }, [user]);
       useEffect(() => { window.KGAudio.stop(); }, [activeView, currentLanguage]);
@@ -3522,7 +3557,8 @@
       return (
         <div className="min-h-screen bg-gray-50">
           <Header currentLanguage={currentLanguage} languages={languages} onLanguageChange={setCurrentLanguage}
-            activeView={activeView} onViewChange={setActiveView} />
+            activeView={activeView} onViewChange={setActiveView}
+            meaning={MEANING_LANGS[currentLanguage] || null} meaningsInEnglish={meaningsInEnglish} onToggleMeanings={setMeaningsInEnglish} />
 
           {activeView === 'chart' && !loadingTopics && visibleTopics.length > 0 && (
             <TopicNav topics={visibleTopics} activeTopic={activeTopic} onSelect={setActiveTopic} showEnglish={showEnglish} pathStatus={path.enabled ? path.status : null} />
@@ -3539,16 +3575,16 @@
                 )}
                 {activeView === 'chart' && !currentTopic?.locked && (
                   <ChartView topic={currentTopic} vocabulary={topicVocabulary} ratings={ratings} onRate={updateRating}
-                    languageCode={currentLanguage} showEnglish={showEnglish} onToggleEnglish={setShowEnglish} />
+                    languageCode={currentLanguage} showEnglish={showEnglish} onToggleEnglish={setShowEnglish} meaningName={meaningName} />
                 )}
                 {activeView === 'quiz' && (
-                  <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} onSessionSaved={path.refresh} />
+                  <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} />
                 )}
                 {activeView === 'flashcard' && (
                   <FlashcardView topics={visibleTopics} vocabulary={path.unlockedVocab} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} />
                 )}
                 {activeView === 'progress' && (
-                  <ProgressView topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} languageCode={currentLanguage} user={user} path={path.enabled || path.bypass ? path : null} />
+                  <ProgressView topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} languageCode={currentLanguage} user={user} path={path.enabled || path.bypass ? path : null} meaningName={meaningName} />
                 )}
               </>
             )}

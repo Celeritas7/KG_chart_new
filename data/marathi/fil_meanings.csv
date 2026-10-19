@@ -1,0 +1,240 @@
+topic_id,english_text,marathi,filipino
+animals,Dog,कुत्रा,aso
+animals,Cat,मांजर,pusa
+animals,Lion,सिंह,leon
+animals,Sparrow,चिमणी,maya
+animals,Rabbit,ससा,kuneho
+animals,Pig,डुक्कर,baboy
+animals,Cow,गाय,baka
+animals,Ox,बैल,toro
+animals,Elephant,हत्ती,elepante
+animals,Horse,घोडा,kabayo
+animals,Monkey,माकड,unggoy
+animals,Bear,अस्वल,oso
+animals,Giraffe,जिराफ,dyirap
+body,Eye,डोळा,mata
+body,nose,नाक,ilong
+body,mouth,तोंड,bibig
+body,face,चेहरा,mukha
+body,Head,डोके,ulo
+body,neck,मान,leeg
+body,hair,केस,buhok
+body,ear,कान,tainga
+body,tooth,दात,ngipin
+body,claw,नख,kuko
+body,finger,बोट,daliri
+body,hand,हात,kamay
+body,arm,दंड,braso
+body,shoulder,खांदा,balikat
+body,Toes,पायाची बोटे,mga daliri ng paa
+body,legs,पाय,mga binti
+body,stomach,पोट,tiyan
+colours,Red,लाल,pula
+colours,Blue,निळा,asul
+colours,Yellow,पिवळा,dilaw
+colours,Green,हिरवा,berde
+colours,Orange,नारिंगी,kahel
+colours,Pink,गुलाबी,rosas
+colours,Purple,जांभळा,lila
+colours,Brown,तपकिरी,kayumanggi
+colours,White,पांढरा,puti
+colours,Black,काळा,itim
+date,Day,दिवस,araw
+date,Today,आज,ngayon
+date,Yesterday,काल,kahapon
+date,Day after tomorrow,परवा,sa makalawa
+date,Tomorrow,उद्या,bukas
+date,Year,वर्ष,taon
+days_of_week,Week,आठवडा,linggo
+days_of_week,Sunday,रविवार,Linggo
+days_of_week,Monday,सोमवार,Lunes
+days_of_week,Tuesday,मंगळवार,Martes
+days_of_week,Wednesday,बुधवार,Miyerkules
+days_of_week,Thursday,गुरुवार,Huwebes
+days_of_week,Friday,शुक्रवार,Biyernes
+days_of_week,Saturday,शनिवार,Sabado
+directions,bus,बस,bus
+directions,Go straight ahead,सरळ जा,Dumiretso ka
+directions,Turn left,डावीकडे वळा,Kumaliwa ka
+directions,Turn right,उजवीकडे वळा,Kumanan ka
+directions,Before,समोर,sa harap
+directions,Behind,मागे,sa likod
+directions,Next to,शेजारी,sa tabi
+directions,Across the street,रस्त्याच्या पलीकडे,sa kabila ng kalsada
+directions,Corner,कोपरा,kanto
+directions,Left,डावीकडे,kaliwa
+directions,Right,उजवीकडे,kanan
+directions,Up,वर,itaas
+directions,Down,खाली,ibaba
+directions,North,उत्तर,hilaga
+directions,East,पूर्व,silangan
+directions,West,पश्चिम,kanluran
+drink,Water,पाणी,tubig
+drink,Orange juice,संत्र्याचा रस,orange juice
+drink,Fruit juice,फळांचा रस,katas ng prutas
+drink,Cola,कोला,cola
+drink,Soft drink,शीतपेय,softdrink
+drink,Beer,बिअर,beer
+drink,Wine,वाइन,wine
+drink,Tea,चहा,tsaa
+drink,Coffee,कॉफी,kape
+drink,Cocoa,कोको,kakaw
+family,I,मी,ako
+family,Father,वडील,tatay
+family,Mother,आई,nanay
+family,Elder brother,दादा,kuya
+family,Elder sister,ताई,ate
+family,Younger brother,लहान भाऊ,nakababatang kapatid na lalaki
+family,Younger sister,लहान बहीण,nakababatang kapatid na babae
+family,Grandfather,आजोबा,lolo
+family,Grandmother,आजी,lola
+family,Son,मुलगा,anak na lalaki
+family,Daughter,मुलगी,anak na babae
+family,Husband,नवरा,asawang lalaki
+family,Wife,बायको,asawang babae
+food,Salad,सॅलड,salad
+food,Sandwich,सँडविच,sandwich
+food,Hamburger,हॅम्बर्गर,hamburger
+food,French fries,फ्रेंच फ्राईज,french fries
+food,Pizza,पिझ्झा,pizza
+food,Pasta,पास्ता,pasta
+food,Bread,ब्रेड,tinapay
+food,cooked rice,भात,kanin
+food,Couscous,कुसकुस,couscous
+food,Egg,अंडे,itlog
+food,Cheese,चीज,keso
+food,Yogurt,दही,yogurt
+food,ham,हॅम,hamon
+food,sausage,सॉसेज,sausage
+food,Fish,मासा,isda
+food,chicken,चिकन,manok
+food,Pig,डुकराचे मांस,karne ng baboy
+food,beef,गोमांस,karne ng baka
+fruits,Apple,सफरचंद,mansanas
+fruits,Lemon,लिंबू,limon
+fruits,Mango,आंबा,mangga
+fruits,Pomegranate,डाळिंब,granada
+fruits,Strawberry,स्ट्रॉबेरी,strawberry
+fruits,Orange,संत्रे,orange
+fruits,Pineapple,अननस,pinya
+fruits,Melon,खरबूज,melon
+fruits,Grapes,द्राक्षे,ubas
+fruits,Banana,केळे,saging
+fruits,Cherry,चेरी,seresa
+fruits,Guava,पेरू,bayabas
+fruits,Watermelon,कलिंगड,pakwan
+fruits,Pear,नासपती,peras
+fruits,Fig,अंजीर,igos
+fruits,Kiwi,किवी,kiwi
+fruits,Papaya,पपई,papaya
+fruits,Coconut,नारळ,niyog
+fruits,Grapefruit,ग्रेपफ्रूट,suha
+hobby,To read,वाचणे,magbasa
+hobby,to cook,स्वयंपाक करणे,magluto
+hobby,draw a picture,चित्र काढणे,gumuhit
+hobby,play piano,पियानो वाजवणे,tumugtog ng piyano
+hobby,Play a musical instrument,वाद्य वाजवणे,tumugtog ng instrumento
+hobby,sing,गाणे म्हणणे,kumanta
+hobby,dance,नाचणे,sumayaw
+hotel,Single,सिंगल रूम,single room
+hotel,Double,डबल रूम,double room
+hotel,Twin,ट्विन रूम,twin room
+hotel,Room key,खोलीची चावी,susi ng kuwarto
+hotel,Wifi password,वायफाय पासवर्ड,password ng wifi
+hotel,Cleaning,साफसफाई,paglilinis
+hotel,Cleaning service,साफसफाई सेवा,serbisyo sa paglilinis
+hotel,Iron,इस्त्री,plantsa
+hotel,Mineral water,मिनरल वॉटर,mineral water
+hotel,Blanket,ब्लँकेट,kumot
+hotel,Towel,टॉवेल,tuwalya
+hotel,Dryer,हेअर ड्रायर,hair dryer
+months,January,जानेवारी,Enero
+months,February,फेब्रुवारी,Pebrero
+months,March,मार्च,Marso
+months,April,एप्रिल,Abril
+months,May,मे,Mayo
+months,June,जून,Hunyo
+months,July,जुलै,Hulyo
+months,August,ऑगस्ट,Agosto
+months,September,सप्टेंबर,Setyembre
+months,October,ऑक्टोबर,Oktubre
+months,November,नोव्हेंबर,Nobyembre
+season,Spring,वसंत ऋतू,tagsibol
+season,Summer,उन्हाळा,tag-init
+season,Autumn,शरद ऋतू,taglagas
+season,Winter,हिवाळा,taglamig
+seasoning,Salt,मीठ,asin
+seasoning,Pepper,मिरी,paminta
+seasoning,Sugar,साखर,asukal
+seasoning,Mayonnaise,मेयोनीज,mayonesa
+seasoning,Ketchup,केचप,ketsap
+seasoning,Mustard,मोहरी,mustasa
+seasoning,Oil,तेल,mantika
+seasoning,Vinegar,व्हिनेगर,suka
+seasoning,Jam,जॅम,jam
+seasoning,Honey,मध,pulot
+seasoning,Butter,लोणी,mantikilya
+sport,Running,धावणे,pagtakbo
+sport,Cycling,सायकल चालवणे,pagbibisikleta
+sport,Swimming,पोहणे,paglangoy
+sport,Skiing,स्कीइंग,skiing
+sport,Soccer,फुटबॉल,soccer
+sport,Basketball,बास्केटबॉल,basketbol
+sport,Volleyball,व्हॉलीबॉल,volleyball
+sport,Baseball,बेसबॉल,beysbol
+sport,Table tennis,टेबल टेनिस,pingpong
+sport,Tennis,टेनिस,tenis
+sport,Badminton,बॅडमिंटन,badminton
+sport,boxing,बॉक्सिंग,boksing
+tableware,Fork,काटा,tinidor
+tableware,Knife,सुरी,kutsilyo
+tableware,Spoon,चमचा,kutsara
+tableware,Chopsticks,चॉपस्टिक्स,chopsticks
+tableware,Dish,ताट,plato
+tableware,Vessel,भांडे,lalagyan
+tableware,Glass,ग्लास,baso
+tableware,Cup,कप,tasa
+tableware,Napkin,नॅपकिन,napkin
+tableware,Tissue paper,टिश्यू पेपर,tisyu
+transportation,Bus,बस,bus
+transportation,Train,रेल्वे,tren
+transportation,Car,कार,kotse
+transportation,Airplane,विमान,eroplano
+transportation,Ship,जहाज,barko
+transportation,Boat,होडी,bangka
+transportation,Submarine,पाणबुडी,submarino
+transportation,Bicycle,सायकल,bisikleta
+transportation,Subway,मेट्रो,subway
+transportation,Motorbike,मोटारसायकल,motorsiklo
+transportation,Helicopter,हेलिकॉप्टर,helikopter
+transportation,Taxi,टॅक्सी,taksi
+transportation,tram,ट्राम,tram
+vegetables,Tomato,टोमॅटो,kamatis
+vegetables,Potato,बटाटा,patatas
+vegetables,Carrot,गाजर,karot
+vegetables,Onion,कांदा,sibuyas
+vegetables,Japanese leek,कांद्याची पात,dahon ng sibuyas
+vegetables,Mushroom,मशरूम,kabute
+vegetables,Green pepper,ढोबळी मिरची,bell pepper
+vegetables,Radish,मुळा,labanos
+vegetables,Legume,कडधान्य,legumbre
+vegetables,Cabbage,कोबी,repolyo
+vegetables,Napa cabbage,चायनीज कोबी,pechay Baguio
+vegetables,Spinach,पालक,spinach
+vegetables,Lettuce,लेट्यूस,letsugas
+vegetables,Cucumber,काकडी,pipino
+vegetables,Pumpkin,भोपळा,kalabasa
+vegetables,Broccoli,ब्रोकोली,broccoli
+vegetables,Ginger,आले,luya
+vegetables,Garlic,लसूण,bawang
+weather,Sunny,ऊन,maaraw
+weather,Cloudy,ढगाळ,maulap
+weather,Rain,पाऊस,ulan
+weather,Snow,बर्फ,niyebe
+weather,Wind,वारा,hangin
+weather,Fog,धुके,hamog
+weather,Hot,गरम,mainit
+weather,Cold,थंड,malamig
+weather,Warm,उबदार,mainit-init
+weather,Cool,गारवा,malamig-lamig
+weather,Dry,कोरडे,tuyo

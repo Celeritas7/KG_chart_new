@@ -1,0 +1,240 @@
+topic_id,english_text,marathi,hint_plain,roman_strict,notes
+animals,Dog,कुत्रा,kutra,kutrā,
+animals,Cat,मांजर,manjar,mānjar,
+animals,Lion,सिंह,sinh,sinh,
+animals,Sparrow,चिमणी,chimni,chimṇī,
+animals,Rabbit,ससा,sasa,sasā,
+animals,Pig,डुक्कर,dukkar,ḍukkar,
+animals,Cow,गाय,gay,gāy,
+animals,Ox,बैल,bail,bail,
+animals,Elephant,हत्ती,hatti,hattī,
+animals,Horse,घोडा,ghoda,ghoḍā,
+animals,Monkey,माकड,makad,mākaḍ,
+animals,Bear,अस्वल,asval,asval,
+animals,Giraffe,जिराफ,jiraf,jirāph,
+body,Eye,डोळा,dola,ḍoḷā,
+body,nose,नाक,nak,nāk,
+body,mouth,तोंड,tond,tonḍ,
+body,face,चेहरा,chehra,chehrā,
+body,Head,डोके,doke,ḍoke,Spoken: डोकं.
+body,neck,मान,man,mān,
+body,hair,केस,kes,kes,
+body,ear,कान,kan,kān,
+body,tooth,दात,dat,dāt,
+body,claw,नख,nakh,nakh,Also means fingernail.
+body,finger,बोट,bot,boṭ,
+body,hand,हात,hat,hāt,
+body,arm,दंड,dand,danḍ,Upper arm. हात can mean the whole arm.
+body,shoulder,खांदा,khanda,khāndā,
+body,Toes,पायाची बोटे,payachi bote,pāyāchī boṭe,
+body,legs,पाय,pay,pāy,पाय = leg and foot.
+body,stomach,पोट,pot,poṭ,
+colours,Red,लाल,lal,lāl,
+colours,Blue,निळा,nila,niḷā,"Changes with the noun: निळी (feminine), निळे (neuter)."
+colours,Yellow,पिवळा,pivla,pivḷā,"Changes with the noun: पिवळी (feminine), पिवळे (neuter)."
+colours,Green,हिरवा,hirva,hirvā,"Changes with the noun: हिरवी (feminine), हिरवे (neuter)."
+colours,Orange,नारिंगी,naringgi,nāriṅgī,Also: केशरी (saffron).
+colours,Pink,गुलाबी,gulabi,gulābī,
+colours,Purple,जांभळा,jambhla,jāmbhḷā,"Changes with the noun: जांभळी (feminine), जांभळे (neuter)."
+colours,Brown,तपकिरी,tapkiri,tapkirī,
+colours,White,पांढरा,pandhra,pānḍhrā,"Changes with the noun: पांढरी (feminine), पांढरे (neuter)."
+colours,Black,काळा,kala,kāḷā,"Changes with the noun: काळी (feminine), काळे (neuter)."
+date,Day,दिवस,divas,divas,
+date,Today,आज,aj,āj,
+date,Yesterday,काल,kal,kāl,
+date,Day after tomorrow,परवा,parva,parvā,Also means the day before yesterday.
+date,Tomorrow,उद्या,udya,udyā,
+date,Year,वर्ष,varsh,varṣh,
+days_of_week,Week,आठवडा,athavda,āṭhavḍā,
+days_of_week,Sunday,रविवार,ravivar,ravivār,
+days_of_week,Monday,सोमवार,somvar,somvār,
+days_of_week,Tuesday,मंगळवार,manggalvar,maṅgaḷvār,
+days_of_week,Wednesday,बुधवार,budhvar,budhvār,
+days_of_week,Thursday,गुरुवार,guruvar,guruvār,
+days_of_week,Friday,शुक्रवार,shukravar,shukravār,
+days_of_week,Saturday,शनिवार,shanivar,shanivār,
+directions,bus,बस,bas,bas,
+directions,Go straight ahead,सरळ जा,saral ja,saraḷ jā,
+directions,Turn left,डावीकडे वळा,davikade vala,ḍāvīkaḍe vaḷā,
+directions,Turn right,उजवीकडे वळा,ujvikade vala,ujvīkaḍe vaḷā,
+directions,Before,समोर,samor,samor,In front of. Before (in time): आधी.
+directions,Behind,मागे,mage,māge,
+directions,Next to,शेजारी,shejari,shejārī,Also: बाजूला.
+directions,Across the street,रस्त्याच्या पलीकडे,rastyachya palikade,rastyāchyā palīkaḍe,
+directions,Corner,कोपरा,kopra,koprā,
+directions,Left,डावीकडे,davikade,ḍāvīkaḍe,Left side. Left (adjective): डावा.
+directions,Right,उजवीकडे,ujvikade,ujvīkaḍe,Right side. Right (adjective): उजवा.
+directions,Up,वर,var,var,
+directions,Down,खाली,khali,khālī,
+directions,North,उत्तर,uttar,uttar,
+directions,East,पूर्व,purv,pūrv,
+directions,West,पश्चिम,pashchim,pashchim,
+drink,Water,पाणी,pani,pāṇī,
+drink,Orange juice,संत्र्याचा रस,santryacha ras,santryāchā ras,
+drink,Fruit juice,फळांचा रस,falancha ras,phaḷānchā ras,
+drink,Cola,कोला,kola,kolā,
+drink,Soft drink,शीतपेय,shitpey,shītpey,
+drink,Beer,बिअर,biar,biar,
+drink,Wine,वाइन,vain,vāin,
+drink,Tea,चहा,chaha,chahā,
+drink,Coffee,कॉफी,kofi,kŏphī,
+drink,Cocoa,कोको,koko,koko,
+family,I,मी,mi,mī,
+family,Father,वडील,vadil,vaḍīl,Dad: बाबा.
+family,Mother,आई,ai,āī,
+family,Elder brother,दादा,dada,dādā,Also: मोठा भाऊ.
+family,Elder sister,ताई,tai,tāī,Also: मोठी बहीण.
+family,Younger brother,लहान भाऊ,lahan bhau,lahān bhāū,
+family,Younger sister,लहान बहीण,lahan bahin,lahān bahīṇ,
+family,Grandfather,आजोबा,ajoba,ājobā,
+family,Grandmother,आजी,aji,ājī,
+family,Son,मुलगा,mulga,mulgā,
+family,Daughter,मुलगी,mulgi,mulgī,
+family,Husband,नवरा,navra,navrā,Formal: पती.
+family,Wife,बायको,bayko,bāyko,Formal: पत्नी.
+food,Salad,सॅलड,selad,sælaḍ,Indian-style salad: कोशिंबीर.
+food,Sandwich,सँडविच,sendvich,sænḍvich,
+food,Hamburger,हॅम्बर्गर,hembargar,hæmbargar,
+food,French fries,फ्रेंच फ्राईज,french fraij,phrench phrāīj,
+food,Pizza,पिझ्झा,pijhjha,pijhjhā,
+food,Pasta,पास्ता,pasta,pāstā,
+food,Bread,ब्रेड,bred,breḍ,Also: पाव (bread roll).
+food,cooked rice,भात,bhat,bhāt,Uncooked rice: तांदूळ.
+food,Couscous,कुसकुस,kuskus,kuskus,
+food,Egg,अंडे,ande,anḍe,Spoken: अंडं.
+food,Cheese,चीज,chij,chīj,
+food,Yogurt,दही,dahi,dahī,
+food,ham,हॅम,hem,hæm,
+food,sausage,सॉसेज,sosej,sŏsej,
+food,Fish,मासा,masa,māsā,"As food, also: मासे."
+food,chicken,चिकन,chikan,chikan,The bird: कोंबडी.
+food,Pig,डुकराचे मांस,dukrache mans,ḍukrāche māns,Pork. Also: पोर्क.
+food,beef,गोमांस,gomans,gomāns,Also: बीफ.
+fruits,Apple,सफरचंद,safarchand,sapharchand,
+fruits,Lemon,लिंबू,limbu,limbū,
+fruits,Mango,आंबा,amba,āmbā,
+fruits,Pomegranate,डाळिंब,dalimb,ḍāḷimb,
+fruits,Strawberry,स्ट्रॉबेरी,stroberi,sṭrŏberī,
+fruits,Orange,संत्रे,santre,santre,Spoken: संत्रं.
+fruits,Pineapple,अननस,annas,annas,
+fruits,Melon,खरबूज,kharbuj,kharbūj,
+fruits,Grapes,द्राक्षे,drakshe,drākṣhe,
+fruits,Banana,केळे,kele,keḷe,Spoken: केळं.
+fruits,Cherry,चेरी,cheri,cherī,
+fruits,Guava,पेरू,peru,perū,
+fruits,Watermelon,कलिंगड,kalinggad,kaliṅgaḍ,
+fruits,Pear,नासपती,nasapti,nāsaptī,
+fruits,Fig,अंजीर,anjir,anjīr,
+fruits,Kiwi,किवी,kivi,kivī,
+fruits,Papaya,पपई,papai,papaī,
+fruits,Coconut,नारळ,naral,nāraḷ,
+fruits,Grapefruit,ग्रेपफ्रूट,grepafrut,grepaphrūṭ,Pomelo: पपनस.
+hobby,To read,वाचणे,vachne,vāchṇe,
+hobby,to cook,स्वयंपाक करणे,svayampak karne,svayampāk karṇe,
+hobby,draw a picture,चित्र काढणे,chitr kadhne,chitr kāḍhṇe,
+hobby,play piano,पियानो वाजवणे,piyano vajavne,piyāno vājavṇe,
+hobby,Play a musical instrument,वाद्य वाजवणे,vady vajavne,vādy vājavṇe,
+hobby,sing,गाणे म्हणणे,gane mhanne,gāṇe mhaṇṇe,
+hobby,dance,नाचणे,nachne,nāchṇe,Formal: नृत्य करणे.
+hotel,Single,सिंगल रूम,singgal rum,siṅgal rūm,
+hotel,Double,डबल रूम,dabal rum,ḍabal rūm,
+hotel,Twin,ट्विन रूम,tvin rum,ṭvin rūm,
+hotel,Room key,खोलीची चावी,kholichi chavi,kholīchī chāvī,
+hotel,Wifi password,वायफाय पासवर्ड,vayfay pasvard,vāyphāy pāsvarḍ,
+hotel,Cleaning,साफसफाई,safasfai,sāphasphāī,
+hotel,Cleaning service,साफसफाई सेवा,safasfai seva,sāphasphāī sevā,
+hotel,Iron,इस्त्री,istri,istrī,
+hotel,Mineral water,मिनरल वॉटर,minral votar,minral vŏṭar,Also: बाटलीबंद पाणी (bottled water).
+hotel,Blanket,ब्लँकेट,blengket,blæṅkeṭ,Also: पांघरूण.
+hotel,Towel,टॉवेल,tovel,ṭŏvel,
+hotel,Dryer,हेअर ड्रायर,hear drayar,hear ḍrāyar,
+months,January,जानेवारी,janevari,jānevārī,
+months,February,फेब्रुवारी,februvari,phebruvārī,
+months,March,मार्च,march,mārch,
+months,April,एप्रिल,epril,epril,
+months,May,मे,me,me,
+months,June,जून,jun,jūn,
+months,July,जुलै,julai,julai,
+months,August,ऑगस्ट,ogast,ŏgasṭ,
+months,September,सप्टेंबर,saptembar,sapṭembar,
+months,October,ऑक्टोबर,oktobar,ŏkṭobar,
+months,November,नोव्हेंबर,novhembar,novhembar,
+season,Spring,वसंत ऋतू,vasant rutu,vasant rutū,
+season,Summer,उन्हाळा,unhala,unhāḷā,
+season,Autumn,शरद ऋतू,sharad rutu,sharad rutū,
+season,Winter,हिवाळा,hivala,hivāḷā,
+seasoning,Salt,मीठ,mith,mīṭh,
+seasoning,Pepper,मिरी,miri,mirī,Black pepper: काळी मिरी.
+seasoning,Sugar,साखर,sakhar,sākhar,
+seasoning,Mayonnaise,मेयोनीज,meyonij,meyonīj,
+seasoning,Ketchup,केचप,kechap,kechap,
+seasoning,Mustard,मोहरी,mohri,mohrī,Mustard seed. The sauce: मस्टर्ड सॉस.
+seasoning,Oil,तेल,tel,tel,
+seasoning,Vinegar,व्हिनेगर,vhinegar,vhinegar,
+seasoning,Jam,जॅम,jem,jæm,
+seasoning,Honey,मध,madh,madh,
+seasoning,Butter,लोणी,loni,loṇī,Also: बटर.
+sport,Running,धावणे,dhavne,dhāvṇe,
+sport,Cycling,सायकल चालवणे,saykal chalavne,sāykal chālavṇe,
+sport,Swimming,पोहणे,pohne,pohṇe,
+sport,Skiing,स्कीइंग,skiingg,skīiṅg,
+sport,Soccer,फुटबॉल,futbol,phuṭbŏl,
+sport,Basketball,बास्केटबॉल,basketbol,bāskeṭbŏl,
+sport,Volleyball,व्हॉलीबॉल,vholibol,vhŏlībŏl,
+sport,Baseball,बेसबॉल,besbol,besbŏl,
+sport,Table tennis,टेबल टेनिस,tebal tenis,ṭebal ṭenis,
+sport,Tennis,टेनिस,tenis,ṭenis,
+sport,Badminton,बॅडमिंटन,bedmintan,bæḍminṭan,
+sport,boxing,बॉक्सिंग,boksingg,bŏksiṅg,
+tableware,Fork,काटा,kata,kāṭā,
+tableware,Knife,सुरी,suri,surī,
+tableware,Spoon,चमचा,chamcha,chamchā,
+tableware,Chopsticks,चॉपस्टिक्स,chopastiks,chŏpasṭiks,
+tableware,Dish,ताट,tat,tāṭ,Small plate: बशी.
+tableware,Vessel,भांडे,bhande,bhānḍe,
+tableware,Glass,ग्लास,glas,glās,Also: पेला.
+tableware,Cup,कप,kap,kap,
+tableware,Napkin,नॅपकिन,nepkin,næpkin,
+tableware,Tissue paper,टिश्यू पेपर,tishyu pepar,ṭishyū pepar,
+transportation,Bus,बस,bas,bas,
+transportation,Train,रेल्वे,relve,relve,"Also: ट्रेन, आगगाडी."
+transportation,Car,कार,kar,kār,Also: गाडी (any vehicle).
+transportation,Airplane,विमान,viman,vimān,
+transportation,Ship,जहाज,jahaj,jahāj,
+transportation,Boat,होडी,hodi,hoḍī,
+transportation,Submarine,पाणबुडी,panbudi,pāṇbuḍī,
+transportation,Bicycle,सायकल,saykal,sāykal,
+transportation,Subway,मेट्रो,metro,meṭro,Also: भुयारी रेल्वे.
+transportation,Motorbike,मोटारसायकल,motarsaykal,moṭārsāykal,Also: बाईक.
+transportation,Helicopter,हेलिकॉप्टर,helikoptar,helikŏpṭar,
+transportation,Taxi,टॅक्सी,teksi,ṭæksī,
+transportation,tram,ट्राम,tram,ṭrām,
+vegetables,Tomato,टोमॅटो,tometo,ṭomæṭo,
+vegetables,Potato,बटाटा,batata,baṭāṭā,
+vegetables,Carrot,गाजर,gajar,gājar,
+vegetables,Onion,कांदा,kanda,kāndā,
+vegetables,Japanese leek,कांद्याची पात,kandyachi pat,kāndyāchī pāt,Spring onion greens. Japanese leek has no Marathi name.
+vegetables,Mushroom,मशरूम,mashrum,mashrūm,Also: अळंबी.
+vegetables,Green pepper,ढोबळी मिरची,dhobli mirchi,ḍhobḷī mirchī,Also: सिमला मिरची.
+vegetables,Radish,मुळा,mula,muḷā,
+vegetables,Legume,कडधान्य,kaddhany,kaḍdhāny,
+vegetables,Cabbage,कोबी,kobi,kobī,
+vegetables,Napa cabbage,चायनीज कोबी,chaynij kobi,chāynīj kobī,
+vegetables,Spinach,पालक,palak,pālak,
+vegetables,Lettuce,लेट्यूस,letyus,leṭyūs,
+vegetables,Cucumber,काकडी,kakdi,kākḍī,
+vegetables,Pumpkin,भोपळा,bhopla,bhopḷā,
+vegetables,Broccoli,ब्रोकोली,brokoli,brokolī,
+vegetables,Ginger,आले,ale,āle,Spoken: आलं.
+vegetables,Garlic,लसूण,lasun,lasūṇ,
+weather,Sunny,ऊन,un,ūn,
+weather,Cloudy,ढगाळ,dhagal,ḍhagāḷ,
+weather,Rain,पाऊस,paus,pāūs,
+weather,Snow,बर्फ,barf,barph,
+weather,Wind,वारा,vara,vārā,
+weather,Fog,धुके,dhuke,dhuke,
+weather,Hot,गरम,garam,garam,
+weather,Cold,थंड,thand,thanḍ,
+weather,Warm,उबदार,ubdar,ubdār,
+weather,Cool,गारवा,garva,gārvā,Coolness. Cool (adjective): गार.
+weather,Dry,कोरडे,korde,korḍe,
