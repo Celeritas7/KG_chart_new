@@ -1,23 +1,23 @@
-topic_id,title_native,title_roman,question_english,question_native,question_roman
-animals,प्राणी,prāṇī,What is this animal?,हा कोणता प्राणी आहे?,hā koṇtā prāṇī āhe?
-body,शरीर,sharīr,Where does it hurt?,कुठे दुखते?,kuṭhe dukhte?
-colours,रंग,raṅg,What colour is this?,हा कोणता रंग आहे?,hā koṇtā raṅg āhe?
-date,तारीख,tārīkh,What day is today?,आज कोणता दिवस आहे?,āj koṇtā divas āhe?
-dates,तारखा,tārkhā,What day is today?,आज कोणता दिवस आहे?,āj koṇtā divas āhe?
-days_of_week,आठवड्याचे दिवस,āṭhvaḍyāche divas,What day is it?,आज कोणता वार आहे?,āj koṇtā vār āhe?
-directions,दिशा,dishā,Where is this?,हे कुठे आहे?,he kuṭhe āhe?
-drink,पेये,peye,What would you like to drink?,तुम्हाला काय प्यायला आवडेल?,tumhālā kāy pyāylā āvḍel?
-family,कुटुंब,kuṭumb,Who is it?,हे कोण आहे?,he koṇ āhe?
-food,खाद्यपदार्थ,khādyapdārth,I'll take it.,मी हे घेईन.,mī he gheīn.
-fruits,फळे,phaḷe,What is your favorite fruit?,तुमचे आवडते फळ कोणते?,tumche āvaḍte phaḷ koṇte?
-hobby,छंद,chhand,What is your hobby?,तुमचा छंद काय आहे?,tumchā chhand kāy āhe?
-hotel,हॉटेल,hŏṭel,Can you help me?,तुम्ही मला मदत कराल का?,tumhī malā madat karāl kā?
-months,महिने,mahine,What month is this?,हा कोणता महिना आहे?,hā koṇtā mahinā āhe?
-season,ऋतू,rutū,What season is this?,हा कोणता ऋतू आहे?,hā koṇtā rutū āhe?
-seasoning,मसाले,masāle,Can I have this?,मला हे मिळेल का?,malā he miḷel kā?
-shopping,खरेदी,kharedī,Are you looking for something?,तुम्ही काही शोधत आहात का?,tumhī kāhī shodhat āhāt kā?
-sport,खेळ,kheḷ,What is your favorite sport?,तुमचा आवडता खेळ कोणता?,tumchā āvaḍtā kheḷ koṇtā?
-tableware,जेवणाची भांडी,jevṇāchī bhānḍī,Can I have this?,मला हे मिळेल का?,malā he miḷel kā?
-transportation,वाहतूक,vāhtūk,Where should I go?,मी कुठे जाऊ?,mī kuṭhe jāū?
-vegetables,भाज्या,bhājyā,Do you have something you cannot eat?,तुम्ही खाऊ शकत नाही असे काही आहे का?,tumhī khāū shakat nāhī ase kāhī āhe kā?
-weather,हवामान,havāmān,How is the weather?,हवामान कसे आहे?,havāmān kase āhe?
+topic_id,title_native,title_hint,question_english,question_native,question_hint
+animals,प्राणी,prani,What is this animal?,हा कोणता प्राणी आहे?,ha konta prani ahe?
+body,शरीर,sharir,Where does it hurt?,कुठे दुखते?,kuthe dukhte?
+colours,रंग,rangg,What colour is this?,हा कोणता रंग आहे?,ha konta rangg ahe?
+date,तारीख,tarikh,What day is today?,आज कोणता दिवस आहे?,aj konta divas ahe?
+dates,तारखा,tarkha,What day is today?,आज कोणता दिवस आहे?,aj konta divas ahe?
+days_of_week,आठवड्याचे दिवस,athvadyache divas,What day is it?,आज कोणता वार आहे?,aj konta var ahe?
+directions,दिशा,disha,Where is this?,हे कुठे आहे?,he kuthe ahe?
+drink,पेये,peye,What would you like to drink?,तुम्हाला काय प्यायला आवडेल?,tumhala kay pyayla avdel?
+family,कुटुंब,kutumb,Who is it?,हे कोण आहे?,he kon ahe?
+food,खाद्यपदार्थ,khadyapdarth,I'll take it.,मी हे घेईन.,mi he ghein.
+fruits,फळे,fale,What is your favorite fruit?,तुमचे आवडते फळ कोणते?,tumche avadte fal konte?
+hobby,छंद,chhand,What is your hobby?,तुमचा छंद काय आहे?,tumcha chhand kay ahe?
+hotel,हॉटेल,hotel,Can you help me?,तुम्ही मला मदत कराल का?,tumhi mala madat karal ka?
+months,महिने,mahine,What month is this?,हा कोणता महिना आहे?,ha konta mahina ahe?
+season,ऋतू,rutu,What season is this?,हा कोणता ऋतू आहे?,ha konta rutu ahe?
+seasoning,मसाले,masale,Can I have this?,मला हे मिळेल का?,mala he milel ka?
+shopping,खरेदी,kharedi,Are you looking for something?,तुम्ही काही शोधत आहात का?,tumhi kahi shodhat ahat ka?
+sport,खेळ,khel,What is your favorite sport?,तुमचा आवडता खेळ कोणता?,tumcha avadta khel konta?
+tableware,जेवणाची भांडी,jevnachi bhandi,Can I have this?,मला हे मिळेल का?,mala he milel ka?
+transportation,वाहतूक,vahtuk,Where should I go?,मी कुठे जाऊ?,mi kuthe jau?
+vegetables,भाज्या,bhajya,Do you have something you cannot eat?,तुम्ही खाऊ शकत नाही असे काही आहे का?,tumhi khau shakat nahi ase kahi ahe ka?
+weather,हवामान,havaman,How is the weather?,हवामान कसे आहे?,havaman kase ahe?
