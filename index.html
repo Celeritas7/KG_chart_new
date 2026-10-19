@@ -467,8 +467,10 @@
                   ? (translation.pinyin || translation.title_native)
                   : translation.title_native;
 
+                // Chinese: the converter reads pinyin, so the question needs its own (question_pinyin column).
+                // Without it, leave the line empty rather than repeating the characters.
                 const questionSource = usesPronunciation
-                  ? (translation.pinyin_question || translation.question_native)
+                  ? (translation.question_pinyin || '')
                   : translation.question_native;
 
                 return {
