@@ -849,6 +849,8 @@
       const [imageError, setImageError] = useState(false);
       const currentRating = getRatingById(rating);
       const colorCode = item.extra_data?.colorCode;
+      const { user } = useAuth();
+      const isAdmin = user?.id === ADMIN_USER_ID;  // image file names are a checking aid for the admin only
 
       return (
         <div onClick={onClick}
@@ -894,7 +896,7 @@
             {showEnglish && (
               <>
                 <div className="text-center text-xs text-gray-400 mt-1">{item.display_text}</div>
-                <div className="text-center text-xs text-gray-300 mt-0.5 font-mono">{item.image_filename || 'no file'}</div>
+                {isAdmin && <div className="text-center text-xs text-gray-300 mt-0.5 font-mono">{item.image_filename || 'no file'}</div>}
               </>
             )}
           </div>
