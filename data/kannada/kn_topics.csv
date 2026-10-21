@@ -1,0 +1,23 @@
+topic_id,title_native,title_devanagari,question_english,question_native,question_devanagari
+animals,ಪ್ರಾಣಿಗಳು,प्राणिगळु,What is this animal?,ಇದು ಯಾವ ಪ್ರಾಣಿ?,इदु याव प्राणि?
+body,ದೇಹ,देह,Where does it hurt?,ಎಲ್ಲಿ ನೋವಾಗುತ್ತಿದೆ?,एल्लि नोवागुत्तिदे?
+colours,ಬಣ್ಣಗಳು,बण्णगळु,What colour is this?,ಇದು ಯಾವ ಬಣ್ಣ?,इदु याव बण्ण?
+date,ದಿನಾಂಕ,दिनांक,What day is today?,ಇಂದು ಯಾವ ದಿನ?,इंदु याव दिन?
+dates,ದಿನಾಂಕಗಳು,दिनांकगळु,What day is today?,ಇಂದು ಯಾವ ದಿನ?,इंदु याव दिन?
+days_of_week,ವಾರದ ದಿನಗಳು,वारद दिनगळु,What day is it?,ಇಂದು ಯಾವ ವಾರ?,इंदु याव वार?
+directions,ದಿಕ್ಕುಗಳು,दिक्कुगळु,Where is this?,ಇದು ಎಲ್ಲಿದೆ?,इदु एल्लिदे?
+drink,ಪಾನೀಯಗಳು,पानीयगळु,What would you like to drink?,ನೀವು ಏನು ಕುಡಿಯಲು ಬಯಸುತ್ತೀರಿ?,नीवु एनु कुडियलु बयसुत्तीरि?
+family,ಕುಟುಂಬ,कुटुंब,Who is it?,ಇದು ಯಾರು?,इदु यारु?
+food,ಆಹಾರ,आहार,I'll take it.,ನಾನು ಇದನ್ನು ತೆಗೆದುಕೊಳ್ಳುತ್ತೇನೆ.,नानु इदन्नु तेगेदुकोळ्ळुत्तेने.
+fruits,ಹಣ್ಣುಗಳು,हण्णुगळु,What is your favorite fruit?,ನಿಮ್ಮ ನೆಚ್ಚಿನ ಹಣ್ಣು ಯಾವುದು?,निम्म नेच्चिन हण्णु यावुदु?
+hobby,ಹವ್ಯಾಸ,हव्यास,What is your hobby?,ನಿಮ್ಮ ಹವ್ಯಾಸ ಏನು?,निम्म हव्यास एनु?
+hotel,ಹೋಟೆಲ್,होटेल्,Can you help me?,ನೀವು ನನಗೆ ಸಹಾಯ ಮಾಡಬಹುದೇ?,नीवु ननगे सहाय माडबहुदे?
+months,ತಿಂಗಳುಗಳು,तिंगळुगळु,What month is this?,ಇದು ಯಾವ ತಿಂಗಳು?,इदु याव तिंगळु?
+season,ಋತು,ऋतु,What season is this?,ಇದು ಯಾವ ಋತು?,इदु याव ऋतु?
+seasoning,ಮಸಾಲೆಗಳು,मसालेगळु,Can I have this?,ನನಗೆ ಇದು ಸಿಗಬಹುದೇ?,ननगे इदु सिगबहुदे?
+shopping,ಖರೀದಿ,खरीदि,Are you looking for something?,ನೀವು ಏನನ್ನಾದರೂ ಹುಡುಕುತ್ತಿದ್ದೀರಾ?,नीवु एनन्नादरू हुडुकुत्तिद्दीरा?
+sport,ಕ್ರೀಡೆ,क्रीडे,What is your favorite sport?,ನಿಮ್ಮ ನೆಚ್ಚಿನ ಕ್ರೀಡೆ ಯಾವುದು?,निम्म नेच्चिन क्रीडे यावुदु?
+tableware,ಊಟದ ಪಾತ್ರೆಗಳು,ऊटद पात्रेगळु,Can I have this?,ನನಗೆ ಇದು ಸಿಗಬಹುದೇ?,ननगे इदु सिगबहुदे?
+transportation,ಸಾರಿಗೆ,सारिगे,Where should I go?,ನಾನು ಎಲ್ಲಿಗೆ ಹೋಗಬೇಕು?,नानु एल्लिगे होगबेकु?
+vegetables,ತರಕಾರಿಗಳು,तरकारिगळु,Do you have something you cannot eat?,ನೀವು ತಿನ್ನಲಾಗದ ಏನಾದರೂ ಇದೆಯೇ?,नीवु तिन्नलागद एनादरू इदेये?
+weather,ಹವಾಮಾನ,हवामान,How is the weather?,ಹವಾಮಾನ ಹೇಗಿದೆ?,हवामान हेगिदे?
