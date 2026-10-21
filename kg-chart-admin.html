@@ -248,6 +248,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
     <div class="nav-item" data-page="coverage"><span class="icon">📋</span>Coverage<span class="badge" id="badge-coverage">-</span></div>
     <div class="nav-section-label">Analytics</div>
     <div class="nav-item" data-page="quiz-stats"><span class="icon">🧠</span>Quiz Stats</div>
+    <div class="nav-item" data-page="levels"><span class="icon">🎚️</span>Learner Levels</div>
   </nav>
   <div class="theme-switcher">
     <label>Theme</label>
@@ -339,6 +340,9 @@ async function loadAll(){
       sb.from('kg_chart_settings').select('*').eq('key','admin_bypass_lock').maybeSingle()
     ]);
     S.users=pu.data||[];S.unlocks=pl.data||[];S.bypass=ps.data?.value===true;S.pathReady=!pl.error&&!ps.error;
+    // Difficulty levels (empty until kg-chart-levels.sql is run)
+    const lvq=await sb.from('kg_chart_user_levels').select('*');
+    S.levels=lvq.data||[];S.levelsReady=!lvq.error;
     // Sentences (empty until kg-chart-sentences.sql is run)
     const sn=await sb.from('kg_chart_sentences').select('*').order('language_code').order('sort_order').order('created_at');
     S.sentences=sn.data||[];S.sentReady=!sn.error;
@@ -375,6 +379,7 @@ function render(){
     case'flags':t.textContent='Flags';a.innerHTML=`<button class="btn" onclick="exportFlags('csv')">⬇ CSV</button><button class="btn" onclick="exportFlags('json')">⬇ JSON</button><button class="btn" onclick="triggerImport('flags')">⬆ Import</button><button class="btn btn-accent" onclick="runConverterScan()">🔍 Scan Conversions</button>`;renderFlags(c);break;
     case'coverage':t.textContent='Coverage';a.innerHTML=`<button class="btn" onclick="exportMissing('csv','selected')">⬇ Selected Lang</button><button class="btn" onclick="exportMissing('csv','all')">⬇ All Languages</button><button class="btn" onclick="copyAIPrompt()">📋 AI Prompt</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderCoverage(c);break;
     case'quiz-stats':t.textContent='Quiz Stats';a.innerHTML='';renderQuiz(c);break;
+    case'levels':t.textContent='Learner Levels';a.innerHTML='';renderLevels(c);break;
   }
 }
 
@@ -1570,6 +1575,27 @@ async function autoScan() {
   }
 }
 
+// ===== LEARNER LEVELS (kg_chart_user_levels) =====
+// Unlocked = the highest level open to the learner in that language; they pick any level up to it.
+// The app unlocks the next level by formula (85% over the last 40 multiple-choice answers); here you can override.
+const LEVEL_NAMES=['','🌱 Easy','🌿 Normal','🌳 Hard','🏔️ Expert'];
+function renderLevels(el){
+  if(!S.levelsReady){el.innerHTML=`<div class="empty-state"><div class="icon">🎚️</div><p>Run <span class="mono">kg-chart-levels.sql</span> in the Supabase SQL editor, then reload this page.</p></div>`;return;}
+  const langs=S.languages.filter(l=>l.is_active);
+  const users=S.users;
+  if(!users.length){el.innerHTML=`<div class="empty-state"><div class="icon">👤</div><p>No learners in kg_chart_users yet.</p></div>`;return;}
+  const cell=(email,lc)=>{const r=S.levels.find(x=>x.email===email&&x.language_code===lc);const u=r?.unlocked||1;const lvl=r?.level||1;
+    return`<td><select onchange="setLearnerLevel('${escH(email)}','${lc}',+this.value)" title="Highest unlocked level">${[1,2,3,4].map(n=>`<option value="${n}" ${n===u?'selected':''}>${LEVEL_NAMES[n]}</option>`).join('')}</select>${lvl!==u?`<div style="font-size:11px;color:var(--text-muted);margin-top:2px">playing ${LEVEL_NAMES[lvl]}</div>`:''}</td>`;};
+  el.innerHTML=`<p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Each cell is the highest level unlocked for that learner and language. Learners can play any level up to it. The app unlocks the next level at 85% over their last 40 multiple-choice answers; change a cell to unlock or lock levels by hand.</p>
+  <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Learner</th>${langs.map(l=>`<th>${l.flag_emoji||''} ${escH(l.code)}</th>`).join('')}</tr></thead><tbody>${users.map(u=>`<tr><td><strong>${escH(u.name||u.email)}</strong><div class="mono" style="font-size:11px;color:var(--text-muted)">${escH(u.email)}</div></td>${langs.map(l=>cell(u.email.toLowerCase(),l.code)).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+async function setLearnerLevel(email,lc,unlocked){
+  const r=S.levels.find(x=>x.email===email&&x.language_code===lc);
+  const level=Math.min(r?.level||1,unlocked);
+  const{error}=await sb.from('kg_chart_user_levels').upsert({email,language_code:lc,unlocked,level,updated_at:new Date().toISOString()});
+  if(error){toast(error.message,'error');return;}
+  toast(`${email} · ${lc}: up to ${LEVEL_NAMES[unlocked]}`);await loadAll();
+}
 // ===== QUIZ STATS =====
 function renderQuiz(el){
   if(!S.quizSessions.length){el.innerHTML=`<div class="empty-state"><div class="icon">🧠</div><p>No quiz sessions yet</p></div>`;return;}
