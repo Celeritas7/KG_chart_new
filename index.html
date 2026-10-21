@@ -24,7 +24,7 @@
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@400;600;700&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Sans+Sinhala:wght@400;500;700&family=Noto+Sans+Tamil:wght@400;500;700&family=Padauk:wght@400;700&family=Noto+Sans+Myanmar:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&family=Noto+Sans+Thai:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@400;600;700&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Sans+Sinhala:wght@400;500;700&family=Noto+Sans+Tamil:wght@400;500;700&family=Padauk:wght@400;700&family=Noto+Sans+Myanmar:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&family=Noto+Sans+Thai:wght@400;500;700&family=Noto+Sans+Kannada:wght@400;500;700&display=swap" rel="stylesheet">
   
   <script>
     tailwind.config = {
@@ -41,6 +41,7 @@
             'tamil': ['Noto Sans Tamil', 'sans-serif'],
             'korean': ['Noto Sans KR', 'sans-serif'],
             'thai': ['Noto Sans Thai', 'sans-serif'],
+            'kannada': ['Noto Sans Kannada', 'sans-serif'],
           },
           colors: {
             'jade': {
@@ -152,6 +153,7 @@
       th: { file: 'thai', type: 'standard' },
       ms: { file: 'malay', type: 'standard' },
       mr: { file: 'marathi', type: 'standard' },
+      kn: { file: 'kannada', type: 'standard' },
     };
 
     // Load a language converter from the shared repo via fetch
@@ -273,6 +275,7 @@
       ta: 'font-tamil',
       ko: 'font-korean',
       th: 'font-thai',
+      kn: 'font-kannada',
       mr: 'font-devanagari',
     };
 
@@ -3046,7 +3049,7 @@
     const TYPING_DURATIONS = [30, 60, 120];
     const TYPING_SETTINGS_KEY = 'kg_chart_typing';
     const TYPING_BEST_KEY = 'kg_chart_typing_best';
-    const TYPING_LANG_TAGS = { my: 'my-MM', ja: 'ja-JP', zh: 'zh-CN', si: 'si-LK', ko: 'ko-KR', ta: 'ta-IN', th: 'th-TH', ms: 'ms-MY', te: 'te-IN', mr: 'mr-IN' };
+    const TYPING_LANG_TAGS = { my: 'my-MM', ja: 'ja-JP', zh: 'zh-CN', si: 'si-LK', ko: 'ko-KR', ta: 'ta-IN', th: 'th-TH', ms: 'ms-MY', te: 'te-IN', mr: 'mr-IN', kn: 'kn-IN' };
     const typingNorm = (s) => (s || '').normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase();
     const typingChars = (s) => Array.from((s || '').normalize('NFC')).filter(c => !/\s/.test(c)).length;
     // How much of the typed text matches the start of the target (in code points of the normalised forms)
