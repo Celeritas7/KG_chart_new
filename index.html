@@ -222,8 +222,27 @@
     // ==========================================
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+    // "emoji:🌹" as an image filename: the picture is drawn from the emoji on the device, so there's no file to upload
+    const emojiImageCache = {};
+    function emojiImageUrl(emoji) {
+      if (emoji in emojiImageCache) return emojiImageCache[emoji];
+      let url = null;
+      try {
+        const c = document.createElement('canvas');
+        c.width = c.height = 256;
+        const g = c.getContext('2d');
+        g.font = '190px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        g.fillText(emoji, 128, 140);
+        url = c.toDataURL('image/png');
+      } catch (e) { url = null; }
+      return (emojiImageCache[emoji] = url);
+    }
+
     const getImageUrl = (topicId, filename) => {
       if (!filename) return null;
+      if (filename.startsWith('emoji:')) return emojiImageUrl(filename.slice(6));
       if (filename.startsWith('http')) return filename;
       return `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${topicId}/${filename}`;
     };
@@ -2588,18 +2607,21 @@
     function QuizModeToggle({ mode, onChange }) {
       return (
         <div className="flex bg-gray-100 rounded-2xl p-1 mb-6">
-          {[['words', '🔤 Words'], ['sentences', '💬 Sentences'], ['typing', '⌨️ Typing']].map(([id, label]) => (
+          {[['words', '🔤', 'Words'], ['sentences', '💬', 'Sentences'], ['typing', '⌨️', 'Typing'], ['speak', '🗣️', 'Speak']].map(([id, icon, label]) => (
             <button key={id} onClick={() => onChange(id)}
-              className={`flex-1 py-2 rounded-xl font-medium transition-all ${mode === id ? 'bg-white shadow text-jade-700' : 'text-gray-500 hover:text-gray-700'}`}>{label}</button>
+              className={`flex-1 py-2 px-1 rounded-xl font-medium transition-all ${mode === id ? 'bg-white shadow text-jade-700' : 'text-gray-500 hover:text-gray-700'}`}>
+              <span className="block sm:inline">{icon}</span> <span className="text-xs sm:text-base">{label}</span>
+            </button>
           ))}
         </div>
       );
     }
 
     function QuizView(props) {
-      const [mode, setMode] = useState(() => { const m = loadFromStorage(QUIZ_MODE_KEY, 'words'); return ['sentences', 'typing'].includes(m) ? m : 'words'; });
+      const [mode, setMode] = useState(() => { const m = loadFromStorage(QUIZ_MODE_KEY, 'words'); return ['sentences', 'typing', 'speak'].includes(m) ? m : 'words'; });
       useEffect(() => { saveToStorage(QUIZ_MODE_KEY, mode); }, [mode]);
       const toggle = <QuizModeToggle mode={mode} onChange={setMode} />;
+      if (mode === 'speak') return <SpeakView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
       if (mode === 'typing') return <TypingView vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
       return mode === 'sentences'
         ? <SentenceQuizView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />
@@ -2653,9 +2675,10 @@
           .then(({ data }) => { if (data) setRecent(data); });
       }, [user, languageCode, sessionSaved]);
 
-      const all = sentences || [];
-      const groups = useMemo(() => [...new Set(all.map(x => x.group_name).filter(Boolean))], [sentences]);
-      const filtered = useMemo(() => (group === 'all' ? all : all.filter(x => x.group_name === group)), [sentences, group]);
+      const priv = React.useContext(PrivateLessonsContext);
+      const all = useMemo(() => (sentences || []).filter(x => !priv.groups.has(x.group_name)), [sentences, priv]);
+      const groups = useMemo(() => [...new Set(all.map(x => x.group_name).filter(Boolean))], [all]);
+      const filtered = useMemo(() => (group === 'all' ? all : all.filter(x => x.group_name === group)), [all, group]);
       const isBuild = sType === 'build_sentence';
       const needed = isBuild ? 1 : 4;
       const n = count === 0 ? filtered.length : Math.min(count, filtered.length);
@@ -3040,6 +3063,396 @@
     }
 
     // ==========================================
+    // SPEAK A PARAGRAPH (any sentence group, read in order)
+    // ==========================================
+    // 1 listen to every line · 2 line by line: see the meaning, say it, reveal, judge yourself · 3 the whole paragraph.
+    // The learner judges their own speaking (an automatic pronunciation check is a later phase).
+    // Saved as speak_lines / speak_paragraph sessions; sentence answers never touch word strength or unlocking.
+    const SPEAK_KEY = 'kg_chart_speak';
+    const SPEAK_STEPS = [
+      { id: 'listen', n: 1, icon: '👂', label: 'Listen', help: 'Hear every line with its text and meaning.' },
+      { id: 'lines', n: 2, icon: '🗣️', label: 'Line by line', help: 'See the meaning, say the line out loud, then check.' },
+      { id: 'whole', n: 3, icon: '📜', label: 'Whole paragraph', help: 'Say it all from the meanings. Peek only if stuck.' },
+    ];
+    const SPEAK_SESSION_TYPES = { lines: 'speak_lines', whole: 'speak_paragraph' };
+    // Conversations keep the speaker (A / B) in notes
+    const speakerOf = (s) => { const n = (s.notes || '').trim(); return n && n.length <= 3 ? n : null; };
+
+    // Record yourself and play it back next to the real clip. Hidden where the browser can't record.
+    function VoiceRecorder() {
+      const [state, setState] = useState('idle'); // idle | recording | done | denied
+      const [url, setUrl] = useState(null);
+      const recRef = React.useRef(null);
+      const audioRef = React.useRef(null);
+      useEffect(() => () => { if (recRef.current?.state === 'recording') recRef.current.stop(); }, []);
+      useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
+      if (!(window.MediaRecorder && navigator.mediaDevices?.getUserMedia)) return null;
+
+      const start = async () => {
+        window.KGAudio.stop();
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const rec = new MediaRecorder(stream);
+          const chunks = [];
+          rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+          rec.onstop = () => {
+            stream.getTracks().forEach(t => t.stop());
+            setUrl(URL.createObjectURL(new Blob(chunks, { type: rec.mimeType || 'audio/webm' })));
+            setState('done');
+          };
+          recRef.current = rec;
+          rec.start();
+          setState('recording');
+        } catch (e) { setState('denied'); }
+      };
+      const stop = () => { if (recRef.current?.state === 'recording') recRef.current.stop(); };
+      const playMine = () => {
+        window.KGAudio.stop();
+        if (audioRef.current) { audioRef.current.currentTime = 0; audioRef.current.play().catch(() => {}); }
+      };
+      const btn = 'px-4 py-2 rounded-full text-sm font-medium border-2 transition-all';
+      return (
+        <div className="flex items-center justify-center gap-2 flex-wrap">
+          {state === 'recording'
+            ? <button onClick={stop} className={`${btn} border-red-400 bg-red-50 text-red-600 animate-pulse`}>⏹ Stop recording</button>
+            : <button onClick={start} className={`${btn} border-gray-200 text-gray-700 hover:border-gray-300`}>🎙️ {state === 'done' ? 'Record again' : 'Record yourself'}</button>}
+          {state === 'done' && url && (
+            <>
+              <button onClick={playMine} className={`${btn} border-jade-300 text-jade-700 hover:border-jade-500`}>▶ My voice</button>
+              <audio ref={audioRef} src={url} preload="auto" />
+            </>
+          )}
+          {state === 'denied' && <span className="text-xs text-gray-400">Microphone not allowed</span>}
+        </div>
+      );
+    }
+
+    function SpeakView({ languageCode, user, modeToggle }) {
+      const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
+      const audioVersion = useAudioState();
+      const priv = React.useContext(PrivateLessonsContext);
+      const [sentences, setSentences] = useState(null); // null = loading
+      const [loadError, setLoadError] = useState(null);
+      const [group, setGroup] = useState(() => loadFromStorage(SPEAK_KEY, {})[languageCode] || '');
+      const [step, setStep] = useState(null); // null = choose a step | 'listen' | 'lines' | 'whole'
+      const [result, setResult] = useState(null); // { id, total, correct } once a step is finished
+      const [playing, setPlaying] = useState(-1); // listen: line being played, -1 = stopped
+      const [queue, setQueue] = useState([]); // lines: line indexes still to say (missed ones go to the back)
+      const [revealed, setRevealed] = useState(false);
+      const [firstTry, setFirstTry] = useState({}); // lines: index -> right the first time?
+      const [turn, setTurn] = useState(0); // lines: new recorder for every attempt
+      const [peeked, setPeeked] = useState(() => new Set()); // whole: lines looked at
+      const [showAll, setShowAll] = useState(false);
+      const startedAt = React.useRef(0);
+      const timerRef = React.useRef(null);
+      const playStarted = React.useRef(false);
+
+      useEffect(() => {
+        let cancelled = false;
+        setSentences(null); setLoadError(null); setStep(null); setResult(null);
+        setGroup(loadFromStorage(SPEAK_KEY, {})[languageCode] || '');
+        supabase.from(TABLES.sentences).select('*').eq('language_code', languageCode)
+          .order('sort_order').order('created_at')
+          .then(({ data, error }) => {
+            if (cancelled) return;
+            if (error) { setLoadError(error); setSentences([]); return; }
+            setSentences((data || []).filter(x => x.native_text?.trim()));
+          });
+        return () => { cancelled = true; };
+      }, [languageCode]);
+
+      useEffect(() => () => { clearTimeout(timerRef.current); window.KGAudio.stop(); }, []);
+
+      // A paragraph = a sentence group with 2+ lines, in sort order
+      const groups = useMemo(() => {
+        const by = new Map();
+        (sentences || []).forEach(s => {
+          if (!s.group_name || priv.groups.has(s.group_name)) return;
+          if (!by.has(s.group_name)) by.set(s.group_name, []);
+          by.get(s.group_name).push(s);
+        });
+        return [...by].filter(([, l]) => l.length >= 2).map(([name, lines]) => ({ name, lines }));
+      }, [sentences, priv]);
+      const current = groups.find(g => g.name === group) || groups[0] || null;
+      const lines = current ? current.lines : [];
+      const chooseGroup = (name) => {
+        setGroup(name);
+        saveToStorage(SPEAK_KEY, { ...loadFromStorage(SPEAK_KEY, {}), [languageCode]: name });
+      };
+
+      // ---------- step 1: play every line, one after another ----------
+      const playNextIn = (ms) => {
+        clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => setPlaying(p => (p >= 0 ? p + 1 : p)), ms);
+      };
+      const stopAll = () => { clearTimeout(timerRef.current); playStarted.current = false; setPlaying(-1); window.KGAudio.stop(); };
+      useEffect(() => {
+        if (step !== 'listen' || playing < 0) return;
+        const line = lines[playing];
+        if (!line) { setPlaying(-1); return; }
+        playStarted.current = false;
+        // No clip yet: pause about as long as the line takes to say, so the highlight still moves on
+        if (!window.KGAudio.play(line.native_text, languageCode, { silent: true })) playNextIn(800 + 90 * line.native_text.length);
+      }, [step, playing]);
+      useEffect(() => {
+        if (step !== 'listen' || playing < 0 || !lines[playing]) return;
+        if (window.KGAudio.stateOf(lines[playing].native_text, languageCode, false)) { playStarted.current = true; return; }
+        if (playStarted.current) { playStarted.current = false; playNextIn(500); }
+      }, [audioVersion]);
+
+      const startStep = (id) => {
+        stopAll();
+        setResult(null);
+        setStep(id);
+        startedAt.current = Date.now();
+        if (id === 'listen' && !window.KGAudio.prefs.muted) setPlaying(0);
+        if (id === 'lines') { setQueue(lines.map((_, i) => i)); setRevealed(false); setFirstTry({}); }
+        if (id === 'whole') { setPeeked(new Set()); setShowAll(false); }
+      };
+
+      const finish = async (id, rows) => {
+        const total = rows.length, correct = rows.filter(r => r.ok).length;
+        setResult({ id, total, correct });
+        if (!user || !SPEAK_SESSION_TYPES[id]) return;
+        const now = new Date().toISOString();
+        const { data: session, error } = await supabase.from(TABLES.quizSessions).insert({
+          user_id: user.id, language_code: languageCode, topic_id: null, quiz_type: SPEAK_SESSION_TYPES[id],
+          total_questions: total, correct_answers: correct,
+          time_spent_seconds: Math.round((Date.now() - startedAt.current) / 1000), completed_at: now,
+        }).select('id').single();
+        if (error || !session) return;
+        await supabase.from(TABLES.quizAnswers).insert(rows.map(r => ({
+          session_id: session.id, vocabulary_id: null, sentence_id: r.line.id, selected_vocabulary_id: null, is_correct: r.ok, answered_at: now,
+        })));
+      };
+
+      // ---------- step 2: judge each line; a miss comes back at the end ----------
+      const lineIdx = queue[0];
+      const reveal = () => { setRevealed(true); window.KGAudio.autoPlay(lines[lineIdx].native_text, languageCode); };
+      const judge = (ok) => {
+        const ft = lineIdx in firstTry ? firstTry : { ...firstTry, [lineIdx]: ok };
+        const next = ok ? queue.slice(1) : [...queue.slice(1), lineIdx];
+        setFirstTry(ft);
+        setRevealed(false);
+        setTurn(t => t + 1);
+        window.KGAudio.stop();
+        setQueue(next);
+        if (!next.length) finish('lines', lines.map((line, i) => ({ line, ok: !!ft[i] })));
+      };
+
+      // ---------- step 3 ----------
+      const peek = (i) => { setPeeked(p => new Set([...p, i])); window.KGAudio.autoPlay(lines[i].native_text, languageCode); };
+
+      const LineText = ({ s, size = 'text-xl' }) => {
+        const dev = sentenceDevanagari(s.native_text, languageCode);
+        return (
+          <>
+            <div className={`${size} font-bold text-gray-800 ${fontClass}`}>{s.native_text}</div>
+            {dev && <div className="text-sm text-blue-600 font-devanagari mt-0.5">{dev}</div>}
+          </>
+        );
+      };
+      const Speaker = ({ s }) => (speakerOf(s) ? <span className="inline-block text-xs font-bold bg-gray-200 text-gray-600 rounded-full px-2 py-0.5 mr-2">{speakerOf(s)}</span> : null);
+      const stepInfo = SPEAK_STEPS.find(x => x.id === step);
+      const nextStep = SPEAK_STEPS.find(x => x.n === (stepInfo?.n || 0) + 1);
+      const header = (
+        <div className="flex items-center justify-between mb-4 gap-2">
+          <button onClick={() => { stopAll(); setStep(null); setResult(null); }} className="text-gray-500 hover:text-gray-700 font-medium shrink-0">← Steps</button>
+          <div className="text-right min-w-0">
+            <div className="text-sm font-bold text-gray-700">{stepInfo?.n} · {stepInfo?.icon} {stepInfo?.label}</div>
+            <div className="text-xs text-gray-400 truncate">{current?.name}</div>
+          </div>
+        </div>
+      );
+
+      // ---------- choose a paragraph and a step ----------
+      if (!step || !current) {
+        return (
+          <div className="max-w-2xl mx-auto p-6">
+            <div className="bg-white rounded-3xl shadow-xl p-8">
+              <div className="text-center mb-8">
+                <div className="w-20 h-20 bg-jade-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <span className="text-4xl">🗣️</span>
+                </div>
+                <h2 className="text-3xl font-bold text-gray-800">Quiz Mode</h2>
+              </div>
+              {modeToggle}
+
+              {sentences === null ? <LoadingSpinner /> : loadError ? (
+                <div className="bg-yellow-50 text-yellow-800 rounded-2xl p-4 text-sm">
+                  Sentences aren't set up yet. Run <span className="font-mono">kg-chart-sentences.sql</span> in the Supabase SQL editor, then reload.
+                </div>
+              ) : !current ? (
+                <div className="text-center text-gray-500 py-6">
+                  <div className="text-4xl mb-2">📭</div>
+                  No paragraphs for {languageName(languageCode)} yet. A sentence group with 2 or more lines becomes one (admin → 💬 Sentences).
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Paragraph</label>
+                    <select value={current.name} onChange={(e) => chooseGroup(e.target.value)} className="w-full px-4 py-3 border rounded-xl">
+                      {groups.map(g => <option key={g.name} value={g.name}>{g.name} ({g.lines.length} lines)</option>)}
+                    </select>
+                    <ol className="mt-3 space-y-1 text-sm text-gray-500 list-decimal list-inside">
+                      {lines.map(s => <li key={s.id}><Speaker s={s} />{s.english_text}</li>)}
+                    </ol>
+                  </div>
+                  <div className="space-y-3">
+                    {SPEAK_STEPS.map(x => (
+                      <button key={x.id} onClick={() => startStep(x.id)}
+                        className="w-full flex items-center gap-4 p-4 rounded-2xl border-2 border-gray-200 hover:border-jade-400 hover:bg-jade-50 text-left transition-all">
+                        <div className="w-10 h-10 rounded-full bg-jade-600 text-white font-bold flex items-center justify-center shrink-0">{x.n}</div>
+                        <div>
+                          <div className="font-semibold text-gray-800">{x.icon} {x.label}</div>
+                          <div className="text-xs text-gray-500">{x.help}</div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-400 text-center">You judge your own speaking: 🎙️ record yourself to compare with the real voice. Doesn't count toward unlocking topics.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      // ---------- a finished step ----------
+      if (result) {
+        const pct = result.total ? Math.round((result.correct / result.total) * 100) : 0;
+        const line = result.id === 'lines'
+          ? `${result.correct} of ${result.total} lines right the first time`
+          : result.correct === result.total ? 'The whole paragraph without peeking!' : `${result.correct} of ${result.total} lines without peeking`;
+        return (
+          <div className="max-w-2xl mx-auto p-6">
+            <div className="bg-white rounded-3xl shadow-xl p-8 text-center">
+              <div className="text-6xl mb-3">{pct === 100 ? '🎉' : pct >= 60 ? '👏' : '💪'}</div>
+              <h2 className="text-2xl font-bold text-gray-800 mb-1">{stepInfo.label} done</h2>
+              <p className="text-gray-600 mb-6">{line}</p>
+              <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                <button onClick={() => startStep(step)} className="px-6 py-3 border-2 border-gray-200 rounded-full font-medium hover:border-gray-300">↺ Again</button>
+                {nextStep && <button onClick={() => startStep(nextStep.id)} className="px-6 py-3 bg-jade-600 text-white rounded-full font-bold hover:bg-jade-700">Next: {nextStep.n} · {nextStep.label} →</button>}
+                {!nextStep && <button onClick={() => { setStep(null); setResult(null); }} className="px-6 py-3 bg-jade-600 text-white rounded-full font-bold hover:bg-jade-700">Back to steps</button>}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // ---------- step 1 ----------
+      if (step === 'listen') {
+        return (
+          <div className="max-w-2xl mx-auto p-6">
+            <div className="bg-white rounded-3xl shadow-xl p-6 sm:p-8">
+              {header}
+              <div className="flex justify-center gap-3 mb-5">
+                {playing >= 0
+                  ? <button onClick={stopAll} className="px-6 py-3 bg-red-500 text-white rounded-full font-bold hover:bg-red-600">⏹ Stop</button>
+                  : <button onClick={() => { stopAll(); setPlaying(0); }} className="px-6 py-3 bg-jade-600 text-white rounded-full font-bold hover:bg-jade-700">▶ Play all</button>}
+              </div>
+              <div className="space-y-2">
+                {lines.map((s, i) => (
+                  <div key={s.id} className={`flex items-start gap-3 p-3 rounded-xl border-2 transition-all ${playing === i ? 'border-jade-400 bg-jade-50' : 'border-transparent bg-gray-50'}`}>
+                    <div className="text-xs text-gray-400 font-bold w-5 pt-1.5 shrink-0">{i + 1}</div>
+                    <div className="flex-1 min-w-0">
+                      <LineText s={s} />
+                      <div className="text-sm text-gray-500 mt-1"><Speaker s={s} />{s.english_text}</div>
+                    </div>
+                    <div className="flex gap-1 shrink-0">
+                      <SpeakButton text={s.native_text} lang={languageCode} size="sm" />
+                      <SpeakButton text={s.native_text} lang={languageCode} slow size="sm" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button onClick={() => startStep('lines')} className="w-full mt-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Next: 2 · Line by line →</button>
+            </div>
+          </div>
+        );
+      }
+
+      // ---------- step 2 ----------
+      if (step === 'lines') {
+        const s = lines[lineIdx];
+        if (!s) return null;
+        const doneCount = lines.length - new Set(queue).size;
+        return (
+          <div className="max-w-2xl mx-auto p-6">
+            <div className="bg-white rounded-3xl shadow-xl p-6 sm:p-8">
+              {header}
+              <div className="w-full bg-gray-200 rounded-full h-2 mb-6">
+                <div className="bg-jade-500 h-2 rounded-full transition-all" style={{ width: `${(doneCount / lines.length) * 100}%` }} />
+              </div>
+              <div className="text-center">
+                <div className="text-xs text-gray-400 mb-2">Line {lineIdx + 1} of {lines.length}{lineIdx in firstTry ? ' · again' : ''}</div>
+                <div className="text-2xl font-semibold text-gray-800 mb-2"><Speaker s={s} />{s.english_text}</div>
+                <p className="text-sm text-gray-500 mb-4">Say it out loud{revealed ? '' : ', then check'}.</p>
+                <div className="flex justify-center gap-2 mb-4">
+                  <SpeakButton text={s.native_text} lang={languageCode} />
+                  <SpeakButton text={s.native_text} lang={languageCode} slow />
+                </div>
+                <div className="mb-5"><VoiceRecorder key={turn} /></div>
+                {revealed ? (
+                  <>
+                    <div className="bg-jade-50 rounded-2xl p-4 mb-5"><LineText s={s} size="text-2xl" /></div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button onClick={() => judge(false)} className="py-3 border-2 border-orange-300 text-orange-700 rounded-xl font-bold hover:bg-orange-50">↺ Not yet</button>
+                      <button onClick={() => judge(true)} className="py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">✓ I said it right</button>
+                    </div>
+                  </>
+                ) : (
+                  <button onClick={reveal} className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700">Show the line</button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // ---------- step 3 ----------
+      const clean = lines.length - peeked.size;
+      return (
+        <div className="max-w-2xl mx-auto p-6">
+          <div className="bg-white rounded-3xl shadow-xl p-6 sm:p-8">
+            {header}
+            <p className="text-sm text-gray-500 text-center mb-4">Say the whole paragraph from the meanings. Tap 💡 on a line only if you're stuck.</p>
+            <div className="mb-5"><VoiceRecorder /></div>
+            <div className="space-y-2">
+              {lines.map((s, i) => {
+                const open = showAll || peeked.has(i);
+                return (
+                  <div key={s.id} className={`flex items-start gap-3 p-3 rounded-xl ${peeked.has(i) ? 'bg-yellow-50' : 'bg-gray-50'}`}>
+                    <div className="text-xs text-gray-400 font-bold w-5 pt-1 shrink-0">{i + 1}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-gray-700"><Speaker s={s} />{s.english_text}</div>
+                      {open && <div className="mt-1"><LineText s={s} size="text-lg" /></div>}
+                    </div>
+                    <div className="shrink-0">
+                      {open
+                        ? <SpeakButton text={s.native_text} lang={languageCode} size="sm" />
+                        : <button onClick={() => peek(i)} title="Peek at this line" className="w-8 h-8 rounded-full bg-white border border-gray-200 hover:border-yellow-400">💡</button>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {showAll ? (
+              <div className="grid grid-cols-2 gap-3 mt-6">
+                <button onClick={() => startStep('whole')} className="py-3 border-2 border-orange-300 text-orange-700 rounded-xl font-bold hover:bg-orange-50">↺ Try again</button>
+                <button onClick={() => finish('whole', lines.map((line, i) => ({ line, ok: !peeked.has(i) })))} className="py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">✓ I said it all</button>
+              </div>
+            ) : (
+              <button onClick={() => setShowAll(true)} className="w-full mt-6 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700">
+                Reveal all and check{peeked.size ? ` (${clean} of ${lines.length} without peeking)` : ''}
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ==========================================
     // TYPING TEST (timed)
     // ==========================================
     // Copy: see the word, type it (pure speed; doesn't touch word strength).
@@ -3095,10 +3508,11 @@
         return () => { cancelled = true; };
       }, [source, languageCode]);
 
+      const priv = React.useContext(PrivateLessonsContext);
       const pool = useMemo(() => {
-        if (source === 'sentences') return (sentences || []).map(s => ({ kind: 's', id: s.id, text: s.native_text, meaning: s.english_text }));
+        if (source === 'sentences') return (sentences || []).filter(s => !priv.groups.has(s.group_name)).map(s => ({ kind: 's', id: s.id, text: s.native_text, meaning: s.english_text }));
         return vocabulary.filter(v => v.translation?.native_text?.trim()).map(v => ({ kind: 'w', id: v.id, text: v.translation.native_text, meaning: v.display_text || v.english_text, hint: v.translation.devanagari, v }));
-      }, [source, sentences, vocabulary]);
+      }, [source, sentences, vocabulary, priv]);
 
       const bestKey = `${languageCode}|${mode}|${source}`;
       const bests = loadFromStorage(TYPING_BEST_KEY, {});
@@ -3544,6 +3958,41 @@
     const strengthClass = (p) => (p == null ? 'bg-gray-100 text-gray-400' : p >= 80 ? 'bg-green-500 text-white' : p >= 40 ? 'bg-amber-400 text-gray-900' : 'bg-red-500 text-white');
     const topicTitle = (t) => t?.translation?.title_native || slugToLabel(t?.id || '');
 
+    // ==========================================
+    // PRIVATE LESSONS (kg_chart_settings 'private_lessons')
+    // ==========================================
+    // [{ language_code, topic_id, sentence_groups: [...], emails: [...] }]: only those accounts and admins see that
+    // topic and those sentence groups. Everyone else gets them filtered out here.
+    const PrivateLessonsContext = React.createContext({ topics: new Set(), groups: new Set(), loaded: true });
+
+    function usePrivateLessons(user, languageCode) {
+      const [rows, setRows] = useState(null); // null = loading
+      const [isAdmin, setIsAdmin] = useState(false);
+      useEffect(() => {
+        if (!user) { setRows([]); return; }
+        let cancelled = false;
+        Promise.all([
+          supabase.from(TABLES.settings).select('value').eq('key', 'private_lessons').maybeSingle(),
+          supabase.rpc('kg_chart_is_admin'),
+        ]).then(([set, adm]) => {
+          if (cancelled) return;
+          setRows(Array.isArray(set.data?.value) ? set.data.value : []);
+          setIsAdmin(adm.data === true);
+        }, () => { if (!cancelled) setRows([]); });
+        return () => { cancelled = true; };
+      }, [user]);
+      return useMemo(() => {
+        const email = (user?.email || '').toLowerCase();
+        const hidden = isAdmin ? [] : (rows || []).filter(r =>
+          (!r.language_code || r.language_code === languageCode) && !(r.emails || []).some(e => String(e).toLowerCase() === email));
+        return {
+          topics: new Set(hidden.map(r => r.topic_id).filter(Boolean)),
+          groups: new Set(hidden.flatMap(r => r.sentence_groups || [])),
+          loaded: rows !== null,
+        };
+      }, [rows, isAdmin, user, languageCode]);
+    }
+
     function useLearningPath({ user, languageCode, topics, vocabulary }) {
       const [raw, setRaw] = useState(null);
       const [tick, setTick] = useState(0);
@@ -3819,8 +4268,11 @@
       const meaningName = meaningNameFor(currentLanguage, meaningsInEnglish);
 
       const { languages, loading: loadingLangs } = useLanguages();
-      const { topics, loading: loadingTopics } = useTopics(currentLanguage, meaningsInEnglish);
-      const { vocabulary, loading: loadingVocab } = useVocabulary(currentLanguage, meaningsInEnglish);
+      const { topics: allTopics, loading: loadingTopics } = useTopics(currentLanguage, meaningsInEnglish);
+      const { vocabulary: allVocabulary, loading: loadingVocab } = useVocabulary(currentLanguage, meaningsInEnglish);
+      const priv = usePrivateLessons(user, currentLanguage);
+      const topics = useMemo(() => allTopics.filter(t => !priv.topics.has(t.id)), [allTopics, priv]);
+      const vocabulary = useMemo(() => allVocabulary.filter(v => !priv.topics.has(v.topic_id)), [allVocabulary, priv]);
       const { ratings, updateRating } = useUserRatings(currentLanguage);
       const path = useLearningPath({ user, languageCode: currentLanguage, topics, vocabulary });
       const visibleTopics = path.topics;
@@ -3860,8 +4312,9 @@
             <TopicNav topics={visibleTopics} activeTopic={activeTopic} onSelect={setActiveTopic} showEnglish={showEnglish} pathStatus={path.enabled ? path.status : null} />
           )}
 
+          <PrivateLessonsContext.Provider value={priv}>
           <main className="pb-8">
-            {(loadingTopics || loadingVocab || path.loading) ? (
+            {(loadingTopics || loadingVocab || path.loading || !priv.loaded) ? (
               <div className="py-12"><LoadingSpinner message="Loading vocabulary..." /></div>
             ) : (
               <>
@@ -3885,6 +4338,7 @@
               </>
             )}
           </main>
+          </PrivateLessonsContext.Provider>
 
           {path.celebration && (
             <CelebrationModal topic={path.celebration.topic} next={path.celebration.next} fontClass={fontClassApp}

@@ -272,7 +272,11 @@ const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZ
 const sb=supabase.createClient(SB_URL,SB_KEY);
 const BUCKET='vocabulary-assets';
 const ADMIN_USER_ID='d469efb7-f9e1-4b49-8b14-75a42b4d22e0';
-const imgUrl=(tid,fn)=>fn?(fn.startsWith('http')?fn:`${SB_URL}/storage/v1/object/public/${BUCKET}/${tid}/${fn}`):null;
+// "emoji:🌹" filenames: the picture is drawn from the emoji (same as the app), nothing in storage
+const EMOJI_IMG={};
+function emojiImg(e){if(e in EMOJI_IMG)return EMOJI_IMG[e];let u=null;try{const c=document.createElement('canvas');c.width=c.height=256;const g=c.getContext('2d');g.font='190px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';g.textAlign='center';g.textBaseline='middle';g.fillText(e,128,140);u=c.toDataURL('image/png');}catch(err){u=null;}return EMOJI_IMG[e]=u;}
+const isRemoteImg=fn=>fn.startsWith('http')||fn.startsWith('emoji:');
+const imgUrl=(tid,fn)=>fn?(fn.startsWith('emoji:')?emojiImg(fn.slice(6)):fn.startsWith('http')?fn:`${SB_URL}/storage/v1/object/public/${BUCKET}/${tid}/${fn}`):null;
 
 // Auto-generate image filename from English text (Tissue paper → tissue_paper.jpg)
 function toImageFilename(text){return text.trim().toLowerCase().replace(/\s+/g,'_')+'.jpg';}
@@ -604,13 +608,13 @@ const escH=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'
 async function urlExists(u){try{const r=await fetch(u,{method:'HEAD',cache:'no-store'});return r.ok;}catch{return false;}}
 async function loadAllImageFiles(force){
   if(IMG.loading)return;IMG.loading=true;if(S.page==='images')render();
-  const todo=S.vocabulary.filter(v=>v.image_filename&&!v.image_filename.startsWith('http')&&!v.extra_data?.colorCode);
+  const todo=S.vocabulary.filter(v=>v.image_filename&&!isRemoteImg(v.image_filename)&&!v.extra_data?.colorCode);
   let i=0;const worker=async()=>{while(i<todo.length){const v=todo[i++];IMG.exists[v.id]=await urlExists(imgUrl(v.topic_id,v.image_filename));}};
   await Promise.all(Array.from({length:12},worker));
   IMG.loading=false;IMG.loaded=true;updateImgBadge();if(S.page==='images')render();
   if(force)toast('Storage re-checked');
 }
-function hasImage(v){if(v.extra_data?.colorCode)return true;if(!v.image_filename)return false;if(v.image_filename.startsWith('http'))return true;return !!IMG.exists[v.id];}
+function hasImage(v){if(v.extra_data?.colorCode)return true;if(!v.image_filename)return false;if(isRemoteImg(v.image_filename))return true;return !!IMG.exists[v.id];}
 function copyMissingList(){const l=S.vocabulary.filter(v=>(!S.filters.topic||v.topic_id===S.filters.topic)&&!hasImage(v)).sort((a,b)=>a.topic_id.localeCompare(b.topic_id)||(a.sort_order??0)-(b.sort_order??0)).map(v=>`${v.topic_id} / ${v.english_text}`).join('\n');if(!l){toast('Nothing missing');return;}const done=()=>toast(`Copied ${l.split('\n').length} items`);navigator.clipboard?.writeText(l).then(done,()=>downloadFile('missing-images.txt',l,'text/plain'))??downloadFile('missing-images.txt',l,'text/plain');}
 function updateImgBadge(){const b=document.getElementById('badge-images');if(!b)return;const m=S.vocabulary.filter(v=>!hasImage(v)).length;b.textContent=m||'✓';}
 function imgListFiltered(){return S.vocabulary.filter(v=>(!S.filters.topic||v.topic_id===S.filters.topic)&&(!IMG.missingOnly||!hasImage(v)));}
@@ -622,7 +626,7 @@ function renderImages(el){
   const missing=S.vocabulary.filter(v=>(!S.filters.topic||v.topic_id===S.filters.topic)&&!hasImage(v)).length;
   el.innerHTML=`<div class="filter-bar"><select onchange="S.filters.topic=this.value;render()"><option value="">All Topics</option>${to}</select><label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary)"><input type="checkbox" ${IMG.missingOnly?'checked':''} onchange="IMG.missingOnly=this.checked;render()"> Missing only</label><span class="filter-count">${missing} of ${total} missing</span>${IMG.loading?'<span class="filter-count">checking…</span>':''}</div>${list.length?`<div class="img-grid">${list.map(v=>{const ok=hasImage(v);const cc=v.extra_data?.colorCode;const tp=S.topics.find(t=>t.id===v.topic_id);const u=ok&&!cc?imgUrl(v.topic_id,v.image_filename)+(IMG.bust[v.id]?'?v='+IMG.bust[v.id]:''):null;return`<div class="img-card ${ok?'':'missing'}"><div class="img-thumb">${cc?`<div style="width:56px;height:56px;border-radius:10px;background:${cc}"></div>`:u?`<img src="${u}" loading="lazy" alt="">`:'📷'}</div><div class="img-meta"><strong>${escH(v.english_text)}</strong><span class="mono">${tp?.icon||''} ${v.topic_id}/${escH(v.image_filename||'—')}</span></div>${cc?'':`<button class="btn btn-sm ${ok?'':'btn-accent'}" onclick="openImageFinder('${v.id}')">${ok?'Replace':'🔍 Find image'}</button>`}</div>`;}).join('')}</div>`:`<div class="empty-state"><div class="icon">🖼️</div><p>${IMG.missingOnly?'No missing images here':'No items'}</p></div>`}`;
 }
-function targetFilename(v){const fn=v.image_filename&&!v.image_filename.startsWith('http')?v.image_filename:toImageFilename(v.english_text);return /\.(jpe?g|png|webp)$/i.test(fn)?fn:fn+'.jpg';}
+function targetFilename(v){const fn=v.image_filename&&!isRemoteImg(v.image_filename)?v.image_filename:toImageFilename(v.english_text);return /\.(jpe?g|png|webp)$/i.test(fn)?fn:fn+'.jpg';}
 // Curated search queries for words whose bare name finds poor photos. key = "topic/english" (lower-case). w = Wikimedia, o = Openverse.
 const IMG_QUERIES={
 'body/eye':['human eye close up','w'],'body/nose':['human nose profile','w'],'body/mouth':['human mouth lips','w'],'body/face':['human face portrait neutral','o'],'body/head':['human head side view','w'],'body/neck':['human neck','w'],'body/hair':['human hair','o'],'body/ear':['human ear close up','w'],'body/tooth':['human tooth','w'],'body/claw':['cat claw paw','o'],'body/finger':['index finger pointing hand','o'],'body/hand':['open human hand palm','w'],'body/arm':['human arm','w'],'body/shoulder':['human shoulder','w'],'body/toes':['human foot toes','w'],'body/legs':['human legs standing','o'],'body/stomach':['human stomach abdomen','w'],
