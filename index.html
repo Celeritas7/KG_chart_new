@@ -99,6 +99,7 @@
       progressResets: 'kg_chart_progress_resets',
       topicCompletions: 'kg_chart_topic_completions',
       sentences: 'kg_chart_sentences',
+      userLevels: 'kg_chart_user_levels',
     };
 
     // ==========================================
@@ -283,6 +284,33 @@
     // Phase 9 step 3: 2× in each of 6 types (adds the two Listen quizzes). Topics already completed stay completed.
     const UNLOCK_MIN_ATTEMPTS = 2;
     const UNLOCK_QUIZ_TYPES = ['native_to_image', 'image_to_native', 'devanagari_to_image', 'english_to_native', 'listen_to_image', 'listen_to_native'];
+    // ==========================================
+    // DIFFICULTY LEVELS (per learner, per language)
+    // ==========================================
+    // They change the six multiple-choice quiz types. The next level unlocks when the most recent answers at the
+    // highest unlocked level cover at least LEVEL_UP.answers and are at least LEVEL_UP.pct correct. The same formula
+    // runs in the database (kg_chart_check_level_up, kg-chart-levels.sql), which is what actually unlocks.
+    const LEVELS = [
+      { n: 1, name: 'Easy', icon: '🌱', choices: 4, seconds: 0, hint: true },
+      { n: 2, name: 'Normal', icon: '🌿', choices: 4, seconds: 20, hint: true },
+      { n: 3, name: 'Hard', icon: '🌳', choices: 6, seconds: 12, hint: true },
+      { n: 4, name: 'Expert', icon: '🏔️', choices: 6, seconds: 8, hint: false },
+    ];
+    const LEVEL_UP = { answers: 40, pct: 85 };
+    const levelOf = (n) => LEVELS[Math.min(Math.max(Number(n) || 1, 1), LEVELS.length) - 1];
+    const levelSummary = (L) => `${L.choices} choices · ${L.seconds ? `${L.seconds} s per question` : 'no timer'}${L.hint ? '' : ' · no hint line'}`;
+    // Most recent quizzes at this level until they cover LEVEL_UP.answers; quizzes from before levels count as Easy
+    function levelProgress(sessions, level) {
+      let total = 0, correct = 0;
+      for (const s of sessions || []) {
+        if ((s.difficulty || 1) !== level || !UNLOCK_QUIZ_TYPES.includes(s.quiz_type)) continue;
+        total += s.total_questions || 0;
+        correct += s.correct_answers || 0;
+        if (total >= LEVEL_UP.answers) break;
+      }
+      return { total, correct, pct: total ? Math.floor((correct * 100) / total) : 0, ready: total >= LEVEL_UP.answers && correct * 100 >= LEVEL_UP.pct * total };
+    }
+
     const UNLOCK_RULE_TEXT = `${UNLOCK_MIN_ATTEMPTS}× in each of the ${UNLOCK_QUIZ_TYPES.length} quiz types`;
 
     const LANGUAGE_FONTS = {
@@ -1530,6 +1558,67 @@
     // Listen quizzes play even when auto-play is muted, and never toast
     const playListen = (text, lang, slow = false) => { if (text) window.KGAudio.play(text, lang, { slow, silent: true }); };
 
+    // Level state for one learner in one language: kg_chart_user_levels when kg-chart-levels.sql has been run,
+    // otherwise this device only (same formula, checked here).
+    function useLevels(user, languageCode) {
+      const email = (user?.email || '').toLowerCase();
+      const localKey = `kg_chart_level_${languageCode}`;
+      const [state, setState] = useState({ level: 1, unlocked: 1, loaded: false, db: false });
+      const [sessions, setSessions] = useState([]);
+
+      const loadSessions = useCallback(async () => {
+        if (!user) return [];
+        const { data } = await supabase.from(TABLES.quizSessions).select('*').eq('user_id', user.id).eq('language_code', languageCode)
+          .in('quiz_type', UNLOCK_QUIZ_TYPES).order('created_at', { ascending: false }).limit(300);
+        setSessions(data || []);
+        return data || [];
+      }, [user, languageCode]);
+
+      useEffect(() => {
+        let cancelled = false;
+        (async () => {
+          const local = loadFromStorage(localKey, { level: 1, unlocked: 1 });
+          let next = { level: local.level || 1, unlocked: local.unlocked || 1, loaded: true, db: false };
+          if (user && email) {
+            const { data, error } = await supabase.from(TABLES.userLevels).select('*').eq('email', email).eq('language_code', languageCode).maybeSingle();
+            if (!error) next = { level: data?.level || 1, unlocked: data?.unlocked || 1, loaded: true, db: true };
+          }
+          if (!cancelled) setState(next);
+          if (!cancelled) await loadSessions();
+        })();
+        return () => { cancelled = true; };
+      }, [user, email, languageCode]);
+
+      const save = async (level, unlocked) => {
+        saveToStorage(localKey, { level, unlocked });
+        if (state.db && email) await supabase.from(TABLES.userLevels).upsert({ email, language_code: languageCode, level, updated_at: new Date().toISOString() });
+      };
+      const setLevel = (n) => {
+        const level = Math.min(Math.max(n, 1), state.unlocked);
+        setState(s => ({ ...s, level }));
+        save(level, state.unlocked);
+      };
+      // After a multiple-choice quiz is saved: run the formula; returns the newly unlocked level, or null
+      const afterQuiz = async () => {
+        const fresh = await loadSessions();
+        let unlocked = state.unlocked;
+        if (state.db) {
+          const { data, error } = await supabase.rpc('kg_chart_check_level_up', { p_lang: languageCode });
+          if (!error && data) unlocked = data;
+        } else if (state.unlocked < LEVELS.length && levelProgress(fresh, state.unlocked).ready) {
+          unlocked = state.unlocked + 1;
+        }
+        if (unlocked > state.unlocked) {
+          setState(s => ({ ...s, unlocked }));
+          saveToStorage(localKey, { level: state.level, unlocked });
+          return unlocked;
+        }
+        return null;
+      };
+      const progress = levelProgress(sessions, state.unlocked);
+      return { ...state, setLevel, afterQuiz, progress };
+    }
+
     // ==========================================
     // WORD BUILDER QUIZ
     // ==========================================
@@ -2032,6 +2121,13 @@
       const [recentSessions, setRecentSessions] = useState([]);
       const [sessionSaved, setSessionSaved] = useState(false);
 
+      const lv = useLevels(user, languageCode);
+      const isMcq = UNLOCK_QUIZ_TYPES.includes(quizType);
+      const L = levelOf(isMcq ? lv.level : 1);
+      const [timeLeft, setTimeLeft] = useState(null);
+      const [levelUp, setLevelUp] = useState(null);
+      const showHint = L.hint || showResult;
+
       const [wb, setWb] = useState(() => ({ ...WB_DEFAULTS, ...loadFromStorage(WB_STORAGE_KEY, {}) }));
       const setWbKey = (k, v) => setWb(s => ({ ...s, [k]: v }));
       const [tw, setTw] = useState(() => ({ ...TW_DEFAULTS, ...loadFromStorage(TW_STORAGE_KEY, {}) }));
@@ -2083,10 +2179,11 @@
           completed_at: new Date().toISOString(),
         };
         if (quizType === 'type_word') sessionRow.quiz_level = twLevel;
+        if (isMcq) sessionRow.difficulty = L.n;
         let { data: session, error: sessionErr } = await supabase.from(TABLES.quizSessions).insert(sessionRow).select('id').single();
-        // Fallback if kg-chart-phase10.sql (quiz_level column) hasn't been run yet
-        if (sessionErr && sessionRow.quiz_level) {
-          const { quiz_level, ...rest } = sessionRow;
+        // Fallback if kg-chart-phase10.sql (quiz_level) or kg-chart-levels.sql (difficulty) hasn't been run yet
+        if (sessionErr && (sessionRow.quiz_level || sessionRow.difficulty)) {
+          const { quiz_level, difficulty, ...rest } = sessionRow;
           ({ data: session, error: sessionErr } = await supabase.from(TABLES.quizSessions).insert(rest).select('id').single());
         }
         if (!sessionErr && session && answers.length > 0) {
@@ -2097,7 +2194,8 @@
         }
         setSessionSaved(true);
         if (onSessionSaved) onSessionSaved();
-      }, [user, languageCode, quizTopic, quizType, twLevel, onSessionSaved]);
+        if (isMcq && !sessionErr) { const up = await lv.afterQuiz(); if (up) setLevelUp(up); }
+      }, [user, languageCode, quizTopic, quizType, twLevel, onSessionSaved, isMcq, L.n, lv]);
 
       useEffect(() => {
         if (quizCompleted && !sessionSaved) persistSession(score, quizAnswers);
@@ -2125,7 +2223,7 @@
             if (t && seen.has(t)) continue;
             if (t) seen.add(t);
             wrong.push(v);
-            if (wrong.length === 3) break;
+            if (wrong.length === (isMcq ? L.choices : 4) - 1) break;
           }
           return shuffleArr([q, ...wrong]);
         });
@@ -2136,11 +2234,12 @@
         setCurrentWordIndex(0);
         setScore({ correct: 0, total: 0 });
         setQuizAnswers([]);
+        setLevelUp(null);
         savingRef.current = false;
         setSessionSaved(false);
         setQuizCompleted(false);
         setQuizStarted(true);
-      }, [playableVocab, filteredVocab, pool, dailyTarget, isListen, languageCode]);
+      }, [playableVocab, filteredVocab, pool, dailyTarget, isListen, languageCode, isMcq, L.choices]);
 
       const generateQuestion = useCallback(() => {
         if (pool.length < 4 || quizWords.length < 1 || currentWordIndex >= quizWords.length) {
@@ -2178,6 +2277,37 @@
         }
       };
 
+      // Time ran out: counts as wrong, shows the answer
+      const handleTimeout = () => {
+        if (showResult || !currentQuestion) return;
+        setSelectedAnswer({ id: '__timeout', timeout: true });
+        setShowResult(true);
+        window.KGAudio.autoPlay(currentQuestion.translation?.native_text, languageCode);
+        setScore(prev => ({ correct: prev.correct, total: prev.total + 1 }));
+        setQuizAnswers(prev => [...prev, {
+          vocabulary_id: currentQuestion.id,
+          selected_vocabulary_id: null,
+          is_correct: false,
+          answer_text: 'timeout',
+          answered_at: new Date().toISOString(),
+        }]);
+        if (user && !ratings[currentQuestion.id]?.rating) onRate(currentQuestion.id, 5);
+      };
+      const timeoutRef = React.useRef(handleTimeout);
+      timeoutRef.current = handleTimeout;
+      // Per-question clock (Normal and up), restarts for every question, stops once answered
+      const timed = quizStarted && !quizCompleted && isMcq && L.seconds > 0;
+      useEffect(() => {
+        if (!timed || !currentQuestion || showResult) return;
+        const start = Date.now();
+        setTimeLeft(L.seconds);
+        const t = setInterval(() => {
+          const left = L.seconds - (Date.now() - start) / 1000;
+          if (left <= 0) { clearInterval(t); setTimeLeft(0); timeoutRef.current(); } else setTimeLeft(left);
+        }, 100);
+        return () => clearInterval(t);
+      }, [timed, currentQuestion, showResult, L.seconds]);
+
       const handleWbAnswer = (isCorrect, answerText) => {
         const item = quizWords[currentWordIndex];
         if (!item) return;
@@ -2212,7 +2342,7 @@
             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); nextQuestion(); }
           } else {
             const num = parseInt(e.key);
-            if (num >= 1 && num <= 4 && options[num - 1]) handleAnswer(options[num - 1]);
+            if (num >= 1 && num <= options.length && options[num - 1]) handleAnswer(options[num - 1]);
           }
           if ((e.key === 'r' || e.key === 'R') && isListen && currentQuestion) playListen(currentQuestion.translation?.native_text, languageCode);
         };
@@ -2270,6 +2400,32 @@
                     ))}
                   </div>
                 </div>
+
+                {isMcq && (
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Level <span className="text-gray-400 font-normal ml-2">({languageName(languageCode)})</span>
+                    </label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {LEVELS.map(l => {
+                        const locked = l.n > lv.unlocked;
+                        return (
+                          <button key={l.n} onClick={() => !locked && lv.setLevel(l.n)} disabled={locked} title={locked ? 'Locked' : levelSummary(l)}
+                            className={`py-2 rounded-xl border-2 text-sm font-medium transition-all ${lv.level === l.n ? 'border-jade-500 bg-jade-50 text-jade-700' : locked ? 'border-gray-100 text-gray-300' : 'border-gray-200 hover:border-gray-300'}`}>
+                            <div className="text-lg">{locked ? '🔒' : l.icon}</div>{l.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">{levelSummary(L)}</p>
+                    {lv.unlocked < LEVELS.length && user && (
+                      <p className="text-xs text-gray-400 mt-1">
+                        {levelOf(lv.unlocked + 1).icon} {levelOf(lv.unlocked + 1).name} unlocks at {LEVEL_UP.pct}% over your last {LEVEL_UP.answers} answers on {levelOf(lv.unlocked).name}:
+                        {' '}<b className="text-gray-600">{lv.progress.total < LEVEL_UP.answers ? `${lv.progress.total}/${LEVEL_UP.answers} answers so far` : `${lv.progress.pct}% now`}</b>
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {isListen && (() => {
                   const sample = playableVocab.find(v => v.translation?.native_text);
@@ -2353,7 +2509,7 @@
                           }`}>{pct}%</div>
                           <div>
                             <div className="text-sm font-medium text-gray-800">{topicLabel}</div>
-                            <div className="text-xs text-gray-400">{dateStr} {timeStr}</div>
+                            <div className="text-xs text-gray-400">{dateStr} {timeStr}{s.difficulty > 1 ? ` · ${levelOf(s.difficulty).icon} ${levelOf(s.difficulty).name}` : ''}</div>
                           </div>
                         </div>
                         <div className="text-sm text-gray-600 font-medium">{s.correct_answers}/{s.total_questions}</div>
@@ -2389,6 +2545,17 @@
                 <p className={`text-sm mb-4 ${sessionSaved ? 'text-green-600' : 'text-gray-400'}`}>
                   {sessionSaved ? '✓ Results saved' : 'Saving...'}
                 </p>
+              )}
+              {levelUp && (
+                <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 mb-5">
+                  <div className="text-lg font-bold text-amber-800">🎉 {levelOf(levelUp).icon} {levelOf(levelUp).name} unlocked!</div>
+                  <div className="text-sm text-amber-700 mb-3">{levelSummary(levelOf(levelUp))}</div>
+                  <button onClick={() => { lv.setLevel(levelUp); setLevelUp(null); setQuizStarted(false); setQuizCompleted(false); }}
+                    className="px-4 py-2 bg-amber-500 text-white rounded-xl font-bold hover:bg-amber-600">Switch to {levelOf(levelUp).name}</button>
+                </div>
+              )}
+              {isMcq && !levelUp && user && sessionSaved && lv.unlocked < LEVELS.length && (
+                <p className="text-xs text-gray-400 mb-4">Toward {levelOf(lv.unlocked + 1).name}: {lv.progress.total < LEVEL_UP.answers ? `${lv.progress.total}/${LEVEL_UP.answers} answers` : `${lv.progress.pct}% (need ${LEVEL_UP.pct}%)`}</p>
               )}
               <div className="flex gap-4 justify-center">
                 <button onClick={() => { setQuizStarted(false); setQuizCompleted(false); }}
@@ -2443,12 +2610,18 @@
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-lg p-8 mb-6 text-center">
-            <div className="text-sm text-gray-400 mb-4">Find the matching answer:</div>
+          <div className="bg-white rounded-2xl shadow-lg p-8 mb-6 text-center relative overflow-hidden">
+            {isMcq && L.n > 1 && <div className="absolute top-2 right-3 text-xs text-gray-400">{L.icon} {L.name}</div>}
+            {timed && timeLeft != null && !showResult && (
+              <div className="absolute top-0 left-0 right-0 h-1.5 bg-gray-100">
+                <div className={`h-full transition-all duration-100 ${timeLeft < 3 ? 'bg-red-500' : 'bg-jade-500'}`} style={{ width: `${(timeLeft / L.seconds) * 100}%` }} />
+              </div>
+            )}
+            <div className="text-sm text-gray-400 mb-4">Find the matching answer:{timed && timeLeft != null && !showResult ? <span className={`ml-2 font-bold tabular-nums ${timeLeft < 3 ? 'text-red-500' : 'text-gray-500'}`}>{Math.ceil(timeLeft)}s</span> : null}</div>
             {quizType === 'native_to_image' && (
               <>
                 <div className={`text-4xl font-bold text-gray-800 mb-2 ${fontClass}`}>{currentQuestion.translation?.native_text}</div>
-                <div className="text-xl text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>
+                {showHint && <div className="text-xl text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>}
                 <div className="mt-4"><SpeakButton text={currentQuestion.translation?.native_text} lang={languageCode} slow size="lg" /></div>
               </>
             )}
@@ -2473,7 +2646,7 @@
                   <>
                     <div className="text-xs text-gray-400 mb-2">No recording for this word yet</div>
                     <div className={`text-4xl font-bold text-gray-800 mb-2 ${fontClass}`}>{text}</div>
-                    <div className="text-xl text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>
+                    {showHint && <div className="text-xl text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>}
                   </>
                 ) : (
                   <>
@@ -2513,7 +2686,7 @@
             )}
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          <div className={`grid grid-cols-2 ${options.length > 4 ? 'md:grid-cols-3' : 'md:grid-cols-4'} gap-4 mb-6`}>
             {options.map((opt, idx) => {
               let borderClass = 'border-gray-200 hover:border-jade-300 hover:shadow-lg';
               if (showResult) {
@@ -2538,7 +2711,7 @@
                   ) : (
                     <>
                       <div className={`text-lg font-semibold text-gray-800 ${fontClass}`}>{opt.translation?.native_text}</div>
-                      <div className="text-sm text-blue-600 font-devanagari mt-1">{opt.translation?.devanagari}</div>
+                      {showHint && <div className="text-sm text-blue-600 font-devanagari mt-1">{opt.translation?.devanagari}</div>}
                       {(quizType !== 'listen_to_native' || showResult) && <div className="mt-2 flex justify-center"><SpeakButton text={opt.translation?.native_text} lang={languageCode} size="sm" /></div>}
                     </>
                   )}
@@ -2550,7 +2723,7 @@
           {showResult && (
             <div className="text-center animate-slide-up">
               <div className={`text-2xl font-bold mb-4 ${selectedAnswer?.id === currentQuestion.id ? 'text-green-600' : 'text-red-600'}`}>
-                {selectedAnswer?.id === currentQuestion.id ? '✅ Correct!' : `❌ Wrong! It was "${currentQuestion.display_text}"`}
+                {selectedAnswer?.id === currentQuestion.id ? '✅ Correct!' : selectedAnswer?.timeout ? `⏰ Time's up! It was "${currentQuestion.display_text}"` : `❌ Wrong! It was "${currentQuestion.display_text}"`}
               </div>
               <div className="flex items-center justify-center gap-3 mb-4">
                 <span className={`text-2xl font-semibold text-gray-800 ${fontClass}`}>{currentQuestion.translation?.native_text}</span>
