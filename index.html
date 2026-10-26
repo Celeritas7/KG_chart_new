@@ -281,8 +281,8 @@
     // Unlock rule (Phase 8b): a word is "done" once it has been answered, right or wrong,
     // UNLOCK_MIN_ATTEMPTS times in EACH of these quiz types (since the learner's last reset).
     // Build the Word counts toward strength but is not required for unlocking.
-    // Phase 9 step 3: 2× in each of 6 types (adds the two Listen quizzes). Topics already completed stay completed.
-    const UNLOCK_MIN_ATTEMPTS = 2;
+    // Phase 9 step 3: 6 types (adds the two Listen quizzes); since Oct 2026 once in each, not twice. Topics already completed stay completed.
+    const UNLOCK_MIN_ATTEMPTS = 1;
     const UNLOCK_QUIZ_TYPES = ['native_to_image', 'image_to_native', 'devanagari_to_image', 'english_to_native', 'listen_to_image', 'listen_to_native'];
     // ==========================================
     // DIFFICULTY LEVELS (per learner, per language)
