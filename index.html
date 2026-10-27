@@ -278,17 +278,13 @@
 
     const DAILY_TARGET_OPTIONS = [5, 10, 15, 20, 25, 30, 50, 0];
 
-    // Unlock rule (Phase 8b): a word is "done" once it has been answered, right or wrong,
-    // UNLOCK_MIN_ATTEMPTS times in EACH of these quiz types (since the learner's last reset).
-    // Build the Word counts toward strength but is not required for unlocking.
-    // Phase 9 step 3: 6 types (adds the two Listen quizzes); since Oct 2026 once in each, not twice. Topics already completed stay completed.
-    const UNLOCK_MIN_ATTEMPTS = 1;
-    const UNLOCK_QUIZ_TYPES = ['native_to_image', 'image_to_native', 'devanagari_to_image', 'english_to_native', 'listen_to_image', 'listen_to_native'];
+    // The six multiple-choice quiz types: the ones with difficulty levels, and the default unlock types
+    const MCQ_QUIZ_TYPES = ['native_to_image', 'image_to_native', 'devanagari_to_image', 'english_to_native', 'listen_to_image', 'listen_to_native'];
     // ==========================================
     // DIFFICULTY LEVELS (per learner, per language)
     // ==========================================
     // They change the six multiple-choice quiz types. The next level unlocks when the most recent answers at the
-    // highest unlocked level cover at least LEVEL_UP.answers and are at least LEVEL_UP.pct correct. The same formula
+    // highest unlocked level cover at least levelUp.answers and are at least levelUp.pct correct (see RULES). The same formula
     // runs in the database (kg_chart_check_level_up, kg-chart-levels.sql), which is what actually unlocks.
     const LEVELS = [
       { n: 1, name: 'Easy', icon: '🌱', choices: 4, seconds: 0, hint: true },
@@ -296,22 +292,62 @@
       { n: 3, name: 'Hard', icon: '🌳', choices: 6, seconds: 12, hint: true },
       { n: 4, name: 'Expert', icon: '🏔️', choices: 6, seconds: 8, hint: false },
     ];
-    const LEVEL_UP = { answers: 40, pct: 85 };
     const levelOf = (n) => LEVELS[Math.min(Math.max(Number(n) || 1, 1), LEVELS.length) - 1];
     const levelSummary = (L) => `${L.choices} choices · ${L.seconds ? `${L.seconds} s per question` : 'no timer'}${L.hint ? '' : ' · no hint line'}`;
-    // Most recent quizzes at this level until they cover LEVEL_UP.answers; quizzes from before levels count as Easy
-    function levelProgress(sessions, level) {
-      let total = 0, correct = 0;
-      for (const s of sessions || []) {
-        if ((s.difficulty || 1) !== level || !UNLOCK_QUIZ_TYPES.includes(s.quiz_type)) continue;
-        total += s.total_questions || 0;
-        correct += s.correct_answers || 0;
-        if (total >= LEVEL_UP.answers) break;
-      }
-      return { total, correct, pct: total ? Math.floor((correct * 100) / total) : 0, ready: total >= LEVEL_UP.answers && correct * 100 >= LEVEL_UP.pct * total };
+    // ==========================================
+    // RULES (admin → Rules; kg_chart_settings 'unlock_rules')
+    // ==========================================
+    // Topic unlock: a word is "done" once it has been answered, right or wrong, minAttempts times in EACH of
+    // quizTypes (since the learner's last reset). Level up: levelUp.pct% over the last levelUp.answers answers.
+    // { min_attempts, quiz_types, level_up: { answers, pct }, languages: { my: { …any of these… } } }
+    // A language entry overrides the global value field by field. Out-of-range or missing values fall back to defaults.
+    // Topics already completed stay completed when the rules change.
+    const DEFAULT_RULES = { min_attempts: 1, quiz_types: MCQ_QUIZ_TYPES, level_up: { answers: 40, pct: 85 } };
+    const RULE_LIMITS = { min_attempts: [1, 3], answers: [10, 200], pct: [50, 100] };
+    // First whole number among the candidates (language, then global), kept in range; else the default.
+    // kg_chart_rule_int() in kg-chart-rules.sql reads level_up the same way.
+    const ruleInt = (cands, [lo, hi], d) => { const v = cands.find(x => typeof x === 'number' && Number.isInteger(x)); return v === undefined ? d : Math.min(Math.max(v, lo), hi); };
+    function resolveRules(value, languageCode) {
+      const g = value && typeof value === 'object' ? value : {};
+      const o = (g.languages && typeof g.languages === 'object' && g.languages[languageCode]) || {};
+      const known = STRENGTH_TYPES.map(t => t.id);
+      const typesOf = (v) => (Array.isArray(v) ? [...new Set(v.filter(t => known.includes(t)))] : []);
+      const types = [typesOf(o.quiz_types), typesOf(g.quiz_types)].find(t => t.length) || DEFAULT_RULES.quiz_types;
+      return {
+        minAttempts: ruleInt([o.min_attempts, g.min_attempts], RULE_LIMITS.min_attempts, DEFAULT_RULES.min_attempts),
+        quizTypes: types,
+        levelUp: {
+          answers: ruleInt([o.level_up?.answers, g.level_up?.answers], RULE_LIMITS.answers, DEFAULT_RULES.level_up.answers),
+          pct: ruleInt([o.level_up?.pct, g.level_up?.pct], RULE_LIMITS.pct, DEFAULT_RULES.level_up.pct),
+        },
+      };
+    }
+    const ruleText = (r) => `${r.minAttempts}× in each of the ${r.quizTypes.length} quiz type${r.quizTypes.length === 1 ? '' : 's'}`;
+    const RulesContext = React.createContext(resolveRules(null));
+
+    function useRules(user, languageCode) {
+      const [value, setValue] = useState(undefined); // undefined = loading, null = no rules saved (defaults)
+      useEffect(() => {
+        if (!user) { setValue(null); return; }
+        let cancelled = false;
+        supabase.from(TABLES.settings).select('value').eq('key', 'unlock_rules').maybeSingle()
+          .then(({ data }) => { if (!cancelled) setValue(data?.value ?? null); }, () => { if (!cancelled) setValue(null); });
+        return () => { cancelled = true; };
+      }, [user]);
+      return useMemo(() => ({ ...resolveRules(value, languageCode), loaded: value !== undefined }), [value, languageCode]);
     }
 
-    const UNLOCK_RULE_TEXT = `${UNLOCK_MIN_ATTEMPTS}× in each of the ${UNLOCK_QUIZ_TYPES.length} quiz types`;
+    // Most recent quizzes at this level until they cover levelUp.answers; quizzes from before levels count as Easy
+    function levelProgress(sessions, level, levelUp = DEFAULT_RULES.level_up) {
+      let total = 0, correct = 0;
+      for (const s of sessions || []) {
+        if ((s.difficulty || 1) !== level || !MCQ_QUIZ_TYPES.includes(s.quiz_type)) continue;
+        total += s.total_questions || 0;
+        correct += s.correct_answers || 0;
+        if (total >= levelUp.answers) break;
+      }
+      return { total, correct, pct: total ? Math.floor((correct * 100) / total) : 0, ready: total >= levelUp.answers && correct * 100 >= levelUp.pct * total };
+    }
 
     const LANGUAGE_FONTS = {
       my: 'font-burmese',
@@ -1696,6 +1732,7 @@
     // Level state for one learner in one language: kg_chart_user_levels when kg-chart-levels.sql has been run,
     // otherwise this device only (same formula, checked here).
     function useLevels(user, languageCode) {
+      const rules = React.useContext(RulesContext);
       const email = (user?.email || '').toLowerCase();
       const localKey = `kg_chart_level_${languageCode}`;
       const [state, setState] = useState({ level: 1, unlocked: 1, loaded: false, db: false });
@@ -1704,7 +1741,7 @@
       const loadSessions = useCallback(async () => {
         if (!user) return [];
         const { data } = await supabase.from(TABLES.quizSessions).select('*').eq('user_id', user.id).eq('language_code', languageCode)
-          .in('quiz_type', UNLOCK_QUIZ_TYPES).order('created_at', { ascending: false }).limit(300);
+          .in('quiz_type', MCQ_QUIZ_TYPES).order('created_at', { ascending: false }).limit(300);
         setSessions(data || []);
         return data || [];
       }, [user, languageCode]);
@@ -1740,7 +1777,7 @@
         if (state.db) {
           const { data, error } = await supabase.rpc('kg_chart_check_level_up', { p_lang: languageCode });
           if (!error && data) unlocked = data;
-        } else if (state.unlocked < LEVELS.length && levelProgress(fresh, state.unlocked).ready) {
+        } else if (state.unlocked < LEVELS.length && levelProgress(fresh, state.unlocked, rules.levelUp).ready) {
           unlocked = state.unlocked + 1;
         }
         if (unlocked > state.unlocked) {
@@ -1750,8 +1787,8 @@
         }
         return null;
       };
-      const progress = levelProgress(sessions, state.unlocked);
-      return { ...state, setLevel, afterQuiz, progress };
+      const progress = levelProgress(sessions, state.unlocked, rules.levelUp);
+      return { ...state, setLevel, afterQuiz, progress, levelUp: rules.levelUp };
     }
 
     // ==========================================
@@ -2236,6 +2273,7 @@
     }
 
     function WordQuizView({ topics, vocabulary, poolVocabulary, ratings, onRate, languageCode, user, onSessionSaved, modeToggle, meaningName }) {
+      const rules = React.useContext(RulesContext);
       const pool = poolVocabulary || vocabulary;
       useAudioState();
       const savingRef = React.useRef(false);
@@ -2257,7 +2295,7 @@
       const [sessionSaved, setSessionSaved] = useState(false);
 
       const lv = useLevels(user, languageCode);
-      const isMcq = UNLOCK_QUIZ_TYPES.includes(quizType);
+      const isMcq = MCQ_QUIZ_TYPES.includes(quizType);
       const L = levelOf(isMcq ? lv.level : 1);
       const [timeLeft, setTimeLeft] = useState(null);
       const [levelUp, setLevelUp] = useState(null);
@@ -2555,8 +2593,8 @@
                     <p className="text-xs text-gray-500 mt-2">{levelSummary(L)}</p>
                     {lv.unlocked < LEVELS.length && user && (
                       <p className="text-xs text-gray-400 mt-1">
-                        {levelOf(lv.unlocked + 1).icon} {levelOf(lv.unlocked + 1).name} unlocks at {LEVEL_UP.pct}% over your last {LEVEL_UP.answers} answers on {levelOf(lv.unlocked).name}:
-                        {' '}<b className="text-gray-600">{lv.progress.total < LEVEL_UP.answers ? `${lv.progress.total}/${LEVEL_UP.answers} answers so far` : `${lv.progress.pct}% now`}</b>
+                        {levelOf(lv.unlocked + 1).icon} {levelOf(lv.unlocked + 1).name} unlocks at {lv.levelUp.pct}% over your last {lv.levelUp.answers} answers on {levelOf(lv.unlocked).name}:
+                        {' '}<b className="text-gray-600">{lv.progress.total < lv.levelUp.answers ? `${lv.progress.total}/${lv.levelUp.answers} answers so far` : `${lv.progress.pct}% now`}</b>
                       </p>
                     )}
                   </div>
@@ -2614,7 +2652,7 @@
                       options={[['end', 'Check at the end'], ['live', 'Mark as you type']]} />
                     <WbOption label="Hint button" value={tw.hints} onChange={v => setTwKey('hints', v)}
                       options={[[true, 'On'], [false, 'Off']]} />
-                    <div className="text-xs text-gray-500">⌨️ Add the {languageName(languageCode)} keyboard in your phone settings first. Typing doesn't count toward unlocking topics.</div>
+                    <div className="text-xs text-gray-500">⌨️ Add the {languageName(languageCode)} keyboard in your phone settings first. {rules.quizTypes.includes('type_word') ? 'Counts toward unlocking topics.' : "Typing doesn't count toward unlocking topics."}</div>
                   </div>
                 )}
 
@@ -2690,7 +2728,7 @@
                 </div>
               )}
               {isMcq && !levelUp && user && sessionSaved && lv.unlocked < LEVELS.length && (
-                <p className="text-xs text-gray-400 mb-4">Toward {levelOf(lv.unlocked + 1).name}: {lv.progress.total < LEVEL_UP.answers ? `${lv.progress.total}/${LEVEL_UP.answers} answers` : `${lv.progress.pct}% (need ${LEVEL_UP.pct}%)`}</p>
+                <p className="text-xs text-gray-400 mb-4">Toward {levelOf(lv.unlocked + 1).name}: {lv.progress.total < lv.levelUp.answers ? `${lv.progress.total}/${lv.levelUp.answers} answers` : `${lv.progress.pct}% (need ${lv.levelUp.pct}%)`}</p>
               )}
               <div className="flex gap-4 justify-center">
                 <button onClick={() => { setQuizStarted(false); setQuizCompleted(false); }}
@@ -3782,6 +3820,7 @@
     }
 
     function TypingView({ vocabulary, languageCode, user, modeToggle, meaningName }) {
+      const rules = React.useContext(RulesContext);
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       const saved0 = loadFromStorage(TYPING_SETTINGS_KEY, {});
       const [mode, setMode] = useState(saved0.mode === 'recall' ? 'recall' : 'copy');
@@ -3942,7 +3981,7 @@
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Mode</label>
                   {seg(mode, setMode, [['copy', '👀 Copy the word'], ['recall', '🧠 Type from memory']])}
-                  <p className="text-xs text-gray-400 mt-2">{mode === 'copy' ? 'You see the word and type it as fast as you can. Speed practice only.' : `You see the picture and the ${meaningName && meaningName !== 'English' ? meaningName : 'English'} meaning, and type the word. Counts toward word strength.`}</p>
+                  <p className="text-xs text-gray-400 mt-2">{mode === 'copy' ? 'You see the word and type it as fast as you can. Speed practice only.' : `You see the picture and the ${meaningName && meaningName !== 'English' ? meaningName : 'English'} meaning, and type the word. Counts toward word strength${rules.quizTypes.includes('typing_recall') ? ' and unlocking' : ''}.`}</p>
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Type</label>
@@ -4301,7 +4340,7 @@
       }, [rows, isAdmin, user, languageCode]);
     }
 
-    function useLearningPath({ user, languageCode, topics, vocabulary }) {
+    function useLearningPath({ user, languageCode, topics, vocabulary, rules }) {
       const [raw, setRaw] = useState(null);
       const [tick, setTick] = useState(0);
       const [celebration, setCelebration] = useState(null);
@@ -4351,8 +4390,8 @@
           (w[a.quiz_type] = w[a.quiz_type] || []).push({ c: !!a.is_correct, t: ts });
           if (ts > resetAt) { const c = (counts[id] = counts[id] || {}); c[a.quiz_type] = (c[a.quiz_type] || 0) + 1; }
         });
-        const stepsPerWord = UNLOCK_QUIZ_TYPES.length * UNLOCK_MIN_ATTEMPTS;
-        const wordSteps = (id) => UNLOCK_QUIZ_TYPES.reduce((s, q) => s + Math.min(counts[id]?.[q] || 0, UNLOCK_MIN_ATTEMPTS), 0);
+        const stepsPerWord = rules.quizTypes.length * rules.minAttempts;
+        const wordSteps = (id) => rules.quizTypes.reduce((s, q) => s + Math.min(counts[id]?.[q] || 0, rules.minAttempts), 0);
         const wordDone = (id) => wordSteps(id) === stepsPerWord;
         const open = !raw?.ready || raw?.bypass;
         const done = new Set((raw?.completions || []).filter(c => (Date.parse(c.completed_at) || 0) > resetAt).map(c => c.topic_id));
@@ -4375,7 +4414,7 @@
         const unlockedIds = new Set(annotated.filter(t => !t.locked).map(t => t.id));
         const unlockedVocab = visibleVocab.filter(v => unlockedIds.has(v.topic_id));
         return { topics: annotated, status, attempts, counts, visibleVocab, unlockedVocab, newlyComplete, enabled: !!raw?.ready && !raw?.bypass, bypass: !!raw?.bypass };
-      }, [topics, vocabulary, raw]);
+      }, [topics, vocabulary, raw, rules]);
 
       useEffect(() => {
         if (!user || !computed.newlyComplete.length) return;
@@ -4395,6 +4434,7 @@
     }
 
     function LockedTopicPanel({ topic, prevTopic, prevStatus, fontClass, onGoQuiz }) {
+      const rules = React.useContext(RulesContext);
       const pct = prevStatus?.stepsTotal ? Math.round(100 * prevStatus.steps / prevStatus.stepsTotal) : 0;
       return (
         <div className="max-w-xl mx-auto p-6">
@@ -4403,7 +4443,7 @@
             <h2 className="text-2xl font-bold text-gray-800 mb-2">{topic.icon} <span className={fontClass}>{topicTitle(topic)}</span> is locked</h2>
             {prevTopic ? (
               <>
-                <p className="text-gray-500 mb-5">Answer every word in <b className={fontClass}>{topicTitle(prevTopic)}</b> {UNLOCK_RULE_TEXT} to unlock it. Right or wrong both count.</p>
+                <p className="text-gray-500 mb-5">Answer every word in <b className={fontClass}>{topicTitle(prevTopic)}</b> {ruleText(rules)} to unlock it. Right or wrong both count.</p>
                 <div className="h-3 bg-gray-100 rounded-full overflow-hidden mb-2"><div className="h-full bg-jade-500 rounded-full" style={{ width: Math.max(pct, 2) + '%' }} /></div>
                 <p className="text-sm text-gray-500 mb-6">{prevStatus.faced} of {prevStatus.total} words done · {prevStatus.steps}/{prevStatus.stepsTotal} answers</p>
                 <button onClick={onGoQuiz} className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Go to Quiz →</button>
@@ -4415,6 +4455,7 @@
     }
 
     function CelebrationModal({ topic, next, fontClass, onOpen, onClose }) {
+      const rules = React.useContext(RulesContext);
       const [secs, setSecs] = useState(6);
       useEffect(() => {
         if (!next) return;
@@ -4427,7 +4468,7 @@
           <div className="bg-white rounded-3xl shadow-2xl p-8 max-w-md w-full text-center animate-slide-up">
             <div className="text-6xl mb-3">🎉</div>
             <h2 className="text-2xl font-bold text-gray-800 mb-1">Topic complete!</h2>
-            <p className="text-gray-500 mb-6">{topic?.icon} <span className={fontClass}>{topicTitle(topic)}</span>: every word answered {UNLOCK_RULE_TEXT}.</p>
+            <p className="text-gray-500 mb-6">{topic?.icon} <span className={fontClass}>{topicTitle(topic)}</span>: every word answered {ruleText(rules)}.</p>
             {next ? (
               <>
                 <div className="bg-jade-50 rounded-2xl p-4 mb-6">
@@ -4500,6 +4541,7 @@
     }
 
     function LearningPathCard({ path, vocabulary, ratings, fontClass, languageCode, meaningName }) {
+      const rules = React.useContext(RulesContext);
       const firstOpen = path.topics.find(t => !t.locked && !path.status[t.id].complete && !path.status[t.id].empty);
       const [open, setOpen] = useState(firstOpen?.id || null);
       const [word, setWord] = useState(null);
@@ -4515,7 +4557,7 @@
               <span key={l} className="flex items-center gap-1.5"><span className={'w-3 h-3 rounded ' + strengthClass(p)} />{l}</span>
             ))}
             <span>· last {STRENGTH_WINDOW} attempts</span>
-            <span>· unlock: every word {UNLOCK_RULE_TEXT} (★ = done)</span>
+            <span>· unlock: every word {ruleText(rules)} (★ = done)</span>
           </div>
           <div className="space-y-2">
             {rows.map(t => {
@@ -4548,7 +4590,7 @@
                             return (
                               <tr key={w.id} onClick={() => setWord(w)} className="cursor-pointer hover:opacity-80">
                                 <td className="px-1 py-1"><div className={'font-medium text-gray-800 ' + fontClass}>{w.translation?.native_text}</div><div className="text-xs text-gray-400">{w.display_text}</div></td>
-                                {STRENGTH_TYPES.map(q => { const p = strengthPct(byType?.[q.id]); const req = UNLOCK_QUIZ_TYPES.includes(q.id); const n = cnt[q.id] || 0; return <td key={q.id} title={req ? n + '/' + UNLOCK_MIN_ATTEMPTS + ' answers toward unlock' : n + ' answers (not needed to unlock)'} className={'text-center text-xs font-bold rounded-lg ' + strengthClass(p)}>{p == null ? '' : p}{req && n >= UNLOCK_MIN_ATTEMPTS ? '★' : ''}</td>; })}
+                                {STRENGTH_TYPES.map(q => { const p = strengthPct(byType?.[q.id]); const req = rules.quizTypes.includes(q.id); const n = cnt[q.id] || 0; return <td key={q.id} title={req ? n + '/' + rules.minAttempts + ' answers toward unlock' : n + ' answers (not needed to unlock)'} className={'text-center text-xs font-bold rounded-lg ' + strengthClass(p)}>{p == null ? '' : p}{req && n >= rules.minAttempts ? '★' : ''}</td>; })}
                                 <td className={'text-center text-xs font-bold rounded-lg ' + strengthClass(ov)}>{ov == null ? '–' : ov + '%'}</td>
                               </tr>
                             );
@@ -4579,10 +4621,11 @@
       const { topics: allTopics, loading: loadingTopics } = useTopics(currentLanguage, meaningsInEnglish);
       const { vocabulary: allVocabulary, loading: loadingVocab } = useVocabulary(currentLanguage, meaningsInEnglish);
       const priv = usePrivateLessons(user, currentLanguage);
+      const rules = useRules(user, currentLanguage);
       const topics = useMemo(() => allTopics.filter(t => !priv.topics.has(t.id)), [allTopics, priv]);
       const vocabulary = useMemo(() => allVocabulary.filter(v => !priv.topics.has(v.topic_id)), [allVocabulary, priv]);
       const { ratings, updateRating } = useUserRatings(currentLanguage);
-      const path = useLearningPath({ user, languageCode: currentLanguage, topics, vocabulary });
+      const path = useLearningPath({ user, languageCode: currentLanguage, topics, vocabulary, rules });
       const visibleTopics = path.topics;
       const fontClassApp = LANGUAGE_FONTS[currentLanguage] || 'font-body';
 
@@ -4611,6 +4654,7 @@
       if (loadingLangs) return <div className="min-h-screen flex items-center justify-center"><LoadingSpinner message="Loading..." /></div>;
 
       return (
+        <RulesContext.Provider value={rules}>
         <div className="min-h-screen bg-gray-50">
           <Header currentLanguage={currentLanguage} languages={languages} onLanguageChange={setCurrentLanguage}
             activeView={activeView} onViewChange={setActiveView}
@@ -4622,7 +4666,7 @@
 
           <PrivateLessonsContext.Provider value={priv}>
           <main className="pb-8">
-            {(loadingTopics || loadingVocab || path.loading || !priv.loaded) ? (
+            {(loadingTopics || loadingVocab || path.loading || !priv.loaded || !rules.loaded) ? (
               <div className="py-12"><LoadingSpinner message="Loading vocabulary..." /></div>
             ) : (
               <>
@@ -4661,6 +4705,7 @@
             </div>
           </footer>
         </div>
+        </RulesContext.Provider>
       );
     }
 

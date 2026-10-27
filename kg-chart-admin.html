@@ -249,6 +249,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
     <div class="nav-section-label">Analytics</div>
     <div class="nav-item" data-page="quiz-stats"><span class="icon">🧠</span>Quiz Stats</div>
     <div class="nav-item" data-page="levels"><span class="icon">🎚️</span>Learner Levels</div>
+    <div class="nav-item" data-page="rules"><span class="icon">⚖️</span>Rules</div>
   </nav>
   <div class="theme-switcher">
     <label>Theme</label>
@@ -347,6 +348,12 @@ async function loadAll(){
     // Difficulty levels (empty until kg-chart-levels.sql is run)
     const lvq=await sb.from('kg_chart_user_levels').select('*');
     S.levels=lvq.data||[];S.levelsReady=!lvq.error;
+    // Unlock + level-up rules; kg_chart_rule_int exists once kg-chart-rules.sql has been run
+    const[rq,rf]=await Promise.all([
+      sb.from('kg_chart_settings').select('value').eq('key','unlock_rules').maybeSingle(),
+      sb.rpc('kg_chart_rule_int',{p_rules:null,p_lang:'',p_field:'pct',p_default:85,p_lo:50,p_hi:100})
+    ]);
+    S.rules=rq.data?.value&&typeof rq.data.value==='object'?rq.data.value:null;S.rulesSqlReady=!rf.error;
     // Sentences (empty until kg-chart-sentences.sql is run)
     const sn=await sb.from('kg_chart_sentences').select('*').order('language_code').order('sort_order').order('created_at');
     S.sentences=sn.data||[];S.sentReady=!sn.error;
@@ -384,6 +391,7 @@ function render(){
     case'coverage':t.textContent='Coverage';a.innerHTML=`<button class="btn" onclick="exportMissing('csv','selected')">⬇ Selected Lang</button><button class="btn" onclick="exportMissing('csv','all')">⬇ All Languages</button><button class="btn" onclick="copyAIPrompt()">📋 AI Prompt</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderCoverage(c);break;
     case'quiz-stats':t.textContent='Quiz Stats';a.innerHTML='';renderQuiz(c);break;
     case'levels':t.textContent='Learner Levels';a.innerHTML='';renderLevels(c);break;
+    case'rules':t.textContent='Rules';a.innerHTML='';renderRules(c);break;
   }
 }
 
@@ -1593,6 +1601,63 @@ function renderLevels(el){
   el.innerHTML=`<p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Each cell is the highest level unlocked for that learner and language. Learners can play any level up to it. The app unlocks the next level at 85% over their last 40 multiple-choice answers; change a cell to unlock or lock levels by hand.</p>
   <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Learner</th>${langs.map(l=>`<th>${l.flag_emoji||''} ${escH(l.code)}</th>`).join('')}</tr></thead><tbody>${users.map(u=>`<tr><td><strong>${escH(u.name||u.email)}</strong><div class="mono" style="font-size:11px;color:var(--text-muted)">${escH(u.email)}</div></td>${langs.map(l=>cell(u.email.toLowerCase(),l.code)).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
+// ===== RULES (kg_chart_settings 'unlock_rules') =====
+// Read the same way as resolveRules() in the app and kg_chart_rule_int() in kg-chart-rules.sql:
+// a language's own value first, then the global one, then the default; whole numbers only, kept in range.
+const RULE_TYPES=[['native_to_image','🔤 Native → Image',1],['image_to_native','🖼️ Image → Native',1],['devanagari_to_image','🕉️ Devanagari → Image',1],['english_to_native','🌐 English → Native',1],['listen_to_image','🔊 Listen → Image',1],['listen_to_native','👂 Listen → Native',1],['word_builder','🧩 Build the Word',0],['type_word','⌨️ Type the Word',0],['typing_recall','⌨️ Typing test, from memory',0]];
+const RULE_DEFAULT={min_attempts:1,quiz_types:RULE_TYPES.filter(t=>t[2]).map(t=>t[0]),level_up:{answers:40,pct:85}};
+const RULE_LIM={min_attempts:[1,3],answers:[10,200],pct:[50,100]};
+let RULES={scope:'*'};
+const ruleInt=(c,[lo,hi],d)=>{const v=c.find(x=>typeof x==='number'&&Number.isInteger(x));return v===undefined?d:Math.min(Math.max(v,lo),hi);};
+function resolveRulesAdmin(val,lc){const g=val||{};const o=(lc&&g.languages&&g.languages[lc])||{};const known=RULE_TYPES.map(t=>t[0]);const tf=v=>Array.isArray(v)?[...new Set(v.filter(t=>known.includes(t)))]:[];
+  return{min_attempts:ruleInt([o.min_attempts,g.min_attempts],RULE_LIM.min_attempts,RULE_DEFAULT.min_attempts),quiz_types:[tf(o.quiz_types),tf(g.quiz_types)].find(t=>t.length)||RULE_DEFAULT.quiz_types,
+    level_up:{answers:ruleInt([o.level_up?.answers,g.level_up?.answers],RULE_LIM.answers,RULE_DEFAULT.level_up.answers),pct:ruleInt([o.level_up?.pct,g.level_up?.pct],RULE_LIM.pct,RULE_DEFAULT.level_up.pct)}};}
+const ruleSummary=r=>`A topic opens when every word in the one before it has been answered <b>${r.min_attempts}×</b> in each of these <b>${r.quiz_types.length}</b> quiz type${r.quiz_types.length===1?'':'s'}. The next difficulty level unlocks at <b>${r.level_up.pct}%</b> over the last <b>${r.level_up.answers}</b> multiple-choice answers.`;
+function renderRules(el){
+  const langs=S.languages.filter(l=>l.is_active);const ov=S.rules?.languages||{};
+  if(RULES.scope!=='*'&&!langs.some(l=>l.code===RULES.scope))RULES.scope='*';
+  const lc=RULES.scope==='*'?null:RULES.scope;const custom=!!(lc&&ov[lc]);
+  const r=resolveRulesAdmin(S.rules,lc);const g=resolveRulesAdmin(S.rules,null);
+  const scopeSel=`<select onchange="RULES.scope=this.value;render()" style="min-width:220px"><option value="*" ${!lc?'selected':''}>🌐 All languages (global)</option>${langs.map(l=>`<option value="${l.code}" ${lc===l.code?'selected':''}>${l.flag_emoji||''} ${escH(l.name_english||l.code)}${ov[l.code]?' · custom':''}</option>`).join('')}</select>`;
+  const warn=S.rulesSqlReady?'':`<div style="padding:12px 16px;margin-bottom:16px;border-radius:12px;background:var(--warning-dim);color:var(--warning);font-size:13px">Run <b>kg-chart-rules.sql</b> in the Supabase SQL editor once. Until then, topic rules work, but level-up stays at 85% over 40 answers.</div>`;
+  let body;
+  if(lc&&!custom){body=`<div style="padding:16px;border:1px dashed var(--border);border-radius:12px;margin-bottom:16px"><div style="font-weight:600;margin-bottom:6px">Uses the global rules</div><div style="font-size:13px;color:var(--text-muted);margin-bottom:12px">${ruleSummary(g)}</div><button class="btn btn-accent" onclick="customiseRules('${lc}')">Customise for this language</button></div>`;}
+  else{const seg=[1,2,3].map(n=>`<label style="display:flex;align-items:center;gap:6px;padding:8px 14px;border:1px solid var(--border);border-radius:10px;cursor:pointer;${r.min_attempts===n?'background:var(--accent-dim);border-color:var(--accent)':''}"><input type="radio" name="r-min" value="${n}" ${r.min_attempts===n?'checked':''} onchange="rulesLive()"> ${n}×</label>`).join('');
+    const boxes=RULE_TYPES.map(([id,label,mcq])=>`<label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer"><input type="checkbox" id="r-qt-${id}" ${r.quiz_types.includes(id)?'checked':''} onchange="rulesLive()"> ${label}${mcq?'':' <span style="font-size:11px;color:var(--text-muted)">(not multiple choice)</span>'}</label>`).join('');
+    body=`<div class="form-group"><label>Answers needed per word, in each ticked quiz type (right or wrong both count)</label><div style="display:flex;gap:8px">${seg}</div></div>
+    <div class="form-group"><label>Quiz types that count toward unlocking</label><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:0 16px">${boxes}</div></div>
+    <div class="form-group"><label>Difficulty level-up (the six multiple-choice quizzes)</label><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:14px">Next level at <input id="r-pct" type="number" min="${RULE_LIM.pct[0]}" max="${RULE_LIM.pct[1]}" value="${r.level_up.pct}" style="width:80px" oninput="rulesLive()"> % correct over the last <input id="r-ans" type="number" min="${RULE_LIM.answers[0]}" max="${RULE_LIM.answers[1]}" value="${r.level_up.answers}" style="width:90px" oninput="rulesLive()"> answers</div></div>
+    <div id="r-summary" style="padding:12px 16px;border-radius:12px;background:var(--bg-tertiary);font-size:13px;margin-bottom:16px">${ruleSummary(r)}</div>
+    <div class="form-actions" style="justify-content:flex-start">${lc?`<button class="btn" onclick="resetRules('${lc}')">↺ Use the global rules</button>`:''}<button class="btn btn-accent" onclick="saveRules()">Save</button></div>`;}
+  el.innerHTML=`${warn}<p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">Learners get new rules the next time they open the app. Topics already completed stay completed; changing the rules can open (or lock) the next ones.</p><div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap"><span style="font-weight:600">Rules for</span>${scopeSel}</div>${body}`;
+}
+function readRulesForm(){
+  const min=Number(document.querySelector('input[name="r-min"]:checked')?.value||1);
+  const types=RULE_TYPES.map(t=>t[0]).filter(id=>document.getElementById('r-qt-'+id)?.checked);
+  const num=(id,lim,d)=>{const n=Math.round(Number(document.getElementById(id).value));return Number.isFinite(n)?Math.min(Math.max(n,lim[0]),lim[1]):d;};
+  return{min_attempts:min,quiz_types:types,level_up:{answers:num('r-ans',RULE_LIM.answers,40),pct:num('r-pct',RULE_LIM.pct,85)}};
+}
+function rulesLive(){const f=readRulesForm();const el=document.getElementById('r-summary');if(el)el.innerHTML=f.quiz_types.length?ruleSummary(f):'<span style="color:var(--danger,#dc2626)">Tick at least one quiz type.</span>';}
+async function writeRules(next,msg){
+  const{error}=await sb.from('kg_chart_settings').upsert({key:'unlock_rules',value:next,updated_at:new Date().toISOString()});
+  if(error){toast(error.message,'error');return false;}toast(msg);await loadAll();return true;
+}
+async function saveRules(){
+  const f=readRulesForm();if(!f.quiz_types.length){toast('Tick at least one quiz type','error');return;}
+  const cur=S.rules&&typeof S.rules==='object'?S.rules:{};const lc=RULES.scope==='*'?null:RULES.scope;
+  const next=lc?{...RULE_DEFAULT,...cur,languages:{...(cur.languages||{}),[lc]:f}}:{...cur,...f,languages:cur.languages||{}};
+  await writeRules(next,lc?`Saved custom rules for ${lc}`:'Saved the global rules');
+}
+async function customiseRules(lc){
+  const cur=S.rules&&typeof S.rules==='object'?S.rules:{};
+  await writeRules({...RULE_DEFAULT,...cur,languages:{...(cur.languages||{}),[lc]:resolveRulesAdmin(S.rules,null)}},`${lc} now has its own rules (a copy of the global ones)`);
+}
+async function resetRules(lc){
+  if(!confirm(`Use the global rules for ${lc} again?`))return;
+  const cur=S.rules&&typeof S.rules==='object'?S.rules:{};const langs={...(cur.languages||{})};delete langs[lc];
+  await writeRules({...RULE_DEFAULT,...cur,languages:langs},`${lc} follows the global rules again`);
+}
+
 async function setLearnerLevel(email,lc,unlocked){
   const r=S.levels.find(x=>x.email===email&&x.language_code===lc);
   const level=Math.min(r?.level||1,unlocked);
