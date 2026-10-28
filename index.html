@@ -99,6 +99,7 @@
       progressResets: 'kg_chart_progress_resets',
       topicCompletions: 'kg_chart_topic_completions',
       sentences: 'kg_chart_sentences',
+      colourPhrases: 'kg_chart_colour_phrases',
       userLevels: 'kg_chart_user_levels',
     };
 
@@ -3011,7 +3012,7 @@
     function QuizModeToggle({ mode, onChange }) {
       return (
         <div className="flex bg-gray-100 rounded-2xl p-1 mb-6">
-          {[['words', '🔤', 'Words'], ['sentences', '💬', 'Sentences'], ['typing', '⌨️', 'Typing'], ['speak', '🗣️', 'Speak']].map(([id, icon, label]) => (
+          {[['words', '🔤', 'Words'], ['sentences', '💬', 'Sentences'], ['typing', '⌨️', 'Typing'], ['speak', '🗣️', 'Speak'], ['colours', '🎨', 'Colours']].map(([id, icon, label]) => (
             <button key={id} onClick={() => onChange(id)}
               className={`flex-1 py-2 px-1 rounded-xl font-medium transition-all ${mode === id ? 'bg-white shadow text-jade-700' : 'text-gray-500 hover:text-gray-700'}`}>
               <span className="block sm:inline">{icon}</span> <span className="text-xs sm:text-base">{label}</span>
@@ -3022,9 +3023,10 @@
     }
 
     function QuizView(props) {
-      const [mode, setMode] = useState(() => { const m = loadFromStorage(QUIZ_MODE_KEY, 'words'); return ['sentences', 'typing', 'speak'].includes(m) ? m : 'words'; });
+      const [mode, setMode] = useState(() => { const m = loadFromStorage(QUIZ_MODE_KEY, 'words'); return ['sentences', 'typing', 'speak', 'colours'].includes(m) ? m : 'words'; });
       useEffect(() => { saveToStorage(QUIZ_MODE_KEY, mode); }, [mode]);
       const toggle = <QuizModeToggle mode={mode} onChange={setMode} />;
+      if (mode === 'colours') return <ColourQuizView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
       if (mode === 'speak') return <SpeakView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
       if (mode === 'typing') return <TypingView vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
       return mode === 'sentences'
@@ -3863,6 +3865,268 @@
               </button>
             )}
           </div>
+        </div>
+      );
+    }
+
+    // ==========================================
+    // COLOUR + NOUN QUIZ (kg_chart_colour_phrases, kg-chart-colour-phrases.sql)
+    // ==========================================
+    // "red car": the phrase as said in each language is stored per language (word order and adjective forms differ).
+    // Pictures are the noun's emoji recoloured on the device, so "blue car" and "red car" differ only in colour.
+    // Saved as colour_phrase sessions; never part of word strength or unlocking.
+    const COLOUR_HEX = { Red: '#e53935', Blue: '#1e88e5', Green: '#43a047', Yellow: '#fdd835', Orange: '#fb8c00', Purple: '#8e24aa', Pink: '#f06292', Brown: '#795548', Black: '#262626', White: '#ececec' };
+    // White things would vanish on the light tiles: give them a thin grey outline
+    const COLOUR_OUTLINE = { White: 'drop-shadow(0 0 1px #64748b) drop-shadow(0 0 1px #64748b)' };
+    const COLOUR_QUIZ_TYPES = [
+      { id: 'phrase_to_picture', label: 'Phrase → Picture', icon: '🎨', help: 'Read and hear the phrase, pick the picture.' },
+      { id: 'listen_to_picture', label: 'Listen → Picture', icon: '🔊', help: 'Only hear it, pick the picture.' },
+      { id: 'picture_to_phrase', label: 'Picture → Phrase', icon: '🖼️', help: 'See the picture, pick the phrase.' },
+    ];
+    const COLOUR_SETTINGS_KEY = 'kg_chart_colour_quiz';
+
+    // The emoji redrawn in one colour, keeping its shading: its middle tone becomes the colour itself,
+    // darker parts go toward black, lighter parts toward white (but never all the way, so the colour stays visible).
+    const tintCache = {};
+    function tintedEmojiUrl(emoji, hex) {
+      const key = emoji + '|' + hex;
+      if (key in tintCache) return tintCache[key];
+      let url = null;
+      try {
+        const size = 160, c = document.createElement('canvas');
+        c.width = c.height = size;
+        const g = c.getContext('2d');
+        g.font = '128px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
+        g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(emoji, size / 2, size / 2 + 8);
+        const img = g.getImageData(0, 0, size, size), d = img.data;
+        const lums = [];
+        for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 40) lums.push((0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255);
+        lums.sort((a, b) => a - b);
+        const mid = Math.min(Math.max(lums[Math.floor(lums.length / 2)] || 0.5, 0.15), 0.85);
+        const [R, G, B] = [1, 3, 5].map(k => parseInt(hex.slice(k, k + 2), 16));
+        for (let i = 0; i < d.length; i += 4) {
+          if (!d[i + 3]) continue;
+          const l = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+          const t = l < mid ? 0.5 * l / mid : 0.5 + 0.5 * (l - mid) / (1 - mid);
+          const f = (C) => (t < 0.5 ? C * (0.35 + 1.3 * t) : C + (255 - C) * (t - 0.5) * 1.1);
+          d[i] = f(R); d[i + 1] = f(G); d[i + 2] = f(B);
+        }
+        g.putImageData(img, 0, 0);
+        url = c.toDataURL('image/png');
+      } catch (e) { url = null; }
+      return (tintCache[key] = url);
+    }
+
+    function ColourPicture({ item, size = 'w-24 h-24' }) {
+      const url = tintedEmojiUrl(item.picture, item.hex);
+      return url
+        ? <img src={url} alt="" className={`${size} object-contain mx-auto`} style={COLOUR_OUTLINE[item.colour] ? { filter: COLOUR_OUTLINE[item.colour] } : undefined} draggable={false} />
+        : <div className={`${size} mx-auto rounded-2xl flex items-center justify-center text-5xl border-8`} style={{ borderColor: item.hex }}>{item.picture}</div>;
+    }
+
+    function ColourQuizView({ languageCode, user, modeToggle }) {
+      const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
+      useAudioState();
+      const saved0 = loadFromStorage(COLOUR_SETTINGS_KEY, {});
+      const [phrases, setPhrases] = useState(null); // null = loading
+      const [loadError, setLoadError] = useState(null);
+      const [qType, setQType] = useState(() => (COLOUR_QUIZ_TYPES.some(t => t.id === saved0.type) ? saved0.type : 'phrase_to_picture'));
+      const [count, setCount] = useState(() => ([5, 10, 15, 20, 0].includes(saved0.count) ? saved0.count : 10));
+      const [items, setItems] = useState([]);
+      const [idx, setIdx] = useState(0);
+      const [picked, setPicked] = useState(null);
+      const [score, setScore] = useState({ correct: 0, total: 0 });
+      const [phase, setPhase] = useState('setup'); // setup | run | done
+      const startedAt = React.useRef(0);
+
+      useEffect(() => { saveToStorage(COLOUR_SETTINGS_KEY, { type: qType, count }); }, [qType, count]);
+      useEffect(() => {
+        let cancelled = false;
+        setPhrases(null); setLoadError(null); setPhase('setup');
+        supabase.from(TABLES.colourPhrases)
+          .select('id, native_text, picture, colour:kg_chart_vocabulary!kg_chart_colour_phrases_colour_id_fkey(english_text), noun:kg_chart_vocabulary!kg_chart_colour_phrases_noun_id_fkey(english_text)')
+          .eq('language_code', languageCode)
+          .then(({ data, error }) => {
+            if (cancelled) return;
+            if (error) { setLoadError(error); setPhrases([]); return; }
+            setPhrases((data || []).filter(p => p.native_text?.trim() && p.picture && p.colour && p.noun).map(p => ({
+              id: p.id, native: p.native_text.trim(), picture: p.picture, colour: p.colour.english_text, noun: p.noun.english_text,
+              hex: COLOUR_HEX[p.colour.english_text] || '#9e9e9e', meaning: `${p.colour.english_text} ${p.noun.english_text}`.toLowerCase(),
+            })));
+          });
+        return () => { cancelled = true; };
+      }, [languageCode]);
+
+      const all = phrases || [];
+      // Blue hint line; none for Chinese (its converter reads pinyin, which phrases don't have)
+      const hint = (text) => { if (getConverter(languageCode)?.usePronunciation) return ''; const h = convertToHint(text, languageCode); return h && h !== text ? h : ''; };
+      const preview = useMemo(() => shuffleArr(phrases || []).slice(0, 4), [phrases]);
+      const isListen = qType === 'listen_to_picture', toText = qType === 'picture_to_phrase';
+      // Wrong choices: the same thing in another colour, the same colour on another thing, then anything
+      const optionsFor = (p) => {
+        const pick = (list, taken) => shuffleArr(list.filter(x => !taken.some(t => t.id === x.id)))[0];
+        const out = [p];
+        const add = (x) => { if (x && out.length < 4) out.push(x); };
+        add(pick(all.filter(x => x.noun === p.noun && x.colour !== p.colour), out));
+        add(pick(all.filter(x => x.colour === p.colour && x.noun !== p.noun), out));
+        while (out.length < Math.min(4, all.length)) add(pick(all, out));
+        return shuffleArr(out);
+      };
+      const start = () => {
+        const chosen = shuffleArr(all).slice(0, count || all.length);
+        setItems(chosen.map(p => ({ p, options: optionsFor(p) })));
+        setIdx(0); setPicked(null); setScore({ correct: 0, total: 0 });
+        startedAt.current = Date.now();
+        setPhase('run');
+      };
+      const item = items[idx];
+      useEffect(() => { if (phase === 'run' && item && isListen && !picked) window.KGAudio.play(item.p.native, languageCode, { silent: true }); }, [phase, idx]);
+      const choose = (o) => {
+        if (picked || !item) return;
+        setPicked(o);
+        setScore(s => ({ correct: s.correct + (o.id === item.p.id ? 1 : 0), total: s.total + 1 }));
+        window.KGAudio.autoPlay(item.p.native, languageCode);
+      };
+      const next = async () => {
+        if (idx + 1 < items.length) { setIdx(i => i + 1); setPicked(null); return; }
+        setPhase('done');
+        window.KGAudio.stop();
+        if (user) await supabase.from(TABLES.quizSessions).insert({
+          user_id: user.id, language_code: languageCode, topic_id: null, quiz_type: 'colour_phrase',
+          total_questions: score.total, correct_answers: score.correct,
+          time_spent_seconds: Math.round((Date.now() - startedAt.current) / 1000), completed_at: new Date().toISOString(),
+        });
+      };
+      useEffect(() => {
+        if (phase !== 'run') return;
+        const onKey = (e) => {
+          if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) || kgModalOpen()) return;
+          if (picked) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); next(); } return; }
+          const n = parseInt(e.key);
+          if (n >= 1 && n <= (item?.options.length || 0)) choose(item.options[n - 1]);
+          if ((e.key === 'r' || e.key === 'R') && item) window.KGAudio.play(item.p.native, languageCode, { silent: true });
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+      }, [phase, idx, picked, items]);
+
+      const PhraseText = ({ p, size = 'text-3xl' }) => (
+        <>
+          <div className={`${size} font-bold text-gray-800 ${fontClass}`}>{p.native}</div>
+          {hint(p.native) && <div className="text-base text-blue-600 font-devanagari mt-1">{hint(p.native)}</div>}
+        </>
+      );
+
+      // ---------- setup ----------
+      if (phase === 'setup') {
+        return (
+          <div className="max-w-2xl mx-auto p-6">
+            <div className="bg-white rounded-3xl shadow-xl p-8">
+              <div className="text-center mb-8">
+                <div className="w-20 h-20 bg-jade-100 rounded-full flex items-center justify-center mx-auto mb-4"><span className="text-4xl">🎨</span></div>
+                <h2 className="text-3xl font-bold text-gray-800">Quiz Mode</h2>
+              </div>
+              {modeToggle}
+              {phrases === null ? <LoadingSpinner /> : loadError ? (
+                <div className="bg-yellow-50 text-yellow-800 rounded-2xl p-4 text-sm">Colour phrases aren't set up yet. Run <span className="font-mono">kg-chart-colour-phrases.sql</span> in the Supabase SQL editor, then reload.</div>
+              ) : all.length < 4 ? (
+                <div className="text-center text-gray-500 py-6"><div className="text-4xl mb-2">🎨</div>No colour phrases for {languageName(languageCode)} yet. Add them in admin → 🎨 Colour Phrases.</div>
+              ) : (
+                <div className="space-y-6">
+                  <div className="flex justify-center gap-2 flex-wrap">
+                    {preview.map(p => <div key={p.id} className="w-16 h-16 bg-slate-100 rounded-xl p-1"><ColourPicture item={p} size="w-14 h-14" /></div>)}
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Quiz Type</label>
+                    <div className="grid grid-cols-3 gap-3">
+                      {COLOUR_QUIZ_TYPES.map(t => (
+                        <button key={t.id} onClick={() => setQType(t.id)} className={`p-3 rounded-xl border-2 transition-all ${qType === t.id ? 'border-jade-500 bg-jade-50' : 'border-gray-200'}`}>
+                          <div className="text-2xl mb-1">{t.icon}</div><div className="text-xs sm:text-sm font-medium">{t.label}</div>
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-400 mt-2">{COLOUR_QUIZ_TYPES.find(t => t.id === qType).help}</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">How many <span className="text-gray-400 font-normal ml-2">({all.length} phrases)</span></label>
+                    <div className="grid grid-cols-5 gap-2">
+                      {[5, 10, 15, 20, 0].map(c => (
+                        <button key={c} onClick={() => setCount(c)} className={`py-3 rounded-xl border-2 font-medium ${count === c ? 'border-jade-500 bg-jade-50 text-jade-700' : 'border-gray-200'}`}>{c || 'All'}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <button onClick={start} className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700">Start Quiz ({Math.min(count || all.length, all.length)} phrases)</button>
+                  <p className="text-xs text-gray-400 text-center">The wrong choices differ by colour or by thing. Doesn't count toward unlocking topics.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      // ---------- results ----------
+      if (phase === 'done') {
+        const pct = score.total ? Math.round((score.correct / score.total) * 100) : 0;
+        return (
+          <div className="max-w-2xl mx-auto p-6">
+            <div className="bg-white rounded-3xl shadow-xl p-8 text-center">
+              <div className="text-6xl mb-3">{pct >= 80 ? '🎉' : pct >= 50 ? '👏' : '💪'}</div>
+              <h2 className="text-2xl font-bold text-gray-800 mb-1">{score.correct} / {score.total}</h2>
+              <p className="text-gray-500 mb-6">{pct}% correct</p>
+              <div className="flex gap-3 justify-center">
+                <button onClick={() => setPhase('setup')} className="px-6 py-3 border-2 border-gray-200 rounded-full font-medium">Back to Setup</button>
+                <button onClick={start} className="px-6 py-3 bg-jade-600 text-white rounded-full font-bold hover:bg-jade-700">↺ Again</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // ---------- question ----------
+      const p = item.p, right = picked && picked.id === p.id;
+      return (
+        <div className="max-w-3xl mx-auto p-6">
+          <div className="flex items-center justify-between mb-4">
+            <button onClick={() => { window.KGAudio.stop(); setPhase('setup'); }} className="text-gray-500 hover:text-gray-700 font-medium">← Back</button>
+            <div className="text-sm text-gray-500">{idx + 1} / {items.length} · ✓ {score.correct}</div>
+          </div>
+          <div className="bg-white rounded-3xl shadow-xl p-6 sm:p-8 mb-6 text-center">
+            {toText ? (
+              <div className="w-40 h-40 mx-auto bg-slate-100 rounded-3xl p-3"><ColourPicture item={p} size="w-32 h-32" /></div>
+            ) : isListen && !picked ? (
+              <button onClick={() => window.KGAudio.play(p.native, languageCode, { silent: true })} className="w-24 h-24 rounded-full bg-jade-600 text-white text-4xl shadow-lg hover:bg-jade-700" title="Play again (R)">🔊</button>
+            ) : (
+              <>
+                <PhraseText p={p} />
+                <div className="mt-3 flex justify-center gap-2"><SpeakButton text={p.native} lang={languageCode} /><SpeakButton text={p.native} lang={languageCode} slow /></div>
+              </>
+            )}
+            <p className="text-sm text-gray-500 mt-4">{toText ? 'Which phrase is this?' : 'Which picture is it?'}</p>
+          </div>
+          <div className={`grid gap-3 ${toText ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 sm:grid-cols-4'}`}>
+            {item.options.map((o, i) => {
+              const state = !picked ? 'border-gray-200 hover:border-jade-400' : o.id === p.id ? 'border-green-500 bg-green-50' : o.id === picked.id ? 'border-red-400 bg-red-50' : 'border-gray-100 opacity-60';
+              return (
+                <button key={o.id} onClick={() => choose(o)} disabled={!!picked} className={`relative rounded-2xl border-2 p-3 transition-all bg-white ${state}`}>
+                  <span className="absolute top-1 left-2 text-xs text-gray-300">{i + 1}</span>
+                  {toText ? <div className="py-2"><PhraseText p={o} size="text-xl" /></div> : <div className="bg-slate-100 rounded-xl p-2"><ColourPicture item={o} /></div>}
+                  {picked && !toText && <div className="text-xs text-gray-500 mt-2">{o.meaning}</div>}
+                </button>
+              );
+            })}
+          </div>
+          {picked && (
+            <div className="text-center mt-6 animate-slide-up">
+              <div className={`text-2xl font-bold mb-2 ${right ? 'text-green-600' : 'text-red-600'}`}>{right ? '✅ Correct!' : `❌ It was "${p.meaning}"`}</div>
+              <div className="inline-block bg-white rounded-2xl shadow p-4 mb-4">
+                <PhraseText p={p} size="text-2xl" />
+                <div className="text-gray-500 text-sm mt-1">{p.meaning}</div>
+                <div className="mt-2"><SpeakButton text={p.native} lang={languageCode} size="sm" /></div>
+              </div>
+              <div><button onClick={next} className="px-8 py-3 bg-blue-600 text-white rounded-full font-bold hover:bg-blue-700">{idx + 1 >= items.length ? 'See Results' : 'Next →'} <span className="text-blue-300 text-sm hidden sm:inline ml-1">↵</span></button></div>
+            </div>
+          )}
         </div>
       );
     }
