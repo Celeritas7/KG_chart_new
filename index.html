@@ -375,6 +375,8 @@
     // Languages already written in Devanagari: the blue hint line shows a plain romanisation instead
     const ROMAN_HINT_LANGS = ['mr'];
     const convertToHint = (text, langCode) => (ROMAN_HINT_LANGS.includes(langCode) ? convertToRoman(text, langCode) : convertToDevanagari(text, langCode));
+    // A sentence's meaning: its meaning_text column (Filipino for Marathi) unless switched to English or not filled in yet
+    const sentenceMeaning = (s, meaningName) => (meaningName && meaningName !== 'English' && s.meaning_text?.trim()) || s.english_text;
     // Quiz tile wording per language: "Filipino → Native", "Pronunciation → Image"
     function quizTypeLabel(type, languageCode, meaningName) {
       if (type.id === 'english_to_native' && meaningName && meaningName !== 'English') return { ...type, label: `${meaningName} → Native` };
@@ -1160,7 +1162,7 @@
     function FlagModal({ item, sentence, languageCode, onClose, defaultReason = 'pronunciation' }) {
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       const native = sentence ? sentence.native_text : item?.translation?.native_text;
-      const shownDev = (sentence ? sentenceDevanagari(sentence.native_text, languageCode) : item?.translation?.devanagari) || '';
+      const shownDev = (sentence ? sentenceHint(sentence.native_text, languageCode) : item?.translation?.devanagari) || '';
       const reasons = FLAG_REASONS.filter(r => !(sentence && r.id === 'missing_image'));
       const [selectedReason, setSelectedReason] = useState(reasons.some(r => r.id === defaultReason) ? defaultReason : '');
       const [suggestion, setSuggestion] = useState('');
@@ -1208,7 +1210,7 @@
                   <div className="text-xs font-semibold text-red-500 uppercase tracking-wide mb-2">🚩 Flag for review</div>
                   <div className={`text-2xl font-bold text-gray-800 ${fontClass}`}>{native}</div>
                   {shownDev && <div className="text-xl text-blue-600 font-devanagari mt-1">{shownDev}</div>}
-                  <div className="text-sm text-gray-500 mt-1">{sentence ? sentence.english_text : (item?.display_text || item?.english_text)}</div>
+                  <div className="text-sm text-gray-500 mt-1">{sentence ? (sentence.display_text || sentence.english_text) : (item?.display_text || item?.english_text)}</div>
                 </div>
                 <div className="space-y-2 mb-4">
                   {reasons.map(r => (
@@ -3014,10 +3016,11 @@
 
     const joinSentence = (pieces, langCode) => pieces.join(NO_SPACE_LANGS.includes(langCode) ? '' : ' ');
 
-    function sentenceDevanagari(text, langCode) {
+    // The blue line under a sentence: Devanagari, or a plain romanisation for Devanagari-script languages (Marathi)
+    function sentenceHint(text, langCode) {
       const conv = getConverter(langCode);
       if (!conv || conv.usePronunciation || !text) return '';
-      try { const d = conv.toDevanagari(text); return d && d !== text ? d : ''; } catch (e) { return ''; }
+      try { const d = ROMAN_HINT_LANGS.includes(langCode) ? conv.toRoman(text) : conv.toDevanagari(text); return d && d !== text ? d : ''; } catch (e) { return ''; }
     }
 
     function QuizModeToggle({ mode, onChange }) {
@@ -3038,14 +3041,14 @@
       useEffect(() => { saveToStorage(QUIZ_MODE_KEY, mode); }, [mode]);
       const toggle = <QuizModeToggle mode={mode} onChange={setMode} />;
       if (mode === 'colours') return <ColourQuizView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
-      if (mode === 'speak') return <SpeakView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
+      if (mode === 'speak') return <SpeakView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
       if (mode === 'typing') return <TypingView vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
       return mode === 'sentences'
-        ? <SentenceQuizView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />
+        ? <SentenceQuizView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />
         : <WordQuizView {...props} modeToggle={toggle} />;
     }
 
-    function SentenceQuizView({ languageCode, user, modeToggle }) {
+    function SentenceQuizView({ languageCode, user, meaningName, modeToggle }) {
       const [flagSentence, setFlagSentence] = useState(null);
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       useAudioState();
@@ -3094,7 +3097,7 @@
       }, [user, languageCode, sessionSaved]);
 
       const priv = React.useContext(PrivateLessonsContext);
-      const all = useMemo(() => (sentences || []).filter(x => !priv.groups.has(x.group_name)), [sentences, priv]);
+      const all = useMemo(() => (sentences || []).filter(x => !priv.groups.has(x.group_name)).map(x => ({ ...x, display_text: sentenceMeaning(x, meaningName) })), [sentences, priv, meaningName]);
       const groups = useMemo(() => [...new Set(all.map(x => x.group_name).filter(Boolean))], [all]);
       const filtered = useMemo(() => (group === 'all' ? all : all.filter(x => x.group_name === group)), [all, group]);
       const isBuild = sType === 'build_sentence';
@@ -3140,7 +3143,7 @@
             return { s, pieces, tiles: order };
           }
           // Wrong options: same group first (same pattern, harder to guess), never two that read the same
-          const key = sType === 'sentence_to_meaning' ? 'english_text' : 'native_text';
+          const key = sType === 'sentence_to_meaning' ? 'display_text' : 'native_text';
           const norm = x => (x[key] || '').trim().toLowerCase();
           const same = shuffleArr(all.filter(x => x.id !== s.id && s.group_name && x.group_name === s.group_name));
           const other = shuffleArr(all.filter(x => x.id !== s.id && !same.includes(x)));
@@ -3180,7 +3183,7 @@
         setSelected(opt);
         setShowResult(true);
         window.KGAudio.autoPlay(item.s.native_text, languageCode);
-        record(opt.id === item.s.id, opt.id, sType === 'sentence_to_meaning' ? opt.english_text : opt.native_text);
+        record(opt.id === item.s.id, opt.id, sType === 'sentence_to_meaning' ? opt.display_text : opt.native_text);
       };
 
       const placeTile = (id) => { if (!showResult) setPlaced(p => (p.includes(id) ? p : [...p, id])); };
@@ -3238,7 +3241,7 @@
         : null);
 
       const NativeLine = ({ text, size }) => {
-        const dev = sentenceDevanagari(text, languageCode);
+        const dev = sentenceHint(text, languageCode);
         return (
           <>
             <div className={`${size} font-bold text-gray-800 ${fontClass}`}>{text}</div>
@@ -3251,8 +3254,8 @@
       if (!started) {
         const typeHelp = {
           sentence_to_meaning: 'Read the sentence, pick what it means.',
-          meaning_to_sentence: 'Read the English, pick the right sentence.',
-          build_sentence: 'Read the English, tap the words into the right order.',
+          meaning_to_sentence: `Read the ${meaningName || 'English'}, pick the right sentence.`,
+          build_sentence: `Read the ${meaningName || 'English'}, tap the words into the right order.`,
         }[sType];
         return (
           <div className="max-w-2xl mx-auto p-6">
@@ -3404,7 +3407,7 @@
             ) : (
               <>
                 <div className="text-sm text-gray-400 mb-4">{isBuild ? 'Build this sentence:' : 'Which sentence says this?'}</div>
-                <div className="text-2xl font-bold text-gray-800">{s.english_text}</div>
+                <div className="text-2xl font-bold text-gray-800">{s.display_text}</div>
               </>
             )}
           </div>
@@ -3422,7 +3425,7 @@
                     className={`p-4 rounded-xl border-2 transition-all relative text-left ${cls}`}>
                     <span className="absolute top-1.5 right-2 text-xs text-gray-300 font-mono hidden sm:inline">{i + 1}</span>
                     {sType === 'sentence_to_meaning'
-                      ? <div className="text-base font-medium text-gray-800 pr-4">{opt.english_text}</div>
+                      ? <div className="text-base font-medium text-gray-800 pr-4">{opt.display_text}</div>
                       : <div className="pr-4"><NativeLine text={opt.native_text} size="text-lg" /></div>}
                   </button>
                 );
@@ -3466,7 +3469,7 @@
                   <div><NativeLine text={s.native_text} size="text-2xl" /></div>
                   <SpeakBtn text={s.native_text} small />
                 </div>
-                <div className="text-gray-600 mt-2">{s.english_text}</div>
+                <div className="text-gray-600 mt-2">{s.display_text}</div>
                 {s.notes && <div className="text-xs text-gray-400 mt-2">📝 {s.notes}</div>}
                 <div className="mt-2"><FlagButton compact onClick={() => setFlagSentence(s)} /></div>
               </div>
@@ -3547,7 +3550,7 @@
       );
     }
 
-    function SpeakView({ languageCode, user, modeToggle }) {
+    function SpeakView({ languageCode, user, meaningName, modeToggle }) {
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       const audioVersion = useAudioState();
       const priv = React.useContext(PrivateLessonsContext);
@@ -3592,10 +3595,10 @@
         (sentences || []).forEach(s => {
           if (!s.group_name || priv.groups.has(s.group_name)) return;
           if (!by.has(s.group_name)) by.set(s.group_name, []);
-          by.get(s.group_name).push(s);
+          by.get(s.group_name).push({ ...s, display_text: sentenceMeaning(s, meaningName) });
         });
         return [...by].filter(([, l]) => l.length >= 2).map(([name, lines]) => ({ name, lines }));
-      }, [sentences, priv]);
+      }, [sentences, priv, meaningName]);
       const current = groups.find(g => g.name === group) || groups[0] || null;
       const lines = current ? current.lines : [];
       const chooseGroup = (name) => {
@@ -3670,7 +3673,7 @@
       const peek = (i) => { setPeeked(p => new Set([...p, i])); window.KGAudio.autoPlay(lines[i].native_text, languageCode); };
 
       const LineText = ({ s, size = 'text-xl' }) => {
-        const dev = sentenceDevanagari(s.native_text, languageCode);
+        const dev = sentenceHint(s.native_text, languageCode);
         return (
           <>
             <div className={`${size} font-bold text-gray-800 ${fontClass}`}>{s.native_text}</div>
@@ -3721,7 +3724,7 @@
                       {groups.map(g => <option key={g.name} value={g.name}>{g.name} ({g.lines.length} lines)</option>)}
                     </select>
                     <ol className="mt-3 space-y-1 text-sm text-gray-500 list-decimal list-inside">
-                      {lines.map(s => <li key={s.id}><Speaker s={s} />{s.english_text}</li>)}
+                      {lines.map(s => <li key={s.id}><Speaker s={s} />{s.display_text}</li>)}
                     </ol>
                   </div>
                   <div className="space-y-3">
@@ -3783,7 +3786,7 @@
                     <div className="text-xs text-gray-400 font-bold w-5 pt-1.5 shrink-0">{i + 1}</div>
                     <div className="flex-1 min-w-0">
                       <LineText s={s} />
-                      <div className="text-sm text-gray-500 mt-1"><Speaker s={s} />{s.english_text}</div>
+                      <div className="text-sm text-gray-500 mt-1"><Speaker s={s} />{s.display_text}</div>
                     </div>
                     <div className="flex gap-1 shrink-0 items-center">
                       <SpeakButton text={s.native_text} lang={languageCode} size="sm" />
@@ -3814,7 +3817,7 @@
               </div>
               <div className="text-center">
                 <div className="text-xs text-gray-400 mb-2">Line {lineIdx + 1} of {lines.length}{lineIdx in firstTry ? ' · again' : ''}</div>
-                <div className="text-2xl font-semibold text-gray-800 mb-2"><Speaker s={s} />{s.english_text}</div>
+                <div className="text-2xl font-semibold text-gray-800 mb-2"><Speaker s={s} />{s.display_text}</div>
                 <p className="text-sm text-gray-500 mb-4">Say it out loud{revealed ? '' : ', then check'}.</p>
                 <div className="flex justify-center gap-2 mb-4">
                   <SpeakButton text={s.native_text} lang={languageCode} />
@@ -3857,7 +3860,7 @@
                   <div key={s.id} className={`flex items-start gap-3 p-3 rounded-xl ${peeked.has(i) ? 'bg-yellow-50' : 'bg-gray-50'}`}>
                     <div className="text-xs text-gray-400 font-bold w-5 pt-1 shrink-0">{i + 1}</div>
                     <div className="flex-1 min-w-0">
-                      <div className="text-gray-700"><Speaker s={s} />{s.english_text}</div>
+                      <div className="text-gray-700"><Speaker s={s} />{s.display_text}</div>
                       {open && <div className="mt-1"><LineText s={s} size="text-lg" /></div>}
                     </div>
                     <div className="shrink-0">
@@ -4242,9 +4245,9 @@
 
       const priv = React.useContext(PrivateLessonsContext);
       const pool = useMemo(() => {
-        if (source === 'sentences') return (sentences || []).filter(s => !priv.groups.has(s.group_name)).map(s => ({ kind: 's', id: s.id, text: s.native_text, meaning: s.english_text }));
+        if (source === 'sentences') return (sentences || []).filter(s => !priv.groups.has(s.group_name)).map(s => ({ kind: 's', id: s.id, text: s.native_text, meaning: sentenceMeaning(s, meaningName) }));
         return vocabulary.filter(v => v.translation?.native_text?.trim()).map(v => ({ kind: 'w', id: v.id, text: v.translation.native_text, meaning: v.display_text || v.english_text, hint: v.translation.devanagari, v }));
-      }, [source, sentences, vocabulary, priv]);
+      }, [source, sentences, vocabulary, priv, meaningName]);
 
       const bestKey = `${languageCode}|${mode}|${source}`;
       const [, setBestsSynced] = useState(0);
