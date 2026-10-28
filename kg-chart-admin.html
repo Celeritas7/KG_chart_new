@@ -248,6 +248,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
     <div class="nav-section-label">Quality</div>
     <div class="nav-item" data-page="flags"><span class="icon">🚩</span>Flags<span class="badge warn" id="badge-flags">-</span></div>
     <div class="nav-item" data-page="mistakes"><span class="icon">⌨️</span>Typed Mistakes</div>
+    <div class="nav-item" data-page="colourphrases"><span class="icon">🎨</span>Colour Phrases</div>
     <div class="nav-item" data-page="coverage"><span class="icon">📋</span>Coverage<span class="badge" id="badge-coverage">-</span></div>
     <div class="nav-section-label">Analytics</div>
     <div class="nav-item" data-page="quiz-stats"><span class="icon">🧠</span>Quiz Stats</div>
@@ -390,6 +391,7 @@ function render(){
     case'sentences':t.textContent='Sentences';a.innerHTML=S.sentReady?`<button class="btn" onclick="exportSentences()">⬇ CSV</button><button class="btn btn-accent" onclick="triggerImport('sent')">⬆ Import</button><button class="btn btn-accent" onclick="editSentence()">+ Add Sentence</button>`:'';renderSentences(c);break;
     case'images':t.textContent='Images';a.innerHTML=`<button class="btn" onclick="copyMissingList()">📋 Copy missing list</button><button class="btn" onclick="loadAllImageFiles(true)">↻ Re-check storage</button>`;renderImages(c);break;
     case'chart-preview':t.textContent='Chart Preview';a.innerHTML='';renderChart(c);break;
+    case'colourphrases':t.textContent='Colour Phrases';a.innerHTML=`<button class="btn" onclick="suggestColourPhrases()">✨ Suggest missing</button><button class="btn btn-accent" onclick="saveColourPhrases()">💾 Save</button>`;renderColourPhrases(c);break;
     case'mistakes':t.textContent='Typed Mistakes';a.innerHTML=`<button class="btn" onclick="MIST.data=null;render()">↻ Refresh</button><button class="btn" onclick="exportMistakes()">⬇ CSV</button>`;renderMistakes(c);break;
     case'flags':t.textContent='Flags';a.innerHTML=`<button class="btn" onclick="exportFlags('csv')">⬇ CSV</button><button class="btn" onclick="exportFlags('json')">⬇ JSON</button><button class="btn" onclick="triggerImport('flags')">⬆ Import</button><button class="btn btn-accent" onclick="runConverterScan()">🔍 Scan Conversions</button>`;renderFlags(c);break;
     case'coverage':t.textContent='Coverage';a.innerHTML=`<button class="btn" onclick="exportMissing('csv','selected')">⬇ Selected Lang</button><button class="btn" onclick="exportMissing('csv','all')">⬇ All Languages</button><button class="btn" onclick="copyAIPrompt()">📋 AI Prompt</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderCoverage(c);break;
@@ -913,6 +915,90 @@ async function saveFlagEdit(flagId,vocabId,langCode,alsoResolve){
     toast('Changes saved');
   }
   await loadAll();
+}
+
+// ===== COLOUR PHRASES (kg_chart_colour_phrases, Quiz → 🎨 Colours) =====
+// One phrase per language × colour × noun. Suggestions follow the language's word order and are marked unreviewed;
+// a person checks them (adjective forms and agreement can't be guessed). Pictures: the noun's emoji, recoloured in the app.
+const CP_DEFAULT_NOUNS=[['Car','🚗'],['Bus','🚌'],['Bicycle','🚲'],['Cat','🐈'],['Dog','🐕'],['Fish','🐟']];
+const CP_HEX={Red:'#e53935',Blue:'#1e88e5',Green:'#43a047',Yellow:'#fdd835',Orange:'#fb8c00',Purple:'#8e24aa',Pink:'#f06292',Brown:'#795548',Black:'#262626',White:'#ececec'};
+const CP_JA_I=['赤','青','黒','白','黄色'];
+const CP_PATTERNS={
+  my:{f:(c,n)=>n+c,note:'Noun + colour, no space: ကား + အနီရောင် → ကားအနီရောင်.'},
+  th:{f:(c,n)=>n+c,note:'Noun + colour: รถ + สีแดง → รถสีแดง.'},
+  ms:{f:(c,n)=>`${n} ${c.toLowerCase()}`,note:'Noun + colour: kereta merah.'},
+  zh:{f:(c,n)=>`${c.endsWith('的')?c:c+'的'}${n}`,note:'Colour + 的 + noun: 红色的汽车.'},
+  ko:{f:(c,n)=>`${c} ${n}`,note:'Colour + noun: 빨간색 차.'},
+  ja:{f:(c,n)=>CP_JA_I.includes(c)?`${c}い${n}`:`${c}の${n}`,note:'赤い/青い/黒い/白い/黄色い + noun; other colours + の + noun (緑の車).'},
+  mr:{f:(c,n)=>`${c} ${n}`,note:'Colour + noun, but the colour agrees with the noun (निळा m · निळी f · निळे n): check every suggestion.'},
+  '*':{f:(c,n)=>`${c} ${n}`,note:'Colour + noun. Check adjective forms (e.g. Tamil நீலம் → நீல).'}
+};
+let CP={lang:'my',rows:null,loading:false,error:null,edits:{},extraNouns:[],addOpen:false};
+const cpKey=(nounId,colourId)=>nounId+'|'+colourId;
+async function loadColourPhrases(){
+  CP.loading=true;CP.error=null;
+  const{data,error}=await sb.from('kg_chart_colour_phrases').select('*');
+  CP.loading=false;if(error){CP.error=error.message;CP.rows=[];return;}CP.rows=data||[];
+}
+const cpColours=()=>S.vocabulary.filter(v=>v.topic_id==='colours').sort((a,b)=>(a.sort_order??0)-(b.sort_order??0));
+const cpTrans=(vid,lc)=>S.vocabTrans.find(t=>t.vocabulary_id===vid&&t.language_code===lc)?.native_text||'';
+const cpVocabByName=name=>S.vocabulary.filter(v=>v.english_text===name).sort((a,b)=>(['animals','transportation'].includes(b.topic_id)?1:0)-(['animals','transportation'].includes(a.topic_id)?1:0))[0];
+// Nouns shown for a language: the defaults, any noun already used in any language, and ones added here
+function cpNouns(){
+  const out=[];const seen=new Set();
+  const add=(id,pic)=>{if(!id||seen.has(id))return;seen.add(id);out.push({id,v:S.vocabulary.find(x=>x.id===id),picture:pic});};
+  CP_DEFAULT_NOUNS.forEach(([n,e])=>{const v=cpVocabByName(n);if(v)add(v.id,e);});
+  (CP.rows||[]).forEach(r=>add(r.noun_id,r.picture));
+  CP.extraNouns.forEach(x=>add(x.id,x.picture));
+  return out.filter(n=>n.v).map(n=>({...n,picture:CP.edits['pic|'+n.id]??((CP.rows||[]).find(r=>r.noun_id===n.id&&r.picture)?.picture||n.picture||'')}));
+}
+function cpValue(n,c){const k=cpKey(n.id,c.id);if(k in CP.edits)return CP.edits[k];const r=(CP.rows||[]).find(r=>r.language_code===CP.lang&&r.noun_id===n.id&&r.colour_id===c.id);return r?{text:r.native_text,reviewed:r.reviewed,id:r.id}:{text:'',reviewed:false};}
+function renderColourPhrases(el){
+  if(CP.rows===null){if(!CP.loading)loadColourPhrases().then(()=>{if(S.page==='colourphrases')render();});el.innerHTML='<div class="empty-state"><div class="icon">🎨</div><p>Loading colour phrases…</p></div>';return;}
+  if(CP.error){el.innerHTML=`<div style="padding:12px 16px;border-radius:12px;background:var(--warning-dim);color:var(--warning)">Run <b>kg-chart-colour-phrases.sql</b> in the Supabase SQL editor first. (${escH(CP.error)})</div>`;return;}
+  const langs=S.languages.filter(l=>l.is_active);const colours=cpColours();const nouns=cpNouns();
+  const pat=CP_PATTERNS[CP.lang]||CP_PATTERNS['*'];
+  const total=nouns.length*colours.length;let filled=0,reviewed=0;nouns.forEach(n=>colours.forEach(c=>{const v=cpValue(n,c);if(v.text.trim()){filled++;if(v.reviewed)reviewed++;}}));
+  const dirty=Object.keys(CP.edits).length;
+  const nounOpts=S.vocabulary.filter(v=>v.topic_id!=='colours'&&!nouns.some(n=>n.id===v.id)).sort((a,b)=>a.english_text.localeCompare(b.english_text)).map(v=>`<option value="${v.id}">${escH(v.english_text)} (${escH(v.topic_id||'')})</option>`).join('');
+  el.innerHTML=`<div class="filter-bar"><select onchange="if(Object.keys(CP.edits).length&&!confirm('Discard unsaved changes?'))return render();CP.lang=this.value;CP.edits={};render()">${langs.map(l=>`<option value="${l.code}" ${CP.lang===l.code?'selected':''}>${l.flag_emoji||''} ${escH(l.name_english||l.code)}</option>`).join('')}</select>
+    <span class="filter-count">${filled}/${total} phrases · ${reviewed} reviewed${dirty?` · <b style="color:var(--warning)">${dirty} unsaved</b>`:''}</span></div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">${escH(pat.note)} ✨ Suggest fills empty boxes from the colour and noun translations, marked <span style="background:var(--warning-dim);padding:0 4px;border-radius:4px">unreviewed</span>. Tick ✓ once a phrase is right. Empty a box and save to delete it. The quiz uses every saved phrase.</p>
+    ${nouns.map(n=>`<div style="border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px;background:var(--bg-card)">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap"><input value="${escH(n.picture)}" title="Picture (an emoji)" style="width:52px;font-size:22px;text-align:center" oninput="CP.edits['pic|${n.id}']=this.value"><b>${escH(n.v.english_text)}</b><span style="color:var(--text-muted)">${escH(cpTrans(n.id,CP.lang)||'— no translation')}</span>
+        <span style="flex:1"></span><button class="btn btn-sm" onclick="cpReviewAll('${n.id}')">✓ All reviewed</button><button class="btn btn-sm btn-danger" onclick="cpRemoveNoun('${n.id}')">Remove</button></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px">${colours.map(c=>{const v=cpValue(n,c);return`<label style="display:flex;align-items:center;gap:6px"><span title="${escH(c.english_text)}" style="width:18px;height:18px;border-radius:50%;flex-shrink:0;border:1px solid var(--border);background:${CP_HEX[c.english_text]||'#999'}"></span>
+        <input data-cp="${n.id}|${c.id}" value="${escH(v.text)}" placeholder="${escH(c.english_text.toLowerCase())} ${escH(n.v.english_text.toLowerCase())}" style="flex:1;min-width:0;font-size:15px;${v.text&&!v.reviewed?'background:var(--warning-dim)':''}" oninput="cpEdit('${n.id}','${c.id}',{text:this.value})">
+        <input type="checkbox" title="Reviewed" ${v.reviewed?'checked':''} onchange="cpEdit('${n.id}','${c.id}',{reviewed:this.checked});render()"></label>`;}).join('')}</div></div>`).join('')}
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><select id="cp-add">${nounOpts}</select><input id="cp-add-pic" placeholder="emoji" style="width:70px;font-size:18px;text-align:center"><button class="btn" onclick="cpAddNoun()">+ Add noun</button></div>`;
+}
+function cpEdit(nid,cid,patch){const k=cpKey(nid,cid);const cur=k in CP.edits?CP.edits[k]:(()=>{const r=(CP.rows||[]).find(r=>r.language_code===CP.lang&&r.noun_id===nid&&r.colour_id===cid);return r?{text:r.native_text,reviewed:r.reviewed,id:r.id}:{text:'',reviewed:false};})();
+  CP.edits[k]={...cur,...patch};}
+function suggestColourPhrases(){
+  const pat=(CP_PATTERNS[CP.lang]||CP_PATTERNS['*']).f;let n0=0,missing=0;
+  cpNouns().forEach(n=>{const nt=cpTrans(n.id,CP.lang);cpColours().forEach(c=>{const v=cpValue(n,c);if(v.text.trim())return;const ct=cpTrans(c.id,CP.lang);if(!nt||!ct){missing++;return;}CP.edits[cpKey(n.id,c.id)]={...v,text:pat(ct.trim(),nt.trim()),reviewed:false};n0++;});});
+  render();toast(n0?`${n0} suggestions added: check them, then 💾 Save`:missing?`Nothing to suggest: ${missing} boxes need the colour or noun translated first`:'Every box already has a phrase');
+}
+function cpReviewAll(nid){cpColours().forEach(c=>{const v=cpValue({id:nid},c);if(v.text.trim())CP.edits[cpKey(nid,c.id)]={...v,reviewed:true};});render();}
+function cpAddNoun(){const id=document.getElementById('cp-add').value;const pic=document.getElementById('cp-add-pic').value.trim();if(!id||!pic){toast('Pick a noun and type an emoji for its picture','error');return;}CP.extraNouns.push({id,picture:pic});render();}
+async function cpRemoveNoun(nid){
+  const v=S.vocabulary.find(x=>x.id===nid);const rows=(CP.rows||[]).filter(r=>r.language_code===CP.lang&&r.noun_id===nid);
+  if(!confirm(`Remove ${v?.english_text||'this noun'} from the ${CP.lang} colour quiz? (${rows.length} saved phrases)`))return;
+  if(rows.length){const{error}=await sb.from('kg_chart_colour_phrases').delete().eq('language_code',CP.lang).eq('noun_id',nid);if(error){toast(error.message,'error');return;}}
+  CP.extraNouns=CP.extraNouns.filter(x=>x.id!==nid);Object.keys(CP.edits).forEach(k=>{if(k.startsWith(nid+'|')||k==='pic|'+nid)delete CP.edits[k];});
+  await loadColourPhrases();render();toast('Removed');
+}
+async function saveColourPhrases(){
+  const nouns=cpNouns();const up=[],del=[];
+  nouns.forEach(n=>cpColours().forEach(c=>{const k=cpKey(n.id,c.id);const picChanged=('pic|'+n.id) in CP.edits;if(!(k in CP.edits)&&!picChanged)return;const v=cpValue(n,c);
+    if(!v.text.trim()){if(v.id)del.push(v.id);return;}
+    if(!(k in CP.edits)&&!v.id)return;
+    up.push({language_code:CP.lang,colour_id:c.id,noun_id:n.id,native_text:v.text.trim(),picture:n.picture,reviewed:!!v.reviewed,updated_at:new Date().toISOString()});}));
+  if(nouns.some(n=>!n.picture.trim())&&up.length){toast('Every noun needs a picture (emoji)','error');return;}
+  if(!up.length&&!del.length){toast('Nothing to save');return;}
+  if(up.length){const{error}=await sb.from('kg_chart_colour_phrases').upsert(up,{onConflict:'language_code,colour_id,noun_id'});if(error){toast(error.message,'error');return;}}
+  if(del.length){const{error}=await sb.from('kg_chart_colour_phrases').delete().in('id',del);if(error){toast(error.message,'error');return;}}
+  CP.edits={};CP.extraNouns=[];await loadColourPhrases();render();toast(`Saved ${up.length} phrase${up.length===1?'':'s'}${del.length?`, deleted ${del.length}`:''}. Run the audio script for new phrases.`);
 }
 
 // ===== TYPED MISTAKES (Type the Word + typing test) =====

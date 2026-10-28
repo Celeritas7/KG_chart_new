@@ -1,7 +1,8 @@
 """KG Chart - Phase 9 step 1: generate native-audio MP3s with Azure Speech and upload them to Supabase Storage.
 
 Adapted from the Burmese app's gen_speak_audio.py. Reads every word (kg_chart_vocabulary_translations.native_text),
-topic question (kg_chart_topic_translations.question_native) and sentence (kg_chart_sentences.native_text) for one language, makes a male + female clip for
+topic question (kg_chart_topic_translations.question_native), sentence (kg_chart_sentences.native_text) and colour phrase
+(kg_chart_colour_phrases.native_text, "red car") for one language, makes a male + female clip for
 each unique text, uploads to  vocabulary-assets/audio/<lang>/<m|f>/<hash>.mp3  and writes  audio/<lang>/clips.json
 (the list the app uses to know which clips exist).
 
@@ -87,7 +88,13 @@ def fetch_texts(lang: str, key: str) -> list[str]:
     except urllib.error.HTTPError as e:
         print(f"   (no sentences table yet: {e.code}, skipping sentences)")
         sentences = []
-    texts = [w["native_text"] for w in words] + [t["question_native"] for t in topics] + [s["native_text"] for s in sentences]
+    try:  # colour + noun quiz (kg-chart-colour-phrases.sql); skipped if that table isn't there yet
+        phrases = sb_request("GET", f"/rest/v1/kg_chart_colour_phrases?select=native_text&language_code=eq.{q}&limit=10000", key)
+    except urllib.error.HTTPError as e:
+        print(f"   (no colour phrases table yet: {e.code}, skipping colour phrases)")
+        phrases = []
+    texts = ([w["native_text"] for w in words] + [t["question_native"] for t in topics] + [s["native_text"] for s in sentences]
+             + [p["native_text"] for p in phrases])
     seen, out = set(), []
     for t in texts:
         n = norm(t)
