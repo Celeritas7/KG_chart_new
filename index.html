@@ -1154,7 +1154,7 @@
     // Page keyboard shortcuts (quiz 1–6 / Enter, flashcards ← → R) stay quiet while a flag form is open
     const kgModalOpen = () => !!document.querySelector('[data-kg-modal]');
     // Before kg-chart-flags-devanagari.sql the flag table has no shown_devanagari / suggestion / sentence_id
-    const isMissingColumn = (error) => /shown_devanagari|suggestion|sentence_id|column|schema cache/i.test(error?.message || '');
+    const isMissingColumn = (error) => !!error && (error.code === 'PGRST204' || error.code === '42703' || /Could not find the '[^']*' column|schema cache/i.test(error.message || ''));
 
     // Flag one word (item) or one sentence: what's on screen is saved with it, so it can be reviewed later
     function FlagModal({ item, sentence, languageCode, onClose, defaultReason = 'pronunciation' }) {
@@ -1531,6 +1531,8 @@
         if (pos.rep === 0) document.getElementById(`chart-card-${item.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         started.current = false;
         const text = item.translation?.native_text;
+        // KGAudio.play() toggles a clip OFF when that same clip is already playing (e.g. the card's own 🔊 was tapped): stop first so it always restarts
+        window.KGAudio.stop();
         const ok = !!text && window.KGAudio.play(text, languageCode, { slow: settingsRef.current.slow, silent: true });
         if (!ok) advance(AUTOPLAY_NO_CLIP_MS);
       }, [playing, pos.n]);
@@ -1550,7 +1552,13 @@
       // Keep the screen on while playing (where the browser allows it)
       useEffect(() => {
         if (!playing) { wake.current?.release?.().catch(() => {}); wake.current = null; return; }
-        navigator.wakeLock?.request?.('screen').then(l => { wake.current = l; }).catch(() => {});
+        let cancelled = false;
+        navigator.wakeLock?.request?.('screen').then(l => {
+          if (cancelled) { l.release?.().catch(() => {}); return; } // paused before the lock arrived
+          wake.current?.release?.().catch(() => {});
+          wake.current = l;
+        }).catch(() => {});
+        return () => { cancelled = true; };
       }, [playing]);
 
       // New topic or leaving the chart: stop
@@ -1631,7 +1639,7 @@
                   className="w-5 h-5 rounded border-gray-300 text-jade-600" />
                 <span className="text-sm text-gray-700 font-medium">Show {meaningName || 'English'}</span>
               </label>
-              <button onClick={() => flagMode ? exitFlagMode() : setFlagMode(true)}
+              <button onClick={() => { if (flagMode) exitFlagMode(); else { ap.close(); setFlagMode(true); } }}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
                   flagMode ? 'bg-red-500 text-white shadow-md' : 'bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-500'
                 }`}>
@@ -1783,7 +1791,7 @@
 
       const loadSessions = useCallback(async () => {
         if (!user) return [];
-        const { data } = await supabase.from(TABLES.quizSessions).select('*').eq('user_id', user.id).eq('language_code', languageCode)
+        const { data } = await supabase.from(TABLES.quizSessions).select('difficulty, quiz_type, total_questions, correct_answers, created_at').eq('user_id', user.id).eq('language_code', languageCode)
           .in('quiz_type', MCQ_QUIZ_TYPES).order('created_at', { ascending: false }).limit(300);
         setSessions(data || []);
         return data || [];
@@ -2341,7 +2349,9 @@
 
       const lv = useLevels(user, languageCode);
       const isMcq = MCQ_QUIZ_TYPES.includes(quizType);
-      const L = levelOf(isMcq ? lv.level : 1);
+      const [quizLevelN, setQuizLevelN] = useState(1);
+      // Frozen when the quiz starts, so a level that loads late (or is changed in admin) can't alter a quiz in progress
+      const L = levelOf(quizStarted ? quizLevelN : (isMcq ? lv.level : 1));
       const [timeLeft, setTimeLeft] = useState(null);
       const [levelUp, setLevelUp] = useState(null);
       const showHint = L.hint || showResult;
@@ -2453,11 +2463,12 @@
         setScore({ correct: 0, total: 0 });
         setQuizAnswers([]);
         setLevelUp(null);
+        setQuizLevelN(L.n);
         savingRef.current = false;
         setSessionSaved(false);
         setQuizCompleted(false);
         setQuizStarted(true);
-      }, [playableVocab, filteredVocab, pool, dailyTarget, isListen, languageCode, isMcq, L.choices]);
+      }, [playableVocab, filteredVocab, pool, dailyTarget, isListen, languageCode, isMcq, L.n, L.choices]);
 
       const generateQuestion = useCallback(() => {
         if (pool.length < 4 || quizWords.length < 1 || currentWordIndex >= quizWords.length) {
@@ -2702,9 +2713,9 @@
                   </div>
                 )}
 
-                <button onClick={startQuiz} disabled={playableVocab.length < 1 || pool.length < 4}
+                <button onClick={startQuiz} disabled={playableVocab.length < 1 || pool.length < 4 || (isMcq && !lv.loaded)}
                   className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">
-                  {pool.length < 4 ? 'Need 4+ words total' : playableVocab.length < 1 ? 'No words in topic' : `Start Quiz (${dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length)} words)`}
+                  {isMcq && !lv.loaded ? 'Loading your level…' : pool.length < 4 ? 'Need 4+ words total' : playableVocab.length < 1 ? 'No words in topic' : `Start Quiz (${dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length)} words)`}
                 </button>
               </div>
             </div>
@@ -3552,6 +3563,7 @@
       const [turn, setTurn] = useState(0); // lines: new recorder for every attempt
       const [flagLine, setFlagLine] = useState(null);
       const flagModal = flagLine && <FlagModal sentence={flagLine} languageCode={languageCode} onClose={() => setFlagLine(null)} />;
+      const savedStep = React.useRef(null); // which step's result has been saved this attempt (a double tap must not save twice)
       const [peeked, setPeeked] = useState(() => new Set()); // whole: lines looked at
       const [showAll, setShowAll] = useState(false);
       const startedAt = React.useRef(0);
@@ -3614,6 +3626,7 @@
       const startStep = (id) => {
         stopAll();
         setResult(null);
+        savedStep.current = null;
         setStep(id);
         startedAt.current = Date.now();
         if (id === 'listen' && !window.KGAudio.prefs.muted) setPlaying(0);
@@ -3622,6 +3635,8 @@
       };
 
       const finish = async (id, rows) => {
+        if (savedStep.current === id) return;
+        savedStep.current = id;
         const total = rows.length, correct = rows.filter(r => r.ok).length;
         setResult({ id, total, correct });
         if (!user || !SPEAK_SESSION_TYPES[id]) return;
@@ -3939,21 +3954,26 @@
       const [score, setScore] = useState({ correct: 0, total: 0 });
       const [phase, setPhase] = useState('setup'); // setup | run | done
       const startedAt = React.useRef(0);
+      const savedRun = React.useRef(false);
 
       useEffect(() => { saveToStorage(COLOUR_SETTINGS_KEY, { type: qType, count }); }, [qType, count]);
       useEffect(() => {
         let cancelled = false;
         setPhrases(null); setLoadError(null); setPhase('setup');
         supabase.from(TABLES.colourPhrases)
-          .select('id, native_text, picture, colour:kg_chart_vocabulary!kg_chart_colour_phrases_colour_id_fkey(english_text), noun:kg_chart_vocabulary!kg_chart_colour_phrases_noun_id_fkey(english_text)')
+          .select('id, native_text, picture, colour:kg_chart_vocabulary!kg_chart_colour_phrases_colour_id_fkey(english_text, extra_data), noun:kg_chart_vocabulary!kg_chart_colour_phrases_noun_id_fkey(english_text)')
           .eq('language_code', languageCode)
           .then(({ data, error }) => {
             if (cancelled) return;
             if (error) { setLoadError(error); setPhrases([]); return; }
-            setPhrases((data || []).filter(p => p.native_text?.trim() && p.picture && p.colour && p.noun).map(p => ({
+            const rows = (data || []).filter(p => p.native_text?.trim() && p.picture && p.colour && p.noun).map(p => ({
               id: p.id, native: p.native_text.trim(), picture: p.picture, colour: p.colour.english_text, noun: p.noun.english_text,
-              hex: COLOUR_HEX[p.colour.english_text] || '#9e9e9e', meaning: `${p.colour.english_text} ${p.noun.english_text}`.toLowerCase(),
-            })));
+              hex: COLOUR_HEX[p.colour.english_text] || p.colour.extra_data?.colorCode || null, meaning: `${p.colour.english_text} ${p.noun.english_text}`.toLowerCase(),
+            }));
+            // A colour the app can't paint would come out grey, the same as any other such colour: leave those phrases out
+            const painted = rows.filter(p => p.hex);
+            if (painted.length < rows.length) console.warn('Colour quiz: no colour hex for', [...new Set(rows.filter(p => !p.hex).map(p => p.colour))].join(', '), '(add colorCode to that colour word)');
+            setPhrases(painted);
           });
         return () => { cancelled = true; };
       }, [languageCode]);
@@ -3974,6 +3994,7 @@
         return shuffleArr(out);
       };
       const start = () => {
+        savedRun.current = false;
         const chosen = shuffleArr(all).slice(0, count || all.length);
         setItems(chosen.map(p => ({ p, options: optionsFor(p) })));
         setIdx(0); setPicked(null); setScore({ correct: 0, total: 0 });
@@ -3992,6 +4013,8 @@
         if (idx + 1 < items.length) { setIdx(i => i + 1); setPicked(null); return; }
         setPhase('done');
         window.KGAudio.stop();
+        if (savedRun.current) return; // Enter held / double tap on the last question
+        savedRun.current = true;
         if (user) await supabase.from(TABLES.quizSessions).insert({
           user_id: user.id, language_code: languageCode, topic_id: null, quiz_type: 'colour_phrase',
           total_questions: score.total, correct_answers: score.correct,
