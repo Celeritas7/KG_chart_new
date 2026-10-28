@@ -4141,6 +4141,34 @@
     const TYPING_DURATIONS = [30, 60, 120];
     const TYPING_SETTINGS_KEY = 'kg_chart_typing';
     const TYPING_BEST_KEY = 'kg_chart_typing_best';
+    // Personal bests ({ "lang|mode|source": { cpm, last, at } }) live on the device and on the account
+    // (kg_chart_user_prefs.typing_best, kg-chart-polish.sql), so they follow the learner between phone and computer.
+    // Merging keeps the highest cpm per key and the most recent run's "last".
+    function mergeTypingBests(a, b) {
+      const out = { ...(a || {}) };
+      for (const [k, v] of Object.entries(b || {})) {
+        if (!v || typeof v.cpm !== 'number') continue;
+        const o = out[k];
+        if (!o || typeof o.cpm !== 'number') { out[k] = v; continue; }
+        const newer = (Date.parse(v.at) || 0) >= (Date.parse(o.at) || 0) ? v : o;
+        out[k] = { cpm: Math.max(o.cpm, v.cpm), last: newer.last, at: newer.at };
+      }
+      return out;
+    }
+    async function syncTypingBests(user, local) {
+      if (!user) return local;
+      try {
+        const { data, error } = await supabase.from('kg_chart_user_prefs').select('typing_best').eq('user_id', user.id).maybeSingle();
+        if (error) return local; // before kg-chart-polish.sql: this device only
+        const remote = data?.typing_best || {};
+        const merged = mergeTypingBests(remote, local);
+        if (JSON.stringify(merged) !== JSON.stringify(remote)) {
+          const { error: e2 } = await supabase.from('kg_chart_user_prefs').upsert({ user_id: user.id, typing_best: merged, updated_at: new Date().toISOString() });
+          if (e2) console.warn('Could not save typing best to the account:', e2.message);
+        }
+        return merged;
+      } catch (e) { console.warn('Typing best: account not reachable, keeping this device\'s', e); return local; }
+    }
     const TYPING_LANG_TAGS = { my: 'my-MM', ja: 'ja-JP', zh: 'zh-CN', si: 'si-LK', ko: 'ko-KR', ta: 'ta-IN', th: 'th-TH', ms: 'ms-MY', te: 'te-IN', mr: 'mr-IN', kn: 'kn-IN' };
     const typingNorm = (s) => (s || '').normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase();
     const typingChars = (s) => Array.from((s || '').normalize('NFC')).filter(c => !/\s/.test(c)).length;
@@ -4196,6 +4224,12 @@
       }, [source, sentences, vocabulary, priv]);
 
       const bestKey = `${languageCode}|${mode}|${source}`;
+      const [, setBestsSynced] = useState(0);
+      useEffect(() => {
+        let cancelled = false;
+        syncTypingBests(user, loadFromStorage(TYPING_BEST_KEY, {})).then(m => { if (!cancelled) { saveToStorage(TYPING_BEST_KEY, m); setBestsSynced(n => n + 1); } });
+        return () => { cancelled = true; };
+      }, [user]);
       const bests = loadFromStorage(TYPING_BEST_KEY, {});
       const best = bests[bestKey];
 
@@ -4224,6 +4258,7 @@
         const isBest = !old || cpm > old.cpm;
         const next = { ...prev, [bestKey]: { cpm: isBest ? cpm : old.cpm, last: cpm, at: new Date().toISOString() } };
         saveToStorage(TYPING_BEST_KEY, next);
+        syncTypingBests(user, next).then(m => saveToStorage(TYPING_BEST_KEY, mergeTypingBests(loadFromStorage(TYPING_BEST_KEY, {}), m)));
         setResult({ cpm, acc, done: s.done, skipped: s.skipped, isBest, prevBest: old?.cpm ?? null, prevLast: old?.last ?? null });
         setPhase('done');
         if (!user || s.done + s.skipped === 0) return;
@@ -4333,7 +4368,7 @@
                 <div className="bg-blue-50 text-blue-800 rounded-2xl p-4 text-sm">
                   You need a {lang} keyboard on this device. The clock starts on your first key. A mistake turns red and must be fixed before the next {source === 'words' ? 'word' : 'sentence'}.
                 </div>
-                {best && <div className="text-center text-sm text-gray-500">Your best on this device: <b className="text-jade-700">{best.cpm}</b> characters/min{best.last != null ? ` · last time ${best.last}` : ''}</div>}
+                {best && <div className="text-center text-sm text-gray-500">Your best: <b className="text-jade-700">{best.cpm}</b> characters/min{best.last != null ? ` · last time ${best.last}` : ''}</div>}
                 <button onClick={start} disabled={!pool.length}
                   className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">
                   {source === 'sentences' && sentences === null ? 'Loading sentences…' : !pool.length ? (source === 'sentences' ? `No ${lang} sentences yet` : 'No words to type') : 'Start'}

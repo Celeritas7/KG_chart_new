@@ -403,8 +403,23 @@ function render(){
 
 // ===== EXPORT HELPERS =====
 function downloadFile(name,content,type){const b=new Blob([content],{type});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=name;a.click();URL.revokeObjectURL(u);}
-function toCSV(headers,rows){return[headers.join(','),...rows.map(r=>headers.map(h=>{let v=r[h]??'';if(typeof v==='object')v=JSON.stringify(v);v=String(v);return v.includes(',')||v.includes('"')||v.includes('\n')?`"${v.replace(/"/g,'""')}"`:v;}).join(','))].join('\n');}
-function parseCSV(text){const lines=text.split('\n');const headers=lines[0].split(',').map(h=>h.trim().replace(/^"|"$/g,''));const rows=[];for(let i=1;i<lines.length;i++){if(!lines[i].trim())continue;const vals=[];let cur='',inQ=false;for(let ch of lines[i]){if(ch==='"'){inQ=!inQ;}else if(ch===','&&!inQ){vals.push(cur.trim());cur='';}else{cur+=ch;}}vals.push(cur.trim());const obj={};headers.forEach((h,j)=>obj[h]=vals[j]?.replace(/^"|"$/g,'')||'');rows.push(obj);}return rows;}
+function toCSV(headers,rows){return[headers.join(','),...rows.map(r=>headers.map(h=>{let v=r[h]??'';if(typeof v==='object')v=JSON.stringify(v);v=String(v);return /[,"\n\r]/.test(v)||v!==v.trim()?`"${v.replace(/"/g,'""')}"`:v;}).join(','))].join('\n');}
+// RFC 4180: a quoted cell may hold commas, line breaks and "" (an escaped quote). CRLF or LF line ends; a leading BOM
+// (Excel) is ignored. Unquoted cells are trimmed, quoted ones kept exactly. Blank lines are skipped.
+function parseCSV(text){
+  const s=String(text||'').replace(/^\uFEFF/,'');const rows=[];let row=[],cur='',inQ=false,quoted=false,qv='';
+  // quoted cell: qv = the part inside the quotes, kept exactly; anything after the closing quote is trimmed on
+  const endCell=()=>{row.push(quoted?qv+cur.trim():cur.trim());cur='';qv='';quoted=false;};
+  for(let i=0;i<s.length;i++){const ch=s[i];
+    if(inQ){if(ch==='"'){if(s[i+1]==='"'){cur+='"';i++;}else{inQ=false;qv=cur;cur='';}}else cur+=ch;continue;}
+    if(ch==='"'&&!quoted&&!cur.trim()){inQ=true;quoted=true;cur='';}
+    else if(ch===',')endCell();
+    else if(ch==='\n'||ch==='\r'){if(ch==='\r'&&s[i+1]==='\n')i++;endCell();rows.push(row);row=[];}
+    else cur+=ch;}
+  if(cur!==''||quoted||row.length){endCell();rows.push(row);}
+  const headers=(rows.shift()||[]).map(h=>h.trim());
+  return rows.filter(r=>r.some(v=>v!=='')).map(r=>{const o={};headers.forEach((h,j)=>o[h]=r[j]??'');return o;});
+}
 
 // ===== TRANSLATIONS EXPORT/IMPORT =====
 function exportTrans(fmt){
