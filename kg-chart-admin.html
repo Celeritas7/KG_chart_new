@@ -153,6 +153,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
 .status-dot.active { background: var(--success); } .status-dot.inactive { background: var(--text-muted); }
 .tag { display: inline-block; padding: 3px 10px; border-radius: 8px; font-size: 11px; font-weight: 600; background: var(--badge-bg); color: var(--badge-text); }
 .tag.open { background: var(--warning-dim); color: var(--warning); }
+.tag.converter { background: rgba(124,58,237,0.1); color: #7c3aed; }
 .tag.resolved { background: rgba(34,197,94,0.1); color: var(--success); }
 .tag.dismissed { background: var(--accent-dim); color: var(--text-muted); }
 .chart-header { background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; margin-bottom: 20px; box-shadow: var(--shadow-sm); }
@@ -195,6 +196,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
 .flag-reason.missing_image { background: rgba(245,158,11,0.1); color: #f59e0b; }
 .flag-reason.missing_translation { background: rgba(37,99,235,0.1); color: #2563eb; }
 .flag-reason.needs_review { background: rgba(156,163,175,0.15); color: #6b7280; }
+.flag-reason.pronunciation { background: rgba(124,58,237,0.1); color: #7c3aed; }
 .btn:focus-visible, .tab:focus-visible, .nav-item:focus-visible, .theme-btn:focus-visible, .hamburger:focus-visible, .flag-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .stat-tile { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-card); min-width: 160px; box-shadow: var(--shadow-sm); }
 .stat-tile .st-icon { font-size: 22px; }
@@ -301,7 +303,7 @@ function toImageFilename(text){return text.trim().toLowerCase().replace(/\s+/g,'
 })();
 
 let S={languages:[],topics:[],vocabulary:[],vocabTrans:[],topicTrans:[],quizSessions:[],flags:[],users:[],unlocks:[],bypass:false,pathReady:false,sentences:[],sentReady:false,
-  page:'languages',filters:{topic:'',language:'',search:'',flagStatus:'open',coverageLang:'',sentLang:'',sentGroup:'',sentSearch:''},chartView:'grid'};
+  page:'languages',filters:{topic:'',language:'',search:'',flagStatus:'open',flagReason:'',coverageLang:'',sentLang:'',sentGroup:'',sentSearch:''},chartView:'grid'};
 
 // Theme
 document.querySelectorAll('.theme-btn').forEach(b=>{b.addEventListener('click',()=>{document.body.dataset.theme=b.dataset.t;document.querySelectorAll('.theme-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');localStorage.setItem('kg-admin-theme',b.dataset.t);});});
@@ -780,7 +782,16 @@ function renderChart(el){
 }
 
 // ===== FLAGS =====
-const FLAG_REASONS={wrong_word:'❌ Wrong Word',missing_image:'🖼️ Missing Image',missing_translation:'🔤 Missing Translation',needs_review:'🤔 Needs Review'};
+const FLAG_REASONS={pronunciation:'🔉 Devanagari',wrong_word:'❌ Wrong Word',missing_image:'🖼️ Missing Image',missing_translation:'🔤 Missing Translation',needs_review:'🤔 Needs Review'};
+// status 'converter' = the converter rule is wrong (fix it once in language-utils, not per word)
+const FLAG_STATUSES={open:'Open',converter:'🛠 Converter fix',resolved:'Resolved',dismissed:'Dismissed'};
+const flagMatches=f=>(!S.filters.flagStatus||f.status===S.filters.flagStatus)&&(!S.filters.flagReason||f.reason===S.filters.flagReason);
+// What the converter makes now for this flag's word/sentence ('' until the converter has loaded)
+function flagGenerated(f){const c=loadedConverters[f.language_code];if(!c)return'';const sen=f.sentence_id&&S.sentences.find(x=>x.id===f.sentence_id);const t=S.vocabTrans.find(tr=>tr.vocabulary_id===f.vocabulary_id&&tr.language_code===f.language_code);
+  const src=sen?sen.native_text:(c.usePronunciation?(t?.pinyin||t?.native_text):t?.native_text);try{return src?c.toDevanagari(src):'';}catch(e){return'';}}
+async function expandFlagCard(id){expandedFlag=expandedFlag===id?null:id;render();const f=S.flags.find(x=>x.id===id);
+  if(expandedFlag&&f&&!loadedConverters[f.language_code]&&SCRIPT_RANGES[f.language_code]?.file){try{await loadConverterJS(f.language_code);render();}catch(e){}}}
+function useFlagSuggestion(id){const f=S.flags.find(x=>x.id===id);const el=document.getElementById(`flg-${id}-dev`);if(f?.suggestion&&el){el.value=f.suggestion;el.focus();toast('Suggestion copied into Devanagari: save to keep it');}}
 let expandedFlag=null;
 
 function renderFlags(el){
@@ -788,14 +799,15 @@ function renderFlags(el){
   const activeLangsFl=S.languages.filter(l=>l.is_active);
   let missingCount=0;activeLangsFl.forEach(l=>{const tr=new Set(S.vocabTrans.filter(t=>t.language_code===l.code).map(t=>t.vocabulary_id));missingCount+=S.vocabulary.filter(v=>!tr.has(v.id)).length;});
   const statsHtml=`<div style="display:flex;gap:14px;margin-bottom:18px;flex-wrap:wrap"><div class="stat-tile ${openCount?'warn':''}"><span class="st-icon">🚩</span><div><div class="st-val">${openCount}</div><div class="st-label">Open flags</div></div></div><div class="stat-tile"><span class="st-icon">📖</span><div><div class="st-val">${S.vocabulary.length}</div><div class="st-label">Vocabulary</div></div></div><div class="stat-tile ${missingCount?'warn':''}"><span class="st-icon">🔤</span><div><div class="st-val">${missingCount}</div><div class="st-label">Missing translations</div></div></div></div>`;
-  const statusOpts=['open','resolved','dismissed'].map(s=>`<option value="${s}" ${S.filters.flagStatus===s?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('');
-  const filtered=S.flags.filter(f=>!S.filters.flagStatus||f.status===S.filters.flagStatus);
+  const statusOpts=Object.entries(FLAG_STATUSES).map(([s,l])=>`<option value="${s}" ${S.filters.flagStatus===s?'selected':''}>${l}</option>`).join('');
+  const reasonSel=`<select onchange="S.filters.flagReason=this.value;render()"><option value="">All reasons</option>${Object.entries(FLAG_REASONS).map(([r,l])=>`<option value="${r}" ${S.filters.flagReason===r?'selected':''}>${l}${r==='pronunciation'?` (${S.flags.filter(x=>x.reason===r&&x.status==='open').length} open)`:''}</option>`).join('')}</select>`;
+  const filtered=S.flags.filter(flagMatches);
   if(!filtered.length){
-    el.innerHTML=statsHtml+`<div class="filter-bar"><select onchange="S.filters.flagStatus=this.value;render()"><option value="">All Status</option>${statusOpts}</select><span class="filter-count">0 flags</span></div><div class="empty-state"><div class="icon">🚩</div><p>No ${S.filters.flagStatus||''} flags</p></div>`;
+    el.innerHTML=statsHtml+`<div class="filter-bar"><select onchange="S.filters.flagStatus=this.value;render()"><option value="">All Status</option>${statusOpts}</select>${reasonSel}<span class="filter-count">0 flags</span></div><div class="empty-state"><div class="icon">🚩</div><p>No ${FLAG_STATUSES[S.filters.flagStatus]||''} flags</p></div>`;
     return;
   }
 
-  el.innerHTML=statsHtml+`<div class="filter-bar"><select onchange="S.filters.flagStatus=this.value;render()"><option value="">All Status</option>${statusOpts}</select><span class="filter-count">${filtered.length} flags</span></div>
+  el.innerHTML=statsHtml+`<div class="filter-bar"><select onchange="S.filters.flagStatus=this.value;render()"><option value="">All Status</option>${statusOpts}</select>${reasonSel}<span class="filter-count">${filtered.length} flags</span></div>
   <div id="flags-list">${filtered.map(f=>{
     const v=S.vocabulary.find(x=>x.id===f.vocabulary_id);
     const lg=S.languages.find(l=>l.code===f.language_code);
@@ -804,22 +816,31 @@ function renderFlags(el){
     const iu=v?imgUrl(v.topic_id,v.image_filename):null;
     const cc=v?.extra_data?.colorCode;
     const isExpanded=expandedFlag===f.id;
+    const sen=f.sentence_id?S.sentences.find(x=>x.id===f.sentence_id):null;
+    const shown=f.shown_devanagari||'';const gen=isExpanded?flagGenerated(f):'';
+    const devBox=(f.reason==='pronunciation'||f.suggestion||shown)?`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px">${[['Shown when flagged',shown],['Suggested',f.suggestion],['Converter makes now',gen||(loadedConverters[f.language_code]?'—':'loading…')],['Saved override',sen?'':(trans?.devanagari||'')]].filter(([,v])=>v!==undefined).map(([k,v])=>`<div style="padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-card)"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${k}</div><div style="font-size:18px;color:var(--devanagari-color)">${v?escH(v):'<span style="font-size:12px;color:var(--text-muted)">—</span>'}</div></div>`).join('')}</div>`:'';
 
     return`<div style="border:1px solid var(--border);border-radius:14px;margin-bottom:12px;overflow:hidden;transition:all 0.2s;${isExpanded?'box-shadow:var(--shadow-lg);border-color:var(--accent)':''}">
-      <button type="button" class="flag-head" aria-expanded="${isExpanded}" style="display:flex;align-items:center;padding:14px 18px;gap:14px;cursor:pointer;background:${isExpanded?'var(--accent-dim)':'var(--bg-card)'}" onclick="expandedFlag=expandedFlag==='${f.id}'?null:'${f.id}';render()">
+      <button type="button" class="flag-head" aria-expanded="${isExpanded}" style="display:flex;align-items:center;padding:14px 18px;gap:14px;cursor:pointer;background:${isExpanded?'var(--accent-dim)':'var(--bg-card)'}" onclick="expandFlagCard('${f.id}')">
         <div style="width:48px;height:48px;border-radius:10px;overflow:hidden;background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center;flex-shrink:0">
           ${cc?`<div style="width:32px;height:32px;border-radius:6px;background:${cc}"></div>`:(iu?`<img src="${iu}" style="width:100%;height:100%;object-fit:cover" onerror="this.outerHTML='📷'">`:`<span style="font-size:24px">${topic?.icon||'📷'}</span>`)}
         </div>
         <div style="flex:1;min-width:0">
-          <div style="font-weight:600;font-size:14px">${v?.english_text||'Unknown'} <span style="font-size:11px;color:var(--text-muted);font-weight:400">${topic?.icon||''} ${v?.topic_id||''}</span></div>
-          <div style="font-size:13px;color:var(--text-secondary);margin-top:2px">${trans?.native_text||'<em style=color:var(--text-muted)>No translation</em>'} ${trans?.devanagari?`<span style="color:var(--devanagari-color);margin-left:6px">${trans.devanagari}</span>`:''}</div>
+          <div style="font-weight:600;font-size:14px">${sen?`💬 ${escH(sen.english_text)}`:(v?.english_text||'Unknown')} <span style="font-size:11px;color:var(--text-muted);font-weight:400">${sen?escH(sen.group_name||'sentence'):`${topic?.icon||''} ${v?.topic_id||''}`}</span></div>
+          <div style="font-size:13px;color:var(--text-secondary);margin-top:2px">${sen?escH(sen.native_text):(trans?.native_text||'<em style=color:var(--text-muted)>No translation</em>')} ${shown?`<span style="color:var(--devanagari-color);margin-left:6px">${escH(shown)}</span>${f.suggestion?` → <span style="color:var(--success)">${escH(f.suggestion)}</span>`:''}`:(trans?.devanagari?`<span style="color:var(--devanagari-color);margin-left:6px">${trans.devanagari}</span>`:'')}</div>
         </div>
         <span class="flag-reason ${f.reason}" style="flex-shrink:0">${FLAG_REASONS[f.reason]||f.reason}</span>
         <span style="font-size:11px;color:var(--text-muted);flex-shrink:0">${lg?.flag_emoji||''} ${f.language_code||''}</span>
-        <span class="tag ${f.status}" style="flex-shrink:0">${f.status}</span>
+        <span class="tag ${f.status}" style="flex-shrink:0">${FLAG_STATUSES[f.status]||f.status}</span>
         <span style="font-size:18px;transition:transform 0.2s;transform:rotate(${isExpanded?'180':'0'}deg)">▼</span>
       </button>
-      ${isExpanded?`<div style="padding:18px;border-top:1px solid var(--border);background:var(--bg-secondary)">
+      ${isExpanded&&sen?`<div style="padding:18px;border-top:1px solid var(--border);background:var(--bg-secondary)">
+        ${devBox}
+        <div style="font-size:13px;margin-bottom:12px"><span style="color:var(--text-muted)">Notes:</span> ${escH(f.notes||'—')} · <span style="color:var(--text-muted)">${new Date(f.created_at).toLocaleDateString()}</span></div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Sentence lines are made by the converter: fix the rule (🛠 Converter fix) or edit the sentence in 💬 Sentences.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">${f.status==='open'?`<button class="btn" onclick="resolveFlag('${f.id}','converter')">🛠 Converter fix</button><button class="btn" style="background:var(--success);color:#fff;border-color:var(--success)" onclick="resolveFlag('${f.id}','resolved')">✓ Resolve</button><button class="btn btn-warn" onclick="resolveFlag('${f.id}','dismissed')">✗ Dismiss</button>`:`<button class="btn" onclick="resolveFlag('${f.id}','open')">↩ Reopen</button>${f.status==='converter'?`<button class="btn" style="background:var(--success);color:#fff;border-color:var(--success)" onclick="resolveFlag('${f.id}','resolved')">✓ Fixed</button>`:''}`}</div>
+      </div>`:isExpanded?`<div style="padding:18px;border-top:1px solid var(--border);background:var(--bg-secondary)">
+        ${devBox}
         <div style="display:grid;grid-template-columns:120px 1fr;gap:20px;margin-bottom:16px">
           <div style="width:120px;height:120px;border-radius:12px;overflow:hidden;background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center">
             ${cc?`<div style="width:80px;height:80px;border-radius:10px;background:${cc}"></div>`:(iu?`<img src="${iu}" style="width:100%;height:100%;object-fit:contain" onerror="this.outerHTML='<span style=font-size:48px>📷</span>'">`:`<span style="font-size:48px">${topic?.icon||'📷'}</span>`)}
@@ -844,11 +865,13 @@ function renderFlags(el){
           <div class="form-group"><label>Image Filename</label><input id="flg-${f.id}-img" value="${(v?.image_filename||'').replace(/"/g,'&quot;')}"></div>
         </div>
         <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+          ${f.suggestion?`<button class="btn" onclick="useFlagSuggestion('${f.id}')">↙ Use suggestion</button>`:''}
           <button class="btn btn-accent" onclick="saveFlagEdit('${f.id}','${f.vocabulary_id}','${f.language_code}')">💾 Save Changes</button>
           ${f.status==='open'?`
             <button class="btn" style="background:var(--success);color:#fff;border-color:var(--success)" onclick="saveFlagEdit('${f.id}','${f.vocabulary_id}','${f.language_code}','resolved')">✓ Save & Resolve</button>
+            <button class="btn" onclick="resolveFlag('${f.id}','converter')" title="The converter rule is wrong: fix it once for every word">🛠 Converter fix</button>
             <button class="btn btn-warn" onclick="resolveFlag('${f.id}','dismissed')">✗ Dismiss</button>
-          `:`<button class="btn" onclick="resolveFlag('${f.id}','open')">↩ Reopen</button>`}
+          `:`<button class="btn" onclick="resolveFlag('${f.id}','open')">↩ Reopen</button>${f.status==='converter'?`<button class="btn" style="background:var(--success);color:#fff;border-color:var(--success)" onclick="resolveFlag('${f.id}','resolved')">✓ Fixed</button>`:''}`}
         </div>
       </div>`:''}
     </div>`;
@@ -894,12 +917,12 @@ async function resolveFlag(id,status){
   const d={status,resolved_at:status==='open'?null:new Date().toISOString()};
   const{error}=await sb.from('kg_chart_flags').update(d).eq('id',id);
   if(error){toast(error.message,'error');return;}
-  toast(status==='open'?'Reopened':(status==='resolved'?'Resolved':'Dismissed'));await loadAll();
+  toast(status==='open'?'Reopened':status==='resolved'?'Resolved':status==='converter'?'Marked as a converter fix':'Dismissed');await loadAll();
 }
 
 // ===== FLAGS EXPORT =====
 async function exportFlags(fmt) {
-  const filtered = S.flags.filter(f => !S.filters.flagStatus || f.status === S.filters.flagStatus);
+  const filtered = S.flags.filter(flagMatches);
   if (!filtered.length) { toast('No flags to export', 'error'); return; }
 
   // Try to load converters for each language in the flags
@@ -913,12 +936,8 @@ async function exportFlags(fmt) {
   const rows = filtered.map(f => {
     const v = S.vocabulary.find(x => x.id === f.vocabulary_id);
     const t = S.vocabTrans.find(tr => tr.vocabulary_id === f.vocabulary_id && tr.language_code === f.language_code);
-    const converter = loadedConverters[f.language_code];
-    let generatedDev = '';
-    if (converter && t?.native_text) {
-      const src = converter.usePronunciation ? (t.pinyin || t.native_text) : t.native_text;
-      generatedDev = converter.toDevanagari(src);
-    }
+    const sen = f.sentence_id ? S.sentences.find(x => x.id === f.sentence_id) : null;
+    const generatedDev = flagGenerated(f);
     const leaked = generatedDev ? findLeakedChars(generatedDev, f.language_code) : [];
     return {
       flag_id: f.id,
@@ -926,7 +945,10 @@ async function exportFlags(fmt) {
       english_text: v?.english_text || '',
       topic_id: v?.topic_id || '',
       language_code: f.language_code || '',
-      native_text: t?.native_text || '',
+      native_text: sen ? sen.native_text : (t?.native_text || ''),
+      sentence: sen ? sen.english_text : '',
+      shown_devanagari: f.shown_devanagari || '',
+      suggestion: f.suggestion || '',
       generated_devanagari: generatedDev,
       leaked_characters: leaked.join(' '),
       leaked_unicode: leaked.map(ch => 'U+' + ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')).join(' '),
@@ -937,11 +959,11 @@ async function exportFlags(fmt) {
     };
   });
 
-  const headers = ['flag_id','vocabulary_id','english_text','topic_id','language_code','native_text','generated_devanagari','leaked_characters','leaked_unicode','flag_reason','flag_notes','flag_status','image_filename'];
+  const headers = ['flag_id','vocabulary_id','english_text','topic_id','language_code','native_text','sentence','shown_devanagari','suggestion','generated_devanagari','leaked_characters','leaked_unicode','flag_reason','flag_notes','flag_status','image_filename'];
   if (fmt === 'csv') {
-    downloadFile(`kg_flags_${S.filters.flagStatus || 'all'}.csv`, toCSV(headers, rows), 'text/csv');
+    downloadFile(`kg_flags_${S.filters.flagStatus || 'all'}${S.filters.flagReason ? '_' + S.filters.flagReason : ''}.csv`, toCSV(headers, rows), 'text/csv');
   } else {
-    downloadFile(`kg_flags_${S.filters.flagStatus || 'all'}.json`, JSON.stringify(rows, null, 2), 'application/json');
+    downloadFile(`kg_flags_${S.filters.flagStatus || 'all'}${S.filters.flagReason ? '_' + S.filters.flagReason : ''}.json`, JSON.stringify(rows, null, 2), 'application/json');
   }
   toast(`Exported ${rows.length} flags as ${fmt.toUpperCase()}`);
 }
