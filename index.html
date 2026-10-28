@@ -275,6 +275,8 @@
 
     // Word-strength columns: the word quiz types plus typing from memory (not needed for unlocking)
     const STRENGTH_TYPES = [...QUIZ_TYPES, { id: 'typing_recall', label: 'Type from memory', icon: '⌨️' }];
+    // Saved for review (admin → Typed mistakes) but never part of word strength or unlocking: copy mode is speed practice
+    const STRENGTH_IGNORED_TYPES = ['typing_copy'];
 
     const DAILY_TARGET_OPTIONS = [5, 10, 15, 20, 25, 30, 50, 0];
 
@@ -3906,6 +3908,7 @@
       const [result, setResult] = useState(null);
       const composing = React.useRef(false);
       const wasWrong = React.useRef(false);
+      const firstWrong = React.useRef(null); // what was typed when the current item first went wrong (shown in admin → Typed mistakes)
       const inputRef = React.useRef(null);
       const statsRef = React.useRef(stats); statsRef.current = stats;
       const answersRef = React.useRef(answers); answersRef.current = answers;
@@ -3939,7 +3942,7 @@
         while (list.length < 200) list = list.concat(shuffleArr(pool));
         setItems(list); setIdx(0); setTyped(''); setStartedAt(null); setNow(Date.now());
         setStats({ chars: 0, errors: 0, done: 0, skipped: 0 }); setAnswers([]); setReveal(null); setResult(null);
-        wasWrong.current = false; composing.current = false;
+        wasWrong.current = false; firstWrong.current = null; composing.current = false;
         setPhase('run');
       };
 
@@ -3966,8 +3969,9 @@
           total_questions: s.done + s.skipped, correct_answers: s.done,
           time_spent_seconds: Math.round(secs), completed_at: new Date().toISOString(),
         }).select('id').single();
-        // Only recall answers count toward word strength; copy mode is speed practice
-        if (!error && session && mode === 'recall' && ans.length) {
+        // Both modes save their answers (admin → Typed mistakes). Only recall counts toward word strength:
+        // the learning path ignores typing_copy (STRENGTH_IGNORED_TYPES).
+        if (!error && session && ans.length) {
           const rows = ans.map(a => ({ ...a, session_id: session.id }));
           const { error: e2 } = await supabase.from(TABLES.quizAnswers).insert(rows);
           if (e2) await supabase.from(TABLES.quizAnswers).insert(rows.map(({ sentence_id, ...r }) => r));
@@ -3987,11 +3991,12 @@
       useEffect(() => { if (phase === 'run' && inputRef.current) inputRef.current.focus(); }, [phase, idx]);
 
       const item = items[idx];
-      const record = (correct, typedText) => {
-        if (item.kind === 'w') setAnswers(a => [...a, { vocabulary_id: item.id, selected_vocabulary_id: correct ? item.id : null, is_correct: correct, answer_text: typedText, answered_at: new Date().toISOString() }]);
-        else setAnswers(a => [...a, { vocabulary_id: null, sentence_id: item.id, selected_vocabulary_id: correct ? item.id : null, is_correct: correct, answer_text: typedText, answered_at: new Date().toISOString() }]);
+      // selected_vocabulary_id = the item when it was typed to the end, null when skipped
+      const record = (correct, typedText, finished) => {
+        if (item.kind === 'w') setAnswers(a => [...a, { vocabulary_id: item.id, selected_vocabulary_id: finished ? item.id : null, is_correct: correct, answer_text: typedText, answered_at: new Date().toISOString() }]);
+        else setAnswers(a => [...a, { vocabulary_id: null, sentence_id: item.id, selected_vocabulary_id: finished ? item.id : null, is_correct: correct, answer_text: typedText, answered_at: new Date().toISOString() }]);
       };
-      const advance = () => { setIdx(i => i + 1); setTyped(''); wasWrong.current = false; };
+      const advance = () => { setIdx(i => i + 1); setTyped(''); wasWrong.current = false; firstWrong.current = null; };
 
       const evaluate = (value, isComposing) => {
         if (phase !== 'run' || !item) return;
@@ -3999,7 +4004,9 @@
         const m = typingMatch(value, item.text);
         if (m.done) {
           setStats(s => ({ ...s, chars: s.chars + typingChars(item.text), done: s.done + 1 }));
-          record(true, value);
+          // Saved text = the first wrong attempt if there was one. Recall: finished = correct (strength);
+          // copy: correct only without a mistake.
+          record(mode === 'copy' ? firstWrong.current == null : true, firstWrong.current ?? value, true);
           setReveal(null);
           advance();
           return;
@@ -4007,6 +4014,7 @@
         // An unfinished syllable in an input method (Korean, Chinese, phone keyboards) isn't a mistake yet
         const wrongNow = m.wrong && !(isComposing && m.ok >= m.total - 1);
         if (wrongNow && !wasWrong.current) setStats(s => ({ ...s, errors: s.errors + 1 }));
+        if (wrongNow && firstWrong.current == null) firstWrong.current = value;
         wasWrong.current = wrongNow;
       };
 
@@ -4018,7 +4026,7 @@
       const skip = () => {
         if (!item) return;
         setStats(s => ({ ...s, skipped: s.skipped + 1 }));
-        record(false, typed);
+        record(false, typed, false);
         setReveal(mode === 'recall' ? item : null);
         advance();
         if (inputRef.current) inputRef.current.focus();
@@ -4454,6 +4462,7 @@
         const attempts = {};
         const counts = {}; // word id -> quiz type -> answers since last reset (drives unlocking)
         (raw?.answers || []).forEach(a => {
+          if (STRENGTH_IGNORED_TYPES.includes(a.quiz_type)) return;
           const id = String(a.vocabulary_id);
           const ts = Date.parse(a.answered_at) || 0;
           const w = (attempts[id] = attempts[id] || {});

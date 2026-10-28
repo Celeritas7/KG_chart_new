@@ -247,6 +247,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
     <div class="nav-item" data-page="chart-preview"><span class="icon">📊</span>Chart Preview</div>
     <div class="nav-section-label">Quality</div>
     <div class="nav-item" data-page="flags"><span class="icon">🚩</span>Flags<span class="badge warn" id="badge-flags">-</span></div>
+    <div class="nav-item" data-page="mistakes"><span class="icon">⌨️</span>Typed Mistakes</div>
     <div class="nav-item" data-page="coverage"><span class="icon">📋</span>Coverage<span class="badge" id="badge-coverage">-</span></div>
     <div class="nav-section-label">Analytics</div>
     <div class="nav-item" data-page="quiz-stats"><span class="icon">🧠</span>Quiz Stats</div>
@@ -389,6 +390,7 @@ function render(){
     case'sentences':t.textContent='Sentences';a.innerHTML=S.sentReady?`<button class="btn" onclick="exportSentences()">⬇ CSV</button><button class="btn btn-accent" onclick="triggerImport('sent')">⬆ Import</button><button class="btn btn-accent" onclick="editSentence()">+ Add Sentence</button>`:'';renderSentences(c);break;
     case'images':t.textContent='Images';a.innerHTML=`<button class="btn" onclick="copyMissingList()">📋 Copy missing list</button><button class="btn" onclick="loadAllImageFiles(true)">↻ Re-check storage</button>`;renderImages(c);break;
     case'chart-preview':t.textContent='Chart Preview';a.innerHTML='';renderChart(c);break;
+    case'mistakes':t.textContent='Typed Mistakes';a.innerHTML=`<button class="btn" onclick="MIST.data=null;render()">↻ Refresh</button><button class="btn" onclick="exportMistakes()">⬇ CSV</button>`;renderMistakes(c);break;
     case'flags':t.textContent='Flags';a.innerHTML=`<button class="btn" onclick="exportFlags('csv')">⬇ CSV</button><button class="btn" onclick="exportFlags('json')">⬇ JSON</button><button class="btn" onclick="triggerImport('flags')">⬆ Import</button><button class="btn btn-accent" onclick="runConverterScan()">🔍 Scan Conversions</button>`;renderFlags(c);break;
     case'coverage':t.textContent='Coverage';a.innerHTML=`<button class="btn" onclick="exportMissing('csv','selected')">⬇ Selected Lang</button><button class="btn" onclick="exportMissing('csv','all')">⬇ All Languages</button><button class="btn" onclick="copyAIPrompt()">📋 AI Prompt</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderCoverage(c);break;
     case'quiz-stats':t.textContent='Quiz Stats';a.innerHTML='';renderQuiz(c);break;
@@ -911,6 +913,72 @@ async function saveFlagEdit(flagId,vocabId,langCode,alsoResolve){
     toast('Changes saved');
   }
   await loadAll();
+}
+
+// ===== TYPED MISTAKES (Type the Word + typing test) =====
+// One row per typed answer that wasn't a clean first try:
+//   wrong  = submitted/finished with the wrong text       hints = right, but only after hints (Type the Word)
+//   fixed  = typing test: first went wrong, then corrected (the saved text is that first wrong attempt)
+//   skipped = typing test: skipped, with what had been typed so far
+const MIST_TYPES={type_word:'⌨️ Type the Word',typing_recall:'🧠 Typing test · memory',typing_copy:'👀 Typing test · copy'};
+const MIST_KINDS={wrong:['❌','Wrong'],fixed:['✏️','Fixed typo'],hints:['💡','Needed hints'],skipped:['⏭','Skipped']};
+let MIST={data:null,loading:false,error:null,lang:'',source:'',days:30,fixed:true,open:null};
+const mNorm=t=>(t||'').normalize('NFC').trim().split(/\s+/).filter(Boolean).join(' ');
+async function loadMistakes(){
+  MIST.loading=true;MIST.error=null;
+  const{data,error}=await sb.from('kg_chart_quiz_answers')
+    .select('id,vocabulary_id,sentence_id,selected_vocabulary_id,is_correct,answer_text,answered_at,kg_chart_quiz_sessions!inner(quiz_type,language_code,user_id,created_at)')
+    .in('kg_chart_quiz_sessions.quiz_type',Object.keys(MIST_TYPES)).order('answered_at',{ascending:false}).limit(3000);
+  MIST.loading=false;
+  if(error){MIST.error=error.message;MIST.data=[];return;}
+  MIST.data=(data||[]).map(a=>({...a,session:a.kg_chart_quiz_sessions}));
+}
+function mistakeTarget(a){
+  if(a.sentence_id){const sen=S.sentences.find(x=>x.id===a.sentence_id);return sen?{native:sen.native_text,meaning:sen.english_text,group:sen.group_name||'sentence',sentence:true}:null;}
+  const v=S.vocabulary.find(x=>x.id===a.vocabulary_id);const t=S.vocabTrans.find(x=>x.vocabulary_id===a.vocabulary_id&&x.language_code===a.session.language_code);
+  return v&&t?{native:t.native_text,meaning:v.english_text,group:v.topic_id,dev:t.devanagari}:null;
+}
+function mistakeKind(a,target){
+  const typed=mNorm(a.answer_text),want=mNorm(target);
+  if(a.session.quiz_type==='type_word'){ // accepts other spellings, so a correct answer is never a mistake
+    if(a.is_correct)return null;
+    return !typed?'skipped':typed===want?'hints':'wrong';
+  }
+  // Typing test: selected_vocabulary_id is set when the item was typed to the end (else it was skipped)
+  if(!a.selected_vocabulary_id)return'skipped';
+  return typed&&typed!==want?'fixed':null;
+}
+function mistakeRows(){
+  const since=MIST.days?Date.now()-MIST.days*864e5:0;
+  return(MIST.data||[]).map(a=>{const tg=mistakeTarget(a);if(!tg)return null;const kind=mistakeKind(a,tg.native);return kind?{...a,tg,kind}:null;})
+    .filter(r=>r&&(!MIST.lang||r.session.language_code===MIST.lang)&&(!MIST.source||r.session.quiz_type===MIST.source)&&(MIST.fixed||r.kind!=='fixed')&&(Date.parse(r.answered_at||r.session.created_at)||0)>=since);
+}
+// The typed text with the part that matches the start of the answer kept plain and the rest in red
+function mistakeDiff(typed,want){const a=[...(typed||'')],b=[...(want||'')];let i=0;while(i<a.length&&i<b.length&&a[i]===b[i])i++;
+  return`${escH(a.slice(0,i).join(''))}<span style="color:var(--danger);text-decoration:underline">${escH(a.slice(i).join(''))||'<span style="opacity:.6">…</span>'}</span>`;}
+function renderMistakes(el){
+  if(MIST.data===null){if(!MIST.loading)loadMistakes().then(()=>{if(S.page==='mistakes')render();});el.innerHTML='<div class="empty-state"><div class="icon">⌨️</div><p>Loading typed answers…</p></div>';return;}
+  const langs=S.languages.filter(l=>l.is_active);
+  const rows=mistakeRows();
+  const groups={};rows.forEach(r=>{const k=(r.sentence_id?'s:'+r.sentence_id:'w:'+r.vocabulary_id)+'|'+r.session.language_code;(groups[k]=groups[k]||{key:k,tg:r.tg,lang:r.session.language_code,items:[]}).items.push(r);});
+  const list=Object.values(groups).sort((x,y)=>y.items.length-x.items.length||(Date.parse(y.items[0].answered_at)||0)-(Date.parse(x.items[0].answered_at)||0));
+  const sel=(v,opts,on)=>`<select onchange="${on}">${opts.map(([k,l])=>`<option value="${k}" ${String(v)===String(k)?'selected':''}>${l}</option>`).join('')}</select>`;
+  const bar=`<div class="filter-bar">${sel(MIST.lang,[['','All languages'],...langs.map(l=>[l.code,`${l.flag_emoji||''} ${escH(l.name_english||l.code)}`])],"MIST.lang=this.value;render()")}${sel(MIST.source,[['','All typing'],...Object.entries(MIST_TYPES)],"MIST.source=this.value;render()")}${sel(MIST.days,[[7,'Last 7 days'],[30,'Last 30 days'],[0,'All time']],"MIST.days=+this.value;render()")}<label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary)"><input type="checkbox" ${MIST.fixed?'checked':''} onchange="MIST.fixed=this.checked;render()"> Include fixed typos</label><span class="filter-count">${rows.length} mistakes · ${list.length} words</span></div>`;
+  if(MIST.error){el.innerHTML=bar+`<div class="empty-state"><div class="icon">⚠️</div><p>${escH(MIST.error)}</p></div>`;return;}
+  if(!list.length){el.innerHTML=bar+`<div class="empty-state"><div class="icon">🎯</div><p>No typed mistakes here. Mistakes from Type the Word and the typing test show up after the next quiz.</p></div>`;return;}
+  el.innerHTML=bar+`<p style="font-size:12px;color:var(--text-muted);margin:-4px 0 12px">Red = where the typing went off. ✏️ Fixed typo = the typing test went wrong first, then it was corrected (saved since this page was added).</p><table class="data-table"><thead><tr><th>Word</th><th>Lang</th><th>Times</th><th>What was typed (latest first)</th><th>Last</th></tr></thead><tbody>${list.map(g=>{
+    const open=MIST.open===g.key;const shown=open?g.items:g.items.slice(0,3);const kinds=Object.entries(g.items.reduce((m,r)=>(m[r.kind]=(m[r.kind]||0)+1,m),{})).map(([k,n])=>`${MIST_KINDS[k][0]} ${n}`).join(' ');
+    return`<tr><td><div style="font-size:16px;font-weight:600">${escH(g.tg.native)}</div><div style="font-size:12px;color:var(--text-muted)">${g.tg.sentence?'💬 ':''}${escH(g.tg.meaning)}${g.tg.dev?` · <span style="color:var(--devanagari-color)">${escH(g.tg.dev)}</span>`:''}</div></td>
+      <td class="mono">${escH(g.lang)}</td><td><b>${g.items.length}</b><div style="font-size:11px;color:var(--text-muted);white-space:nowrap">${kinds}</div></td>
+      <td>${shown.map(r=>`<div style="display:flex;align-items:center;gap:8px;margin:2px 0;flex-wrap:wrap"><span title="${MIST_KINDS[r.kind][1]}">${MIST_KINDS[r.kind][0]}</span><span style="font-size:15px">${r.answer_text?mistakeDiff(mNorm(r.answer_text),mNorm(g.tg.native)):'<em style="color:var(--text-muted)">nothing typed</em>'}</span><span style="font-size:11px;color:var(--text-muted)">${MIST_TYPES[r.session.quiz_type]} · ${new Date(r.answered_at||r.session.created_at).toLocaleDateString()}</span></div>`).join('')}
+        ${g.items.length>3?`<button class="btn btn-sm" style="margin-top:4px" onclick="MIST.open=MIST.open==='${g.key}'?null:'${g.key}';render()">${open?'Show less':`+${g.items.length-3} more`}</button>`:''}</td>
+      <td style="font-size:12px;white-space:nowrap">${new Date(g.items[0].answered_at||g.items[0].session.created_at).toLocaleDateString()}</td></tr>`;}).join('')}</tbody></table>`;
+}
+function exportMistakes(){
+  if(!MIST.data){toast('Open the page first','error');return;}
+  const rows=mistakeRows().map(r=>({language_code:r.session.language_code,source:r.session.quiz_type,kind:r.kind,native_text:r.tg.native,meaning:r.tg.meaning,typed:r.answer_text||'',answered_at:r.answered_at||r.session.created_at,vocabulary_id:r.vocabulary_id||'',sentence_id:r.sentence_id||''}));
+  if(!rows.length){toast('No mistakes to export','error');return;}
+  downloadFile(`kg_typed_mistakes_${MIST.lang||'all'}.csv`,toCSV(Object.keys(rows[0]),rows),'text/csv');toast(`Exported ${rows.length} mistakes`);
 }
 
 async function resolveFlag(id,status){
