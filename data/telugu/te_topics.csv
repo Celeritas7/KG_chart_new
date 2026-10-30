@@ -1,0 +1,23 @@
+topic_id,title_native,title_devanagari,question_english,question_native,question_devanagari
+hotel,హోటల్,होटल्,Can you help me?,మీరు నాకు సహాయం చేయగలరా?,मीरु नाकु सहायं चेयगलरा?
+colours,రంగులు,रंगुलु,What colour is this?,ఇది ఏ రంగు?,इदि ए रंगु?
+animals,జంతువులు,जंतुवुलु,What is this animal?,ఇది ఏ జంతువు?,इदि ए जंतुवु?
+food,ఆహారం,आहारं,I'll take it.,నేను ఇది తీసుకుంటాను.,नेनु इदि तीसुकुंटानु.
+vegetables,కూరగాయలు,कूरगायलु,Do you have something you cannot eat?,మీరు తినలేనిది ఏమైనా ఉందా?,मीरु तिनलेनिदि एमैना उंदा?
+fruits,పండ్లు,पंड्लु,What is your favorite fruit?,మీకు ఇష్టమైన పండు ఏది?,मीकु इष्टमैन पंडु एदि?
+transportation,రవాణా,रवाणा,Where should I go?,నేను ఎక్కడికి వెళ్ళాలి?,नेनु एक्कडिकि वेळ्ळालि?
+shopping,షాపింగ్,षापिंग्,Are you looking for something?,మీరు ఏదైనా వెతుకుతున్నారా?,मीरु एदैना वेतुकुतुन्नारा?
+family,కుటుంబం,कुटुंबं,Who is it?,ఇది ఎవరు?,इदि एवरु?
+body,శరీరం,शरीरं,Where does it hurt?,ఎక్కడ నొప్పిగా ఉంది?,एक्कड नोप्पिगा उंदि?
+dates,తేదీలు,तेदीलु,What day is today?,ఈరోజు ఏ రోజు?,ईरोजु ए रोजु?
+date,తేదీ,तेदी,What day is today?,ఈరోజు ఏ రోజు?,ईरोजु ए रोजु?
+weather,వాతావరణం,वातावरणं,How is the weather?,వాతావరణం ఎలా ఉంది?,वातावरणं एला उंदि?
+days_of_week,వారంలోని రోజులు,वारंलोनि रोजुलु,What day is it?,ఈరోజు ఏ వారం?,ईरोजु ए वारं?
+season,ఋతువు,ऋतुवु,What season is this?,ఇది ఏ ఋతువు?,इदि ए ऋतुवु?
+months,నెలలు,नेललु,What month is this?,ఇది ఏ నెల?,इदि ए नेल?
+hobby,అభిరుచి,अभिरुचि,What is your hobby?,మీ అభిరుచి ఏమిటి?,मी अभिरुचि एमिटि?
+tableware,భోజన పాత్రలు,भोजन पात्रलु,Can I have this?,నాకు ఇది ఇవ్వగలరా?,नाकु इदि इव्वगलरा?
+directions,దిశలు,दिशलु,Where is this?,ఇది ఎక్కడ ఉంది?,इदि एक्कड उंदि?
+seasoning,మసాలాలు,मसालालु,Can I have this?,నాకు ఇది ఇవ్వగలరా?,नाकु इदि इव्वगलरा?
+sport,క్రీడలు,क्रीडलु,What is your favorite sport?,మీకు ఇష్టమైన ఆట ఏది?,मीकु इष्टमैन आट एदि?
+drink,పానీయాలు,पानीयालु,What would you like to drink?,మీరు ఏమి తాగాలనుకుంటున్నారు?,मीरु एमि तागालनुकुंटुन्नारु?
