@@ -2339,6 +2339,13 @@
       const rules = React.useContext(RulesContext);
       const [flagItem, setFlagItem] = useState(null);
       const flagModal = flagItem && <FlagModal item={flagItem} languageCode={languageCode} onClose={() => setFlagItem(null)} />;
+      // The blue line with a 🚩 next to it, so a wrong Devanagari line can be flagged before answering too
+      const hintLine = (item, cls) => item?.translation?.devanagari ? (
+        <div className="flex items-center justify-center gap-1">
+          <div className={`text-blue-600 font-devanagari ${cls}`}>{item.translation.devanagari}</div>
+          <FlagButton compact onClick={() => setFlagItem(item)} />
+        </div>
+      ) : null;
       const pool = poolVocabulary || vocabulary;
       useAudioState();
       const savingRef = React.useRef(false);
@@ -2538,16 +2545,22 @@
       timeoutRef.current = handleTimeout;
       // Per-question clock (Normal and up), restarts for every question, stops once answered
       const timed = quizStarted && !quizCompleted && isMcq && L.seconds > 0;
+      // Paused while a 🚩 flag window is open; closing it carries on with the time that was left
+      const flagging = !!flagItem;
+      const clockRef = React.useRef({ q: null, left: 0 });
       useEffect(() => {
         if (!timed || !currentQuestion || showResult) return;
-        const start = Date.now();
-        setTimeLeft(L.seconds);
+        if (clockRef.current.q !== currentQuestion) clockRef.current = { q: currentQuestion, left: L.seconds };
+        if (flagging) return;
+        const start = Date.now(), from = clockRef.current.left;
+        setTimeLeft(from);
         const t = setInterval(() => {
-          const left = L.seconds - (Date.now() - start) / 1000;
+          const left = from - (Date.now() - start) / 1000;
+          clockRef.current.left = Math.max(left, 0);
           if (left <= 0) { clearInterval(t); setTimeLeft(0); timeoutRef.current(); } else setTimeLeft(left);
         }, 100);
         return () => clearInterval(t);
-      }, [timed, currentQuestion, showResult, L.seconds]);
+      }, [timed, currentQuestion, showResult, L.seconds, flagging]);
 
       const handleWbAnswer = (isCorrect, answerText) => {
         const item = quizWords[currentWordIndex];
@@ -2871,7 +2884,7 @@
             {quizType === 'native_to_image' && (
               <>
                 <div className={`text-4xl font-bold text-gray-800 mb-2 ${fontClass}`}>{currentQuestion.translation?.native_text}</div>
-                {showHint && <div className="text-xl text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>}
+                {showHint && hintLine(currentQuestion, 'text-xl')}
                 <div className="mt-4"><SpeakButton text={currentQuestion.translation?.native_text} lang={languageCode} slow size="lg" /></div>
               </>
             )}
@@ -2885,7 +2898,7 @@
               </div>
             )}
             {quizType === 'devanagari_to_image' && (
-              <div className="text-4xl text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>
+              hintLine(currentQuestion, 'text-4xl')
             )}
             {isListen && (() => {
               const text = currentQuestion.translation?.native_text;
@@ -2896,7 +2909,7 @@
                   <>
                     <div className="text-xs text-gray-400 mb-2">No recording for this word yet</div>
                     <div className={`text-4xl font-bold text-gray-800 mb-2 ${fontClass}`}>{text}</div>
-                    {showHint && <div className="text-xl text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>}
+                    {showHint && hintLine(currentQuestion, 'text-xl')}
                   </>
                 ) : (
                   <>
@@ -2925,7 +2938,7 @@
                   {showResult && quizType === 'listen_to_image' && (
                     <div className="mt-4">
                       <div className={`text-3xl font-bold text-gray-800 ${fontClass}`}>{text}</div>
-                      <div className="text-lg text-blue-600 font-devanagari">{currentQuestion.translation?.devanagari}</div>
+                      {hintLine(currentQuestion, 'text-lg')}
                     </div>
                   )}
                 </>
@@ -2944,8 +2957,9 @@
                 else if (selectedAnswer?.id === opt.id) borderClass = 'border-red-500 border-4 bg-red-50';
               }
               return (
-                <button key={opt.id} onClick={() => { if (!showResult) handleAnswer(opt); }} aria-disabled={showResult}
-                  className={`p-4 rounded-xl border-2 transition-all relative ${borderClass}`}>
+                <div key={opt.id} className="relative">
+                <button onClick={() => { if (!showResult) handleAnswer(opt); }} aria-disabled={showResult}
+                  className={`w-full h-full p-4 rounded-xl border-2 transition-all relative ${borderClass}`}>
                   <span className="absolute top-1.5 left-2 text-xs text-gray-300 font-mono hidden sm:inline">{idx + 1}</span>
                   {(quizType === 'native_to_image' || quizType === 'devanagari_to_image' || quizType === 'listen_to_image') ? (
                     <>
@@ -2966,6 +2980,10 @@
                     </>
                   )}
                 </button>
+                {showHint && opt.translation?.devanagari && !(quizType === 'native_to_image' || quizType === 'devanagari_to_image' || quizType === 'listen_to_image') && (
+                  <div className="absolute top-1 right-1"><FlagButton compact onClick={() => setFlagItem(opt)} /></div>
+                )}
+                </div>
               );
             })}
           </div>
@@ -3250,12 +3268,15 @@
         ? <SpeakButton text={text} lang={languageCode} slow={!small} size={small ? 'sm' : 'lg'} />
         : null);
 
-      const NativeLine = ({ text, size }) => {
+      // flag = the sentence: a 🚩 next to the blue line, so it can be flagged before answering too
+      const NativeLine = ({ text, size, flag }) => {
         const dev = sentenceHint(text, languageCode);
         return (
           <>
             <div className={`${size} font-bold text-gray-800 ${fontClass}`}>{text}</div>
-            {dev && <div className="text-base text-blue-600 font-devanagari mt-1">{dev}</div>}
+            {dev && (flag
+              ? <div className="flex items-center justify-center gap-1 mt-1"><div className="text-base text-blue-600 font-devanagari">{dev}</div><FlagButton compact onClick={() => setFlagSentence(flag)} /></div>
+              : <div className="text-base text-blue-600 font-devanagari mt-1">{dev}</div>)}
           </>
         );
       };
@@ -3411,7 +3432,7 @@
             {sType === 'sentence_to_meaning' ? (
               <>
                 <div className="text-sm text-gray-400 mb-4">What does this mean?</div>
-                <NativeLine text={s.native_text} size="text-3xl" />
+                <NativeLine text={s.native_text} size="text-3xl" flag={s} />
                 <div className="mt-3"><SpeakBtn text={s.native_text} /></div>
               </>
             ) : (
@@ -3431,13 +3452,18 @@
                   else if (selected?.id === opt.id) cls = 'border-red-500 border-4 bg-red-50';
                 }
                 return (
-                  <button key={opt.id} onClick={() => pick(opt)} disabled={showResult}
-                    className={`p-4 rounded-xl border-2 transition-all relative text-left ${cls}`}>
+                  <div key={opt.id} className="relative">
+                  <button onClick={() => pick(opt)} disabled={showResult}
+                    className={`w-full h-full p-4 rounded-xl border-2 transition-all relative text-left ${cls}`}>
                     <span className="absolute top-1.5 right-2 text-xs text-gray-300 font-mono hidden sm:inline">{i + 1}</span>
                     {sType === 'sentence_to_meaning'
                       ? <div className="text-base font-medium text-gray-800 pr-4">{opt.display_text}</div>
                       : <div className="pr-4"><NativeLine text={opt.native_text} size="text-lg" /></div>}
                   </button>
+                  {sType !== 'sentence_to_meaning' && sentenceHint(opt.native_text, languageCode) && (
+                    <div className="absolute bottom-1 right-1"><FlagButton compact onClick={() => setFlagSentence(opt)} /></div>
+                  )}
+                  </div>
                 );
               })}
             </div>
