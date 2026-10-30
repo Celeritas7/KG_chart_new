@@ -195,7 +195,10 @@
     async function loadAllConverters() {
       await Promise.all(Object.keys(LANG_FILES).map(loadLanguageConverter));
     }
-    loadAllConverters();
+    // The word and topic lists wait for this before building the blue line. Without it, a database answer that
+    // beats the converter files shows the native text there until a reload. A converter that hangs is given up on
+    // after 8 s (that language then falls back to the native text, as when its file fails to load).
+    const convertersReady = Promise.race([loadAllConverters(), new Promise(resolve => setTimeout(resolve, 8000))]);
 
     // Get converter for a language code
     function getConverter(langCode) {
@@ -540,13 +543,15 @@
 
       useEffect(() => {
         if (!languageCode) return;
+        let cancelled = false;
         setLoading(true);
 
-        supabase
+        Promise.all([supabase
           .from(TABLES.topics)
           .select(`*, translations:${TABLES.topicTranslations}(*)`)
-          .order('sort_order')
-          .then(({ data, error }) => {
+          .order('sort_order'), convertersReady])
+          .then(([{ data, error }]) => {
+            if (cancelled) return; // language or meanings switched while loading
             if (!error && data) {
               const meaningLang = MEANING_LANGS[languageCode];
               const mapped = data.map(topic => {
@@ -582,6 +587,7 @@
             }
             setLoading(false);
           });
+        return () => { cancelled = true; };
       }, [languageCode, meaningsInEnglish]);
 
       return { topics, loading };
@@ -600,13 +606,15 @@
 
       useEffect(() => {
         if (!languageCode) return;
+        let cancelled = false;
         setLoading(true);
 
-        supabase
+        Promise.all([supabase
           .from(TABLES.vocabulary)
           .select(`*, translations:${TABLES.vocabularyTranslations}(*)`)
-          .order('sort_order')
-          .then(({ data, error }) => {
+          .order('sort_order'), convertersReady])
+          .then(([{ data, error }]) => {
+            if (cancelled) return; // language or meanings switched while loading
             if (!error && data) {
               const meaningLang = MEANING_LANGS[languageCode];
               const mapped = data.map(vocab => {
@@ -645,6 +653,7 @@
             }
             setLoading(false);
           });
+        return () => { cancelled = true; };
       }, [languageCode, meaningsInEnglish]);
 
       return { vocabulary, loading };
