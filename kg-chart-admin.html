@@ -247,6 +247,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
     <div class="nav-item" data-page="chart-preview"><span class="icon">📊</span>Chart Preview</div>
     <div class="nav-section-label">Quality</div>
     <div class="nav-item" data-page="flags"><span class="icon">🚩</span>Flags<span class="badge warn" id="badge-flags">-</span></div>
+    <div class="nav-item" data-page="reviews"><span class="icon">🧐</span>Reviews<span class="badge warn" id="badge-rev">-</span></div>
     <div class="nav-item" data-page="mistakes"><span class="icon">⌨️</span>Typed Mistakes</div>
     <div class="nav-item" data-page="colourphrases"><span class="icon">🎨</span>Colour Phrases</div>
     <div class="nav-item" data-page="coverage"><span class="icon">📋</span>Coverage<span class="badge" id="badge-coverage">-</span></div>
@@ -304,7 +305,7 @@ function toImageFilename(text){return text.trim().toLowerCase().replace(/\s+/g,'
   loadAll();
 })();
 
-let S={languages:[],topics:[],vocabulary:[],vocabTrans:[],topicTrans:[],quizSessions:[],flags:[],users:[],unlocks:[],bypass:false,pathReady:false,sentences:[],sentReady:false,
+let S={languages:[],topics:[],vocabulary:[],vocabTrans:[],topicTrans:[],quizSessions:[],flags:[],users:[],unlocks:[],bypass:false,pathReady:false,sentences:[],sentReady:false,reviews:[],reviewsReady:false,
   page:'languages',filters:{topic:'',language:'',search:'',flagStatus:'open',flagReason:'',coverageLang:'',sentLang:'',sentGroup:'',sentSearch:''},chartView:'grid'};
 
 // Theme
@@ -364,6 +365,10 @@ async function loadAll(){
     // The meaning_text column (Filipino meanings for Marathi) exists once kg-chart-sentence-meanings.sql has been run
     S.sentMeaningReady=S.sentReady&&(S.sentences.length?'meaning_text' in S.sentences[0]:!(await sb.from('kg_chart_sentences').select('meaning_text').limit(1)).error);
     document.getElementById('badge-sent').textContent=S.sentReady?S.sentences.length:'-';
+    // Native-speaker reviews (empty until kg-chart-reviews.sql is run)
+    const rv=await sb.from('kg_chart_reviews').select('*').order('created_at',{ascending:false});
+    S.reviews=rv.data||[];S.reviewsReady=!rv.error;
+    document.getElementById('badge-rev').textContent=S.reviewsReady?(S.reviews.filter(r=>r.status==='open').length||'0'):'-';
     document.getElementById('badge-lang').textContent=S.languages.length;
     document.getElementById('badge-topics').textContent=S.topics.length;
     document.getElementById('badge-vocab').textContent=S.vocabulary.length;
@@ -394,6 +399,7 @@ function render(){
     case'images':t.textContent='Images';a.innerHTML=`<button class="btn" onclick="copyMissingList()">📋 Copy missing list</button><button class="btn" onclick="loadAllImageFiles(true)">↻ Re-check storage</button>`;renderImages(c);break;
     case'chart-preview':t.textContent='Chart Preview';a.innerHTML='';renderChart(c);break;
     case'colourphrases':t.textContent='Colour Phrases';a.innerHTML=`<button class="btn" onclick="suggestColourPhrases()">✨ Suggest missing</button><button class="btn btn-accent" onclick="saveColourPhrases()">💾 Save</button>`;renderColourPhrases(c);break;
+    case'reviews':t.textContent='Reviews';a.innerHTML=`<a class="btn" href="./kg-chart-review.html" target="_blank" rel="noopener">Open review page ↗</a><button class="btn" onclick="copyReviewLink()">📋 Copy link</button>`;renderReviews(c);break;
     case'mistakes':t.textContent='Typed Mistakes';a.innerHTML=`<button class="btn" onclick="MIST.data=null;render()">↻ Refresh</button><button class="btn" onclick="exportMistakes()">⬇ CSV</button>`;renderMistakes(c);break;
     case'flags':t.textContent='Flags';a.innerHTML=`<button class="btn" onclick="exportFlags('csv')">⬇ CSV</button><button class="btn" onclick="exportFlags('json')">⬇ JSON</button><button class="btn" onclick="triggerImport('flags')">⬆ Import</button><button class="btn btn-accent" onclick="runConverterScan()">🔍 Scan Conversions</button>`;renderFlags(c);break;
     case'coverage':t.textContent='Coverage';a.innerHTML=`<button class="btn" onclick="exportMissing('csv','selected')">⬇ Selected Lang</button><button class="btn" onclick="exportMissing('csv','all')">⬇ All Languages</button><button class="btn" onclick="copyAIPrompt()">📋 AI Prompt</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderCoverage(c);break;
@@ -522,6 +528,86 @@ async function importSentences(rows){
   await loadAll();
 }
 
+// ===== REVIEWS (kg_chart_reviews, native speakers on kg-chart-review.html) =====
+// Reviewers tick ✓ or send a fix; nothing changes for learners until a fix is accepted here (kg_chart_accept_review).
+// The items per language are built the same way as load() in kg-chart-review.html; keep the two in sync.
+const REV={lang:'',editing:null};
+const REV_MEANING_SOURCE={fil:'mr'}; // MEANING_LANGS mr → fil, turned round
+const revKey=(type,id,field)=>`${type}|${id}|${field}`;
+function revItems(L){
+  const src=REV_MEANING_SOURCE[L];const out=[];
+  S.vocabTrans.filter(t=>t.language_code===L&&t.native_text?.trim()).forEach(t=>out.push({key:revKey('word',t.vocabulary_id,'native_text'),text:t.native_text.trim()}));
+  S.topicTrans.filter(t=>t.language_code===L).forEach(t=>{if(t.title_native?.trim())out.push({key:revKey('topic',t.topic_id,'title_native'),text:t.title_native.trim()});if(t.question_native?.trim())out.push({key:revKey('topic',t.topic_id,'question_native'),text:t.question_native.trim()});});
+  S.sentences.forEach(s=>{if(s.language_code===L&&s.native_text?.trim())out.push({key:revKey('sentence',s.id,'native_text'),text:s.native_text.trim()});if(src&&s.language_code===src&&s.meaning_text?.trim())out.push({key:revKey('sentence',s.id,'meaning_text'),text:s.meaning_text.trim()});});
+  return out;
+}
+// The text the item has now ('' if it's gone) and a label saying what it is
+function revCurrent(r){
+  if(r.item_type==='word'){const t=S.vocabTrans.find(x=>x.vocabulary_id===r.item_id&&x.language_code===r.language_code);const v=S.vocabulary.find(x=>x.id===r.item_id);return{text:t?.native_text?.trim()||'',label:`🔤 ${v?.english_text||'word'}`,sub:v?.topic_id||''};}
+  if(r.item_type==='topic'){const t=S.topicTrans.find(x=>x.topic_id===r.item_id&&x.language_code===r.language_code);return{text:(t?.[r.field]||'').trim(),label:`🏷️ ${r.item_id} ${r.field==='title_native'?'title':'question'}`,sub:r.field==='question_native'?(t?.question_english||''):''};}
+  const s=S.sentences.find(x=>x.id===r.item_id);return{text:(s?.[r.field]||'').trim(),label:`💬 ${s?.english_text||'sentence'}`,sub:s?(r.field==='meaning_text'?`Filipino meaning of ${s.native_text}`:s.group_name||''):''};
+}
+function renderReviews(el){
+  if(!S.reviewsReady){el.innerHTML=`<div class="empty-state"><div class="icon">🧐</div><p>Run <span class="mono">kg-chart-reviews.sql</span> in the Supabase SQL editor, then reload this page.</p></div>`;return;}
+  const reviewers=S.users.filter(u=>(u.review_languages||[]).length);
+  const used=[...new Set([...reviewers.flatMap(u=>u.review_languages),...S.reviews.map(r=>r.language_code)])];
+  const langOpts=S.languages.map(l=>l.code);
+  // Progress: an item counts as checked once anyone has answered about the text it has now
+  const prog=used.map(L=>{const items=revItems(L);const rs=S.reviews.filter(r=>r.language_code===L);
+    const done=items.filter(it=>rs.some(r=>revKey(r.item_type,r.item_id,r.field)===it.key&&(r.shown_text===it.text||(r.status==='accepted'&&r.suggestion===it.text)))).length;
+    return{L,total:items.length,done,open:rs.filter(r=>r.status==='open').length};});
+  const open=S.reviews.filter(r=>r.status==='open'&&(!REV.lang||r.language_code===REV.lang));
+  const decided=S.reviews.filter(r=>r.status==='accepted'||r.status==='rejected');
+  const ed=REV.editing;
+  const form=`<div style="padding:16px;border:1px solid var(--border);border-radius:12px;margin-bottom:12px"><div style="font-weight:600;margin-bottom:8px">${ed?`Edit ${escH(ed)}`:'Add a reviewer'}</div>
+    <div class="form-row"><div class="form-group"><label>Email</label><input id="rv-email" type="email" value="${escH(ed||'')}" ${ed?'readonly':''} placeholder="name@example.com"></div><div class="form-group"><label>Name (optional)</label><input id="rv-name" value="${escH(ed?(S.users.find(u=>u.email===ed)?.name||''):'')}"></div></div>
+    <div class="form-group"><label>Languages they check</label><div style="display:flex;flex-wrap:wrap;gap:8px">${langOpts.map(c=>{const l=S.languages.find(x=>x.code===c);const on=ed&&(S.users.find(u=>u.email===ed)?.review_languages||[]).includes(c);return`<label style="display:flex;gap:6px;align-items:center;padding:6px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer"><input type="checkbox" class="rv-lang" value="${escH(c)}" ${on?'checked':''}>${l?.flag_emoji||''} ${escH(l?.name_english||c)}${l&&!l.is_active?' <span style="color:var(--text-muted);font-size:11px">off</span>':''}</label>`;}).join('')}</div>
+    <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Filipino = the Filipino meanings of the Marathi words and sentences. A new email can sign in to the review page (and the app) straight away; it is not a learner.</div></div>
+    <div class="form-actions" style="justify-content:flex-start">${ed?`<button class="btn" onclick="REV.editing=null;render()">Cancel</button>`:''}<button class="btn btn-accent" onclick="saveReviewer()">${ed?'Save':'+ Add reviewer'}</button></div></div>`;
+  el.innerHTML=`<h3 style="margin:0 0 10px">Reviewers</h3>`+
+    (reviewers.length?`<table class="data-table" style="margin-bottom:12px"><thead><tr><th>Reviewer</th><th>Role</th><th>Languages</th><th>Actions</th></tr></thead><tbody>${reviewers.map(u=>`<tr><td><strong>${escH(u.name||u.email)}</strong><div class="mono" style="font-size:11px;color:var(--text-muted)">${escH(u.email)}</div></td><td>${escH(u.role)}</td><td>${u.review_languages.map(c=>`<span class="tag">${escH(c)}</span>`).join(' ')}</td><td><button class="btn btn-sm" onclick="REV.editing='${escH(u.email)}';render()">Edit</button> <button class="btn btn-sm btn-danger" onclick="removeReviewer('${escH(u.email)}')">Remove</button></td></tr>`).join('')}</tbody></table>`:`<p style="color:var(--text-muted);font-size:13px">No reviewers yet.</p>`)+form+
+    (prog.length?`<h3 style="margin:20px 0 10px">Progress</h3><table class="data-table"><thead><tr><th>Language</th><th>Checked</th><th>Fixes waiting</th></tr></thead><tbody>${prog.map(p=>{const l=S.languages.find(x=>x.code===p.L);const pct=p.total?Math.round(p.done*100/p.total):0;return`<tr><td>${l?.flag_emoji||''} ${escH(l?.name_english||p.L)}</td><td>${p.done} / ${p.total} <span style="color:var(--text-muted)">(${pct}%)</span></td><td>${p.open?`<a href="#" onclick="REV.lang='${escH(p.L)}';render();return false">${p.open}</a>`:'0'}</td></tr>`;}).join('')}</tbody></table>`:'')+
+    `<h3 style="margin:20px 0 10px">Fixes waiting <span style="font-weight:400;color:var(--text-muted)">(${open.length})</span></h3>
+    <div class="filter-bar"><select onchange="REV.lang=this.value;render()"><option value="">All languages</option>${used.map(c=>`<option value="${escH(c)}" ${REV.lang===c?'selected':''}>${escH(c)}</option>`).join('')}</select><span class="filter-count">${decided.length} decided so far</span></div>`+
+    (open.length?open.map(r=>{const c=revCurrent(r);const stale=c.text!==r.shown_text;return`<div style="padding:14px;border:1px solid var(--border);border-radius:12px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div style="font-weight:600">${escH(c.label)} <span class="tag">${escH(r.language_code)}</span></div><div style="font-size:12px;color:var(--text-muted)">${escH(r.reviewer_email||'')} · ${new Date(r.updated_at||r.created_at).toLocaleDateString()}</div></div>
+      ${c.sub?`<div style="font-size:12px;color:var(--text-muted)">${escH(c.sub)}</div>`:''}
+      <div style="margin-top:8px;font-size:13px">Now: <b style="font-size:18px">${escH(c.text||'(gone)')}</b>${stale?` <span class="tag open">changed since the review (they saw: ${escH(r.shown_text)})</span>`:''}</div>
+      ${r.comment?`<div style="margin-top:6px;font-size:13px">💬 ${escH(r.comment)}</div>`:''}
+      <div class="form-group" style="margin-top:8px"><label>New text</label><input id="rv-fix-${r.id}" value="${escH(r.suggestion||c.text)}" style="font-size:18px"></div>
+      <div style="display:flex;gap:8px"><button class="btn btn-accent" onclick="acceptReview('${r.id}')">✅ Accept</button><button class="btn btn-danger" onclick="rejectReview('${r.id}')">✖ Reject</button></div></div>`;}).join('')
+    :`<div class="empty-state"><div class="icon">✅</div><p>No fixes waiting.</p></div>`);
+}
+async function saveReviewer(){
+  const email=document.getElementById('rv-email').value.trim().toLowerCase();const name=document.getElementById('rv-name').value.trim();
+  const langs=[...document.querySelectorAll('.rv-lang:checked')].map(x=>x.value);
+  if(!email){toast('Email is required','error');return;}
+  if(!langs.length){toast('Tick at least one language','error');return;}
+  const{error}=await sb.rpc('kg_chart_set_reviewer',{p_email:email,p_name:name,p_languages:langs});
+  if(error){toast(error.message,'error');return;}
+  REV.editing=null;toast(`Saved. Send ${email} the review link.`);await loadAll();
+}
+async function removeReviewer(email){
+  const u=S.users.find(x=>x.email===email);
+  if(!confirm(u?.role==='reviewer'?`Remove ${email}? They can no longer sign in. Their answers stay.`:`Stop ${email} reviewing? They stay a learner.`))return;
+  const{error}=await sb.rpc('kg_chart_set_reviewer',{p_email:email,p_name:'',p_languages:[]});
+  if(error){toast(error.message,'error');return;}
+  toast('Removed');await loadAll();
+}
+async function acceptReview(id){
+  const r=S.reviews.find(x=>x.id===id);const t=document.getElementById(`rv-fix-${id}`).value.trim();
+  if(!t){toast('The new text is empty','error');return;}
+  const{error}=await sb.rpc('kg_chart_accept_review',{p_id:id,p_text:t});
+  if(error){toast(error.message,'error');return;}
+  toast(r&&r.field!=='meaning_text'&&r.language_code!=='fil'?`Accepted. New audio: python tools/gen_kg_audio.py --lang ${r.language_code}`:'Accepted');await loadAll();
+}
+async function rejectReview(id){
+  const{error}=await sb.from('kg_chart_reviews').update({status:'rejected',resolved_at:new Date().toISOString()}).eq('id',id);
+  if(error){toast(error.message,'error');return;}
+  toast('Rejected');await loadAll();
+}
+function copyReviewLink(){const u=new URL('./kg-chart-review.html',location.href).href;navigator.clipboard?.writeText(u).then(()=>toast('Review link copied'),()=>prompt('Review link',u));}
+
 let importTarget='';
 function triggerImport(target){importTarget=target;document.getElementById('file-import').click();}
 document.getElementById('file-import').addEventListener('change',async function(e){
@@ -626,7 +712,7 @@ function openUnlock(topicId){const ex=S.unlocks.find(u=>u.topic_id===topicId);UN
 function renderUnlock(){
   const t=S.topics.find(x=>x.id===UNLOCK.topic);
   const have=new Set(S.unlocks.filter(u=>u.topic_id===UNLOCK.topic&&u.language_code===UNLOCK.lang).map(u=>u.email));
-  const users=S.users.filter(u=>u.role!=='admin');
+  const users=S.users.filter(u=>u.role!=='admin'&&u.role!=='reviewer');
   const list=users.length?users.map(u=>`<label style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;cursor:pointer"><input type="checkbox" class="unl-cb" value="${escH(u.email)}" ${have.has(u.email)?'checked':''}><span style="flex:1">${escH(u.name||u.email)}</span><span class="mono" style="font-size:12px;color:var(--text-muted)">${escH(u.email)}</span></label>`).join(''):'<p style="color:var(--text-muted)">No learners in kg_chart_users yet.</p>';
   showModal(`<h3><span class="accent-dot"></span>Unlock ${t?.icon||''} ${escH(UNLOCK.topic)}</h3><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Ticked learners get this topic open straight away. Topics after it still follow the path.</p><div class="form-group"><label>Language</label><select id="unl-lang" onchange="UNLOCK.lang=this.value;renderUnlock()">${langOptions(UNLOCK.lang)}</select></div><div style="display:grid;gap:6px;max-height:320px;overflow-y:auto;margin:10px 0">${list}</div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-accent" onclick="saveUnlock()">Save</button></div>`);
 }
@@ -641,7 +727,7 @@ async function saveUnlock(){
 }
 function openReset(){
   if(!S.pathReady){toast('Run kg-chart-phase8.sql first','error');return;}
-  const opts=S.users.map(u=>`<option value="${escH(u.email)}">${escH(u.name||u.email)} · ${escH(u.email)}</option>`).join('');
+  const opts=S.users.filter(u=>u.role!=='reviewer').map(u=>`<option value="${escH(u.email)}">${escH(u.name||u.email)} · ${escH(u.email)}</option>`).join('');
   showModal(`<h3><span class="accent-dot"></span>Reset a learner's path</h3><p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Re-locks their topics back to the first one. Their quiz history, Quiz Stats and word strength are kept. Only answers after the reset count toward unlocking.</p><div class="form-row"><div class="form-group"><label>Learner</label><select id="rs-email">${opts}</select></div><div class="form-group"><label>Language</label><select id="rs-lang">${langOptions('*')}</select></div></div><div class="form-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-danger" onclick="doReset()">Reset path</button></div>`);
 }
 async function doReset(){
@@ -1800,7 +1886,7 @@ const LEVEL_NAMES=['','🌱 Easy','🌿 Normal','🌳 Hard','🏔️ Expert'];
 function renderLevels(el){
   if(!S.levelsReady){el.innerHTML=`<div class="empty-state"><div class="icon">🎚️</div><p>Run <span class="mono">kg-chart-levels.sql</span> in the Supabase SQL editor, then reload this page.</p></div>`;return;}
   const langs=S.languages.filter(l=>l.is_active);
-  const users=S.users;
+  const users=S.users.filter(u=>u.role!=='reviewer');
   if(!users.length){el.innerHTML=`<div class="empty-state"><div class="icon">👤</div><p>No learners in kg_chart_users yet.</p></div>`;return;}
   const cell=(email,lc)=>{const r=S.levels.find(x=>x.email===email&&x.language_code===lc);const u=r?.unlocked||1;const lvl=r?.level||1;
     return`<td><select onchange="setLearnerLevel('${escH(email)}','${lc}',+this.value)" title="Highest unlocked level">${[1,2,3,4].map(n=>`<option value="${n}" ${n===u?'selected':''}>${LEVEL_NAMES[n]}</option>`).join('')}</select>${lvl!==u?`<div style="font-size:11px;color:var(--text-muted);margin-top:2px">playing ${LEVEL_NAMES[lvl]}</div>`:''}</td>`;};
