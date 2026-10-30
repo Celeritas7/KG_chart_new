@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KG Chart Review</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧐</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="./js/kg-audio.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Sans+Sinhala:wght@400;500;700&family=Noto+Sans+Tamil:wght@400;500;700&family=Padauk:wght@400;700&family=Noto+Sans+Myanmar:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&family=Noto+Sans+Thai:wght@400;500;700&family=Noto+Sans+Kannada:wght@400;500;700&family=Noto+Sans+Telugu:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root { --jade: #15803d; --jade-l: #dcfce9; --bg: #f9fafb; --card: #fff; --text: #1f2937; --muted: #6b7280; --border: #e5e7eb; --red: #b91c1c; --red-l: #fee2e2; --amber: #92400e; --amber-l: #fef3c7; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: 'DM Sans', 'Noto Sans Telugu', 'Noto Sans Kannada', 'Noto Sans Tamil', 'Noto Sans Devanagari', 'Noto Sans Myanmar', 'Noto Sans Sinhala', 'Noto Sans Thai', 'Noto Sans KR', 'Noto Sans JP', 'Noto Sans SC', sans-serif; background: var(--bg); color: var(--text); -webkit-text-size-adjust: 100%; }
+header { background: linear-gradient(135deg, #166534, #15803d); color: #fff; padding: 16px; position: sticky; top: 0; z-index: 10; }
+header h1 { margin: 0 0 10px; font-size: 20px; display: flex; align-items: center; gap: 8px; }
+header .who { margin-left: auto; font-size: 12px; font-weight: 400; opacity: .85; }
+header .who button { background: none; border: 1px solid rgba(255,255,255,.5); color: #fff; border-radius: 999px; padding: 2px 10px; font: inherit; margin-left: 6px; cursor: pointer; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+select, input, textarea, button { font: inherit; }
+header select { padding: 8px 10px; border-radius: 10px; border: 0; font-size: 15px; min-width: 0; flex: 1; }
+.bar { height: 8px; background: rgba(255,255,255,.3); border-radius: 99px; overflow: hidden; margin-top: 10px; }
+.bar > div { height: 100%; background: #fff; border-radius: 99px; transition: width .3s; }
+.progress-text { font-size: 13px; margin-top: 6px; opacity: .95; }
+main { max-width: 720px; margin: 0 auto; padding: 12px 12px 80px; }
+.tabs, .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 10px; }
+.tabs button, .chips button { flex: none; border: 1px solid var(--border); background: var(--card); border-radius: 999px; padding: 8px 14px; font-size: 14px; color: var(--muted); cursor: pointer; }
+.tabs button.on { background: var(--jade); border-color: var(--jade); color: #fff; font-weight: 600; }
+.chips button.on { background: var(--jade-l); border-color: var(--jade); color: var(--jade); font-weight: 600; }
+h2 { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 18px 4px 8px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 12px; margin-bottom: 10px; display: flex; gap: 12px; }
+.card.done { opacity: .75; }
+.pic { width: 64px; height: 64px; flex: none; border-radius: 12px; background: #f3f4f6; display: flex; align-items: center; justify-content: center; font-size: 38px; overflow: hidden; }
+.pic img { width: 100%; height: 100%; object-fit: cover; }
+.body { flex: 1; min-width: 0; }
+.meaning { font-size: 13px; color: var(--muted); }
+.context { font-size: 14px; color: var(--muted); margin-top: 2px; }
+.native { font-size: 24px; font-weight: 700; line-height: 1.35; margin: 4px 0; word-break: break-word; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.note { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.play { border: 1px solid var(--border); background: #fff; border-radius: 999px; width: 34px; height: 34px; font-size: 16px; cursor: pointer; flex: none; }
+.acts { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
+.btn { border: 2px solid var(--border); background: #fff; border-radius: 12px; padding: 10px 14px; font-size: 15px; font-weight: 600; cursor: pointer; min-height: 44px; }
+.btn.ok { border-color: #86efac; color: var(--jade); }
+.btn.fix { border-color: #fcd34d; color: var(--amber); }
+.btn.primary { background: var(--jade); border-color: var(--jade); color: #fff; }
+.btn.link { border: 0; background: none; color: var(--muted); font-weight: 500; padding: 10px 6px; }
+.chip { display: inline-block; font-size: 13px; font-weight: 600; padding: 4px 10px; border-radius: 999px; }
+.chip.ok { background: var(--jade-l); color: var(--jade); }
+.chip.open { background: var(--amber-l); color: var(--amber); }
+.chip.accepted { background: #dbeafe; color: #1d4ed8; }
+.chip.rejected { background: var(--red-l); color: var(--red); }
+.fixform { margin-top: 8px; display: grid; gap: 8px; }
+.fixform label { font-size: 13px; color: var(--muted); }
+.fixform textarea, .fixform input { width: 100%; border: 1px solid var(--border); border-radius: 10px; padding: 10px; font-size: 18px; }
+.fixform input { font-size: 15px; }
+.empty, .notice { text-align: center; color: var(--muted); padding: 32px 16px; }
+.signin { max-width: 380px; margin: 40px auto; background: #fff; border-radius: 20px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,.08); display: grid; gap: 10px; }
+.signin h2 { text-transform: none; letter-spacing: 0; color: var(--text); font-size: 20px; margin: 0; }
+.signin input { border: 1px solid var(--border); border-radius: 10px; padding: 12px; font-size: 16px; }
+.err { color: var(--red); font-size: 14px; }
+#toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: #1f2937; color: #fff; padding: 10px 16px; border-radius: 999px; font-size: 14px; display: none; gap: 10px; align-items: center; z-index: 20; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+#toast button { background: none; border: 0; color: #86efac; font: inherit; font-weight: 700; cursor: pointer; }
+.f-my { font-family: 'Noto Sans Myanmar', 'Padauk', sans-serif; } .f-ja { font-family: 'Noto Sans JP', sans-serif; } .f-zh { font-family: 'Noto Sans SC', sans-serif; }
+.f-si { font-family: 'Noto Sans Sinhala', sans-serif; } .f-ta { font-family: 'Noto Sans Tamil', sans-serif; } .f-ko { font-family: 'Noto Sans KR', sans-serif; }
+.f-th { font-family: 'Noto Sans Thai', sans-serif; } .f-kn { font-family: 'Noto Sans Kannada', sans-serif; } .f-te { font-family: 'Noto Sans Telugu', sans-serif; }
+.f-mr { font-family: 'Noto Sans Devanagari', sans-serif; }
+</style>
+</head>
+<body>
+<header id="top" hidden>
+  <h1>🧐 Review <span class="who" id="who"></span></h1>
+  <div class="row"><select id="lang" aria-label="Language to review"></select></div>
+  <div class="bar"><div id="bar" style="width:0"></div></div>
+  <div class="progress-text" id="progress"></div>
+</header>
+<main id="main"><div class="notice">Loading…</div></main>
+<div id="toast" role="status"><span id="toast-msg"></span><button id="toast-undo" hidden>Undo</button></div>
+<script>
+// Native speakers tick ✓ or suggest a fix for each word, topic header and sentence in their languages.
+// Answers go to kg_chart_reviews; the admin accepts or rejects fixes in admin → 🧐 Reviews (kg-chart-reviews.sql).
+const SB_URL = 'https://ulgrfumbwjovbjzjiems.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVsZ3JmdW1id2pvdmJqemppZW1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczNzIyNjcsImV4cCI6MjA4Mjk0ODI2N30.ix5Vh4Y3GXNbQbzVtTD_WSko0L3cr5q_eCnTuDEMh7M';
+const sb = supabase.createClient(SB_URL, SB_KEY);
+const BUCKET = 'vocabulary-assets';
+// Same as MEANING_LANGS in the app: Marathi meanings are written in Filipino, so a Filipino reviewer checks those
+const MEANING_LANGS = { mr: 'fil' };
+const MEANING_SOURCE = Object.fromEntries(Object.entries(MEANING_LANGS).map(([src, m]) => [m, src]));
+const LANG_KEY = 'kg_review_lang', TAB_KEY = 'kg_review_tab';
+
+const R = { user: null, admin: false, langs: [], allLangs: [], lang: '', tab: 'words', filter: 'todo', items: [], reviews: [], open: null, loading: false };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
+const langName = (c) => { const l = R.allLangs.find(x => x.code === c); return l ? `${l.flag_emoji || ''} ${l.name_english || c}`.trim() : c; };
+const fontOf = (c) => `f-${c}`;
+const imgUrl = (topic, fn) => !fn ? null : fn.startsWith('http') ? fn : `${SB_URL}/storage/v1/object/public/${BUCKET}/${topic}/${fn}`;
+
+let toastTimer = null;
+function toast(msg, undo) {
+  $('toast-msg').textContent = msg;
+  const u = $('toast-undo'); u.hidden = !undo; u.onclick = () => { $('toast').style.display = 'none'; undo(); };
+  $('toast').style.display = 'flex';
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').style.display = 'none'; }, 4000);
+}
+
+// ---------- sign in ----------
+function showSignIn(msg) {
+  $('top').hidden = true;
+  $('main').innerHTML = `<form class="signin" id="signin">
+    <h2>🧐 KG Chart review</h2>
+    <p class="meaning">Sign in with the email the admin added for you.</p>
+    <button type="button" class="btn" id="g">Sign in with Google</button>
+    <input type="email" id="em" placeholder="Email" autocomplete="email" required>
+    <input type="password" id="pw" placeholder="Password" autocomplete="current-password" required>
+    <button class="btn primary">Sign in</button>
+    <div class="err" id="err">${esc(msg || '')}</div>
+  </form>`;
+  $('g').onclick = () => sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } });
+  $('signin').onsubmit = async (e) => {
+    e.preventDefault();
+    const { error } = await sb.auth.signInWithPassword({ email: $('em').value.trim(), password: $('pw').value });
+    if (error) $('err').textContent = error.message; else start();
+  };
+}
+
+async function start() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return showSignIn();
+  R.user = session.user;
+  const [langs, adm, all] = await Promise.all([sb.rpc('kg_chart_review_langs'), sb.rpc('kg_chart_is_admin'), sb.from('kg_chart_languages').select('*').order('sort_order')]);
+  if (langs.error) { $('main').innerHTML = `<div class="notice">The review page isn't set up yet. The admin runs <b>kg-chart-reviews.sql</b> first.<br><br><span class="meaning">${esc(langs.error.message)}</span></div>`; return; }
+  R.admin = adm.data === true;
+  R.allLangs = all.data || [];
+  // An admin can review every language but only ones with content are worth listing
+  R.langs = (langs.data || []).filter(c => c !== 'en');
+  $('top').hidden = false;
+  $('who').innerHTML = `${esc(R.user.email)}<button id="out">Sign out</button>`;
+  $('out').onclick = async () => { await sb.auth.signOut(); showSignIn(); };
+  if (!R.langs.length) {
+    $('lang').parentElement.hidden = true;
+    $('main').innerHTML = `<div class="notice">${esc(R.user.email)} isn't a reviewer yet.<br>Ask the admin to add this email in admin → 🧐 Reviews.</div>`;
+    return;
+  }
+  const saved = store.get(LANG_KEY);
+  R.lang = R.langs.includes(saved) ? saved : R.langs[0];
+  R.tab = ['words', 'topics', 'sentences'].includes(store.get(TAB_KEY)) ? store.get(TAB_KEY) : 'words';
+  $('lang').innerHTML = R.langs.map(c => `<option value="${esc(c)}" ${c === R.lang ? 'selected' : ''}>${esc(langName(c))}${MEANING_SOURCE[c] ? ` (meanings for ${esc(langName(MEANING_SOURCE[c]).replace(/^\S+\s/, ''))})` : ''}</option>`).join('');
+  $('lang').onchange = () => { R.lang = $('lang').value; store.set(LANG_KEY, R.lang); R.open = null; load(); };
+  load();
+}
+
+// ---------- data ----------
+// Every checkable text for the language: { type, id, field, lang, text, meaning, context, group, pic, note }
+async function load() {
+  R.loading = true; render();
+  const L = R.lang, src = MEANING_SOURCE[L];
+  const trLangs = src ? [L, src] : [L];
+  const [vocab, vtr, topics, ttr, sents, revs, priv] = await Promise.all([
+    sb.from('kg_chart_vocabulary').select('id, topic_id, english_text, image_filename, sort_order').order('sort_order'),
+    sb.from('kg_chart_vocabulary_translations').select('vocabulary_id, language_code, native_text, notes').in('language_code', trLangs),
+    sb.from('kg_chart_topics').select('*').order('sort_order'),
+    sb.from('kg_chart_topic_translations').select('*').in('language_code', trLangs),
+    sb.from('kg_chart_sentences').select('*').in('language_code', trLangs).order('sort_order').order('created_at'),
+    sb.from('kg_chart_reviews').select('*').eq('language_code', L).eq('user_id', R.user.id),
+    sb.from('kg_chart_settings').select('value').eq('key', 'private_lessons').maybeSingle(),
+  ]);
+  if (L !== R.lang) return; // switched language while loading
+  // Private lessons (Sweet Talk) stay out unless this account is listed, like in the app
+  const me = (R.user.email || '').toLowerCase();
+  const hidden = R.admin ? [] : (Array.isArray(priv.data?.value) ? priv.data.value : []).filter(r => !(r.emails || []).some(e => String(e).toLowerCase() === me));
+  const hidTopics = new Set(hidden.map(r => r.topic_id).filter(Boolean));
+  const hidGroups = new Set(hidden.flatMap(r => (r.sentence_groups || []).map(g => `${r.language_code || ''}|${g}`)));
+  const hiddenGroup = (s) => hidGroups.has(`${s.language_code}|${s.group_name}`) || hidGroups.has(`|${s.group_name}`);
+
+  const topicName = Object.fromEntries((topics.data || []).map(t => [t.id, t]));
+  const tr = (rows, key, lc) => new Map((rows || []).filter(r => r.language_code === lc).map(r => [r[key], r]));
+  const vMain = tr(vtr.data, 'vocabulary_id', L), vSrc = src ? tr(vtr.data, 'vocabulary_id', src) : new Map();
+  const tMain = tr(ttr.data, 'topic_id', L), tSrc = src ? tr(ttr.data, 'topic_id', src) : new Map();
+  const topicLabel = (id) => { const t = topicName[id]; return t ? `${t.icon || ''} ${tMain.get(id)?.title_native || t.name_english || t.title_english || id.replace(/_/g, ' ')}`.trim() : id; };
+  const items = [];
+  for (const v of vocab.data || []) {
+    const t = vMain.get(v.id);
+    if (!t || !t.native_text?.trim() || hidTopics.has(v.topic_id)) continue;
+    items.push({ type: 'word', id: v.id, field: 'native_text', text: t.native_text.trim(), meaning: v.english_text,
+      context: src ? vSrc.get(v.id)?.native_text : '', contextLang: src, group: topicLabel(v.topic_id), note: t.notes,
+      pic: v.image_filename, topic: v.topic_id });
+  }
+  for (const tp of topics.data || []) {
+    const t = tMain.get(tp.id);
+    if (!t || hidTopics.has(tp.id)) continue;
+    const s = tSrc.get(tp.id);
+    if (t.title_native?.trim()) items.push({ type: 'topic', id: tp.id, field: 'title_native', text: t.title_native.trim(), meaning: `Topic: ${tp.id.replace(/_/g, ' ')}`, context: s?.title_native, contextLang: src, group: 'Topic titles' });
+    if (t.question_native?.trim()) items.push({ type: 'topic', id: tp.id, field: 'question_native', text: t.question_native.trim(), meaning: t.question_english || s?.question_english || '', context: s?.question_native, contextLang: src, group: 'Topic questions' });
+  }
+  for (const s of sents.data || []) {
+    if (hiddenGroup(s)) continue;
+    if (s.language_code === L && s.native_text?.trim()) items.push({ type: 'sentence', id: s.id, field: 'native_text', text: s.native_text.trim(), meaning: s.english_text, group: s.group_name || 'Sentences', note: s.notes && s.notes.length > 3 ? s.notes : '' });
+    // Filipino reviewer: the Filipino meaning of each Marathi sentence
+    if (src && s.language_code === src && s.meaning_text?.trim()) items.push({ type: 'sentence', id: s.id, field: 'meaning_text', text: s.meaning_text.trim(), meaning: s.english_text, context: s.native_text, contextLang: src, group: s.group_name || 'Sentences' });
+  }
+  R.items = items;
+  R.reviews = revs.data || [];
+  R.loadError = revs.error?.message || null;
+  R.loading = false;
+  window.KGAudio.loadManifest(L);
+  if (src) window.KGAudio.loadManifest(src);
+  render();
+}
+
+// My answer for this item, if it's about the text shown now (an accepted fix counts once its text is in place)
+const keyOf = (it) => `${it.type}|${it.id}|${it.field}`;
+function reviewOf(it) {
+  const mine = R.reviews.filter(r => `${r.item_type}|${r.item_id}|${r.field}` === keyOf(it));
+  return mine.find(r => r.shown_text === it.text) || mine.find(r => r.status === 'accepted' && r.suggestion === it.text) || null;
+}
+
+// ---------- save ----------
+async function answer(it, verdict, suggestion, comment) {
+  const row = { user_id: R.user.id, language_code: R.lang, item_type: it.type, item_id: it.id, field: it.field, shown_text: it.text,
+    verdict, suggestion: verdict === 'fix' ? (suggestion || null) : null, comment: comment || null, status: verdict === 'ok' ? 'ok' : 'open' };
+  const { data, error } = await sb.from('kg_chart_reviews').upsert(row, { onConflict: 'user_id,item_type,item_id,field,shown_text' }).select().single();
+  if (error) { toast(`Not saved: ${error.message}`); return; }
+  R.reviews = R.reviews.filter(r => r.id !== data.id).concat(data);
+  R.open = null;
+  render();
+  toast(verdict === 'ok' ? '✓ Marked correct' : '✏️ Fix sent to the admin', async () => {
+    const { error: e } = await sb.from('kg_chart_reviews').delete().eq('id', data.id);
+    if (e) { toast(`Couldn't undo: ${e.message}`); return; }
+    R.reviews = R.reviews.filter(r => r.id !== data.id); render();
+  });
+}
+
+// ---------- render ----------
+const TABS = [['words', '🔤 Words', 'word'], ['topics', '🏷️ Topics', 'topic'], ['sentences', '💬 Sentences', 'sentence']];
+function render() {
+  const main = $('main');
+  if (R.loading) { main.innerHTML = '<div class="notice">Loading…</div>'; return; }
+  const all = R.items, done = all.filter(reviewOf).length;
+  $('bar').style.width = all.length ? `${Math.round(done * 100 / all.length)}%` : '0';
+  $('progress').textContent = all.length ? `${done} of ${all.length} checked` : '';
+  const tabs = TABS.filter(([, , type]) => all.some(i => i.type === type));
+  if (!tabs.length) { main.innerHTML = `<div class="empty">Nothing to review in ${esc(langName(R.lang))} yet.</div>`; return; }
+  if (!tabs.some(t => t[0] === R.tab)) R.tab = tabs[0][0];
+  const type = TABS.find(t => t[0] === R.tab)[2];
+  const inTab = all.filter(i => i.type === type);
+  const todo = inTab.filter(i => !reviewOf(i)), fixes = inTab.filter(i => reviewOf(i)?.verdict === 'fix');
+  const shown = R.filter === 'todo' ? todo : R.filter === 'fixes' ? fixes : inTab;
+  const groups = [];
+  for (const it of shown) { let g = groups.find(x => x.name === it.group); if (!g) groups.push(g = { name: it.group, items: [] }); g.items.push(it); }
+  main.innerHTML =
+    (R.loadError ? `<div class="notice err">${esc(R.loadError)}</div>` : '') +
+    `<div class="tabs" role="tablist">${tabs.map(([id, label, t]) => { const n = all.filter(i => i.type === t), d = n.filter(reviewOf).length; return `<button role="tab" data-tab="${id}" class="${id === R.tab ? 'on' : ''}">${label} <span>${d}/${n.length}</span></button>`; }).join('')}</div>` +
+    `<div class="chips">${[['todo', `To check (${todo.length})`], ['all', `All (${inTab.length})`], ['fixes', `My fixes (${fixes.length})`]].map(([id, label]) => `<button data-filter="${id}" class="${id === R.filter ? 'on' : ''}">${label}</button>`).join('')}</div>` +
+    (shown.length ? groups.map(g => `<h2>${esc(g.name)}</h2>${g.items.map(card).join('')}`).join('')
+      : `<div class="empty">${R.filter === 'todo' ? '🎉 All checked here. Thank you!' : 'Nothing here.'}</div>`);
+  main.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { R.tab = b.dataset.tab; store.set(TAB_KEY, R.tab); R.open = null; render(); });
+  main.querySelectorAll('[data-filter]').forEach(b => b.onclick = () => { R.filter = b.dataset.filter; R.open = null; render(); });
+  main.querySelectorAll('[data-act]').forEach(b => b.onclick = () => act(b));
+}
+
+const STATUS = { ok: ['ok', '✓ Correct'], open: ['open', '✏️ Fix sent'], accepted: ['accepted', '✅ Fix accepted'], rejected: ['rejected', '✖ Fix not used'] };
+function card(it) {
+  const r = reviewOf(it), k = keyOf(it), open = R.open === k;
+  const pic = it.type === 'word' ? `<div class="pic">${it.pic?.startsWith('emoji:') ? esc(it.pic.slice(6)) : it.pic ? `<img src="${esc(imgUrl(it.topic, it.pic))}" alt="" loading="lazy" onerror="this.remove()">` : '🖼️'}</div>` : '';
+  const play = window.KGAudio.has(it.text, R.lang) === true ? `<button class="play" data-act="play" data-k="${esc(k)}" aria-label="Listen">🔊</button>` : '';
+  const ctx = it.context ? `<div class="context ${fontOf(it.contextLang)}">${esc(it.context)}</div>` : '';
+  const locked = r && (r.status === 'accepted' || r.status === 'rejected');
+  const st = r ? `<span class="chip ${STATUS[r.status][0]}">${STATUS[r.status][1]}</span>` : '';
+  const yours = r?.verdict === 'fix' ? `<div class="note">Your fix: <b>${esc(r.suggestion || '—')}</b>${r.comment ? ` · ${esc(r.comment)}` : ''}</div>` : '';
+  const acts = locked ? `<div class="acts">${st}</div>`
+    : open ? `<div class="fixform">
+        <label for="fx-${esc(k)}">Correct ${it.field === 'meaning_text' || MEANING_SOURCE[R.lang] ? 'meaning' : 'spelling'}</label>
+        <textarea id="fx-${esc(k)}" rows="2" class="${fontOf(R.lang)}">${esc(r?.suggestion || it.text)}</textarea>
+        <label for="cm-${esc(k)}">Comment (optional)</label>
+        <input id="cm-${esc(k)}" value="${esc(r?.comment || '')}" placeholder="e.g. more common word, wrong meaning">
+        <div class="acts"><button class="btn primary" data-act="send" data-k="${esc(k)}">Send fix</button><button class="btn link" data-act="cancel">Cancel</button></div>
+      </div>`
+    : `<div class="acts">${st}<button class="btn ok" data-act="ok" data-k="${esc(k)}">✓ Correct</button><button class="btn fix" data-act="fix" data-k="${esc(k)}">✏️ Fix</button></div>`;
+  return `<div class="card ${r && !open ? 'done' : ''}">${pic}<div class="body">
+    <div class="meaning">${esc(it.meaning || '')}</div>${ctx}
+    <div class="native ${fontOf(R.lang)}">${esc(it.text)} ${play}</div>
+    ${it.note ? `<div class="note">📝 ${esc(it.note)}</div>` : ''}${yours}${acts}</div></div>`;
+}
+
+function act(b) {
+  const it = R.items.find(i => keyOf(i) === b.dataset.k);
+  const a = b.dataset.act;
+  if (a === 'cancel') { R.open = null; render(); return; }
+  if (!it) return;
+  if (a === 'play') { window.KGAudio.play(it.text, R.lang); return; }
+  if (a === 'ok') { answer(it, 'ok'); return; }
+  if (a === 'fix') { R.open = keyOf(it); render(); document.getElementById(`fx-${R.open}`)?.focus(); return; }
+  if (a === 'send') {
+    const k = keyOf(it);
+    const s = document.getElementById(`fx-${k}`).value.trim(), c = document.getElementById(`cm-${k}`).value.trim();
+    if (!c && (!s || s === it.text)) { toast('Change the text or add a comment first'); return; }
+    answer(it, 'fix', s && s !== it.text ? s : null, c);
+  }
+}
+
+// Audio list arrived: show the 🔊 buttons (not while a fix is being typed)
+window.KGAudio.subscribe(() => { if (!R.loading && R.items.length && !R.open) render(); });
+sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_IN' && !R.user) setTimeout(start, 0); });
+start();
+</script>
+</body>
+</html>
