@@ -453,8 +453,8 @@ function exportTT(fmt){
 }
 
 // ===== SENTENCES (sentence quizzes in the app) =====
-// Same as MEANING_LANGS in the app: these languages show their meanings in another language (Marathi → Filipino)
-const SENT_MEANING_LANGS={mr:'Filipino'};
+// Languages whose meanings are in another language (Marathi → Filipino): KGShared.MEANING_LANGS, the app's list
+const SENT_MEANING_LANGS=Object.fromEntries(Object.entries(KGShared.MEANING_LANGS).map(([l,m])=>[l,m.name]));
 const sentMeaningName=lang=>S.sentMeaningReady&&SENT_MEANING_LANGS[lang]||'';
 function sentLang(){const l=S.filters.sentLang;if(l&&S.languages.some(x=>x.code===l))return l;const first=S.languages.find(x=>x.is_active)||S.languages[0];return first?first.code:'';}
 function renderSentences(el){
@@ -535,7 +535,7 @@ async function importSentences(rows){
 // Reviewers tick ✓ or send a fix; nothing changes for learners until a fix is accepted here (kg_chart_accept_review).
 // The items per language are built the same way as load() in kg-chart-review.html; keep the two in sync.
 const REV={lang:'',editing:null};
-const REV_MEANING_SOURCE=KGShared.REVIEW_MEANING_SOURCE; // MEANING_LANGS mr → fil, turned round (js/kg-shared.js)
+const REV_MEANING_SOURCE=KGShared.REVIEW_MEANING_SOURCE; // KGShared.MEANING_LANGS mr → fil, turned round
 const revKey=KGShared.reviewKey;
 // The same list the review page shows (js/kg-shared.js); admin counts everything, private lessons too
 function revItems(L){return KGShared.reviewItems({lang:L,vocabulary:S.vocabulary,vocabTrans:S.vocabTrans,topics:S.topics,topicTrans:S.topicTrans,sentences:S.sentences}).map(it=>({key:it.key,text:it.text}));}

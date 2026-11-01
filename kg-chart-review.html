@@ -85,7 +85,7 @@ const SB_URL = 'https://ulgrfumbwjovbjzjiems.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVsZ3JmdW1id2pvdmJqemppZW1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczNzIyNjcsImV4cCI6MjA4Mjk0ODI2N30.ix5Vh4Y3GXNbQbzVtTD_WSko0L3cr5q_eCnTuDEMh7M';
 const sb = supabase.createClient(SB_URL, SB_KEY);
 const BUCKET = 'vocabulary-assets';
-// Same as MEANING_LANGS in the app: Marathi meanings are written in Filipino, so a Filipino reviewer checks those
+// KGShared.MEANING_LANGS turned round: Marathi meanings are written in Filipino, so a Filipino reviewer checks those
 // (js/kg-shared.js, which admin → 🧐 Reviews uses too)
 const MEANING_SOURCE = KGShared.REVIEW_MEANING_SOURCE;
 const LANG_KEY = 'kg_review_lang', TAB_KEY = 'kg_review_tab';

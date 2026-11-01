@@ -390,7 +390,7 @@
 
     // Meanings in the learner's own language instead of English (Marathi → Filipino). The meanings live in the
     // translations tables under a hidden language row, so they're edited in admin like any other translation.
-    const MEANING_LANGS = { mr: { code: 'fil', name: 'Filipino', short: 'FIL' } };
+    const MEANING_LANGS = window.KGShared.MEANING_LANGS; // js/kg-shared.js (admin and the review page read the same)
     const MEANING_STORAGE_KEY = 'kg_chart_meanings_in_english';
     const meaningNameFor = (langCode, inEnglish) => (MEANING_LANGS[langCode] && !inEnglish ? MEANING_LANGS[langCode].name : 'English');
     // Languages already written in Devanagari: the blue hint line shows a plain romanisation instead
