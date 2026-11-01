@@ -1209,12 +1209,15 @@
     // Before kg-chart-flags-devanagari.sql the flag table has no shown_devanagari / suggestion / sentence_id
     const isMissingColumn = (error) => !!error && (error.code === 'PGRST204' || error.code === '42703' || /Could not find the '[^']*' column|schema cache/i.test(error.message || ''));
 
-    // Flag one word (item) or one sentence: what's on screen is saved with it, so it can be reviewed later
-    function FlagModal({ item, sentence, languageCode, onClose, defaultReason = 'pronunciation' }) {
+    // Flag one word (item), one sentence or one colour phrase ({ id, native, meaning, hint }):
+    // what's on screen is saved with it, so it can be reviewed later
+    function FlagModal({ item, sentence, phrase, languageCode, onClose, defaultReason = 'pronunciation' }) {
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
-      const native = sentence ? sentence.native_text : item?.translation?.native_text;
-      const shownDev = (sentence ? sentenceHint(sentence.native_text, languageCode) : item?.translation?.devanagari) || '';
-      const reasons = FLAG_REASONS.filter(r => !(sentence && r.id === 'missing_image'));
+      const native = sentence ? sentence.native_text : phrase ? phrase.native : item?.translation?.native_text;
+      const shownDev = (sentence ? sentenceHint(sentence.native_text, languageCode) : phrase ? phrase.hint : item?.translation?.devanagari) || '';
+      const reasons = FLAG_REASONS
+        .filter(r => !(sentence && r.id === 'missing_image') && !(phrase && r.id === 'missing_translation'))
+        .map(r => (phrase && r.id === 'missing_image' ? { ...r, emoji: '🎨', label: 'Picture or colour looks wrong' } : r));
       const [selectedReason, setSelectedReason] = useState(reasons.some(r => r.id === defaultReason) ? defaultReason : '');
       const [suggestion, setSuggestion] = useState('');
       const [notes, setNotes] = useState('');
@@ -1233,11 +1236,12 @@
         if (!selectedReason) return;
         setSubmitting(true); setErrMsg('');
         const base = { vocabulary_id: item?.id || null, language_code: languageCode, reason: selectedReason, notes: notes.trim() || null, status: 'open' };
-        const extra = { shown_devanagari: shownDev || null, suggestion: isPron ? (suggestion.trim() || null) : null, sentence_id: sentence?.id || null };
+        const extra = { shown_devanagari: shownDev || null, suggestion: isPron ? (suggestion.trim() || null) : null, sentence_id: sentence?.id || null,
+          ...(phrase ? { colour_phrase_id: phrase.id } : {}) };
         let { error } = await supabase.from('kg_chart_flags').insert({ ...base, ...extra });
         if (error && isMissingColumn(error)) {
           // Older table: keep the same details in the note
-          const parts = [sentence && `Sentence: ${sentence.native_text}`, shownDev && `Devanagari shown: ${shownDev}`, extra.suggestion && `Should be: ${extra.suggestion}`, base.notes];
+          const parts = [sentence && `Sentence: ${sentence.native_text}`, phrase && `Colour phrase: ${phrase.native} (${phrase.meaning})`, shownDev && `Devanagari shown: ${shownDev}`, extra.suggestion && `Should be: ${extra.suggestion}`, base.notes];
           ({ error } = await supabase.from('kg_chart_flags').insert({ ...base, notes: parts.filter(Boolean).join(' · ') || null }));
         }
         setSubmitting(false);
@@ -1261,7 +1265,7 @@
                   <div className="text-xs font-semibold text-red-500 uppercase tracking-wide mb-2">🚩 Flag for review</div>
                   <div className={`text-2xl font-bold text-gray-800 ${fontClass}`}>{native}</div>
                   {shownDev && <div className="text-xl text-blue-600 font-devanagari mt-1">{shownDev}</div>}
-                  <div className="text-sm text-gray-500 mt-1">{sentence ? (sentence.display_text || sentence.english_text) : (item?.display_text || item?.english_text)}</div>
+                  <div className="text-sm text-gray-500 mt-1">{sentence ? (sentence.display_text || sentence.english_text) : phrase ? phrase.meaning : (item?.display_text || item?.english_text)}</div>
                 </div>
                 <div className="space-y-2 mb-4">
                   {reasons.map(r => (
@@ -4065,6 +4069,7 @@
       const [phase, setPhase] = useState('setup'); // setup | run | done
       const startedAt = React.useRef(0);
       const savedRun = React.useRef(false);
+      const [flagPhrase, setFlagPhrase] = useState(null);
 
       useEffect(() => { saveToStorage(COLOUR_SETTINGS_KEY, { type: qType, count }); }, [qType, count]);
       useEffect(() => {
@@ -4143,6 +4148,9 @@
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
       }, [phase, idx, picked, items]);
+
+      const openFlag = (x) => { window.KGAudio.stop(); setFlagPhrase({ id: x.id, native: x.native, meaning: x.meaning, hint: hint(x.native) }); };
+      const flagModal = flagPhrase && <FlagModal phrase={flagPhrase} languageCode={languageCode} defaultReason="wrong_word" onClose={() => setFlagPhrase(null)} />;
 
       const PhraseText = ({ p, size = 'text-3xl' }) => (
         <>
@@ -4232,7 +4240,7 @@
             ) : (
               <>
                 <PhraseText p={p} />
-                <div className="mt-3 flex justify-center gap-2"><SpeakButton text={p.native} lang={languageCode} /><SpeakButton text={p.native} lang={languageCode} slow /></div>
+                <div className="mt-3 flex justify-center items-center gap-2"><SpeakButton text={p.native} lang={languageCode} slow /><FlagButton compact onClick={() => openFlag(p)} /></div>
               </>
             )}
             <p className="text-sm text-gray-500 mt-4">{toText ? 'Which phrase is this?' : 'Which picture is it?'}</p>
@@ -4255,11 +4263,12 @@
               <div className="inline-block bg-white rounded-2xl shadow p-4 mb-4">
                 <PhraseText p={p} size="text-2xl" />
                 <div className="text-gray-500 text-sm mt-1">{p.meaning}</div>
-                <div className="mt-2"><SpeakButton text={p.native} lang={languageCode} size="sm" /></div>
+                <div className="mt-2 flex justify-center items-center gap-1"><SpeakButton text={p.native} lang={languageCode} size="sm" /><FlagButton compact onClick={() => openFlag(p)} /></div>
               </div>
               <div><button onClick={next} className="px-8 py-3 bg-blue-600 text-white rounded-full font-bold hover:bg-blue-700">{idx + 1 >= items.length ? 'See Results' : 'Next →'} <span className="text-blue-300 text-sm hidden sm:inline ml-1">↵</span></button></div>
             </div>
           )}
+          {flagModal}
         </div>
       );
     }
