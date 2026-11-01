@@ -55,9 +55,16 @@
     return (emojiCache[emoji] = url);
   }
 
+  // ---- Meanings in another language ----
+  // These languages show their meanings in a language other than English: Marathi words and sentences have
+  // Filipino meanings (the fil translation rows and kg_chart_sentences.meaning_text). code = where the meanings are
+  // stored, name = shown in the app and admin, short = the header's EN/FIL button. The only copy: app, admin and
+  // review page all read it from here.
+  const MEANING_LANGS = { mr: { code: 'fil', name: 'Filipino', short: 'FIL' } };
+
   // ---- Review list (kg-chart-review.html for reviewers, admin → 🧐 Reviews for progress) ----
-  // Marathi meanings are written in Filipino (the app's MEANING_LANGS mr → fil), so a Filipino reviewer checks those.
-  const REVIEW_MEANING_SOURCE = { fil: 'mr' };
+  // MEANING_LANGS turned round: a Filipino reviewer checks the Filipino meanings of Marathi ({ fil: 'mr' })
+  const REVIEW_MEANING_SOURCE = Object.fromEntries(Object.entries(MEANING_LANGS).map(([lang, m]) => [m.code, lang]));
   const reviewKey = (type, id, field) => `${type}|${id}|${field}`;
   // Every checkable text for one language: { key, type, id, field, text, meaning, context, contextLang, group, note, pic, topic }.
   // Rows can be for any languages; only `lang` (and its meaning source) are used. hiddenTopics / hiddenGroup leave
@@ -95,5 +102,5 @@
   }
 
   window.KGShared = { MCQ_QUIZ_TYPES, RULE_QUIZ_TYPES, RULE_DEFAULTS, RULE_LIMITS, ruleInt, resolveRules, COLOUR_HEX, COLOUR_OUTLINE, emojiImageUrl,
-    REVIEW_MEANING_SOURCE, reviewKey, reviewItems };
+    MEANING_LANGS, REVIEW_MEANING_SOURCE, reviewKey, reviewItems };
 })();
