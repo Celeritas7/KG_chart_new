@@ -371,6 +371,19 @@
 
     const getRatingById = (id) => RATINGS.find(r => r.id === id);
 
+    // Cards buckets = these ratings (Cards view below; the word quiz's "Words from" uses them too)
+    const BUCKET_ORDER = [5, 4, 3, 2, 1]; // ❌ on the left … ✓ on the right: drag right = "I know it"
+    const UNKNOWN_IDS = [5, 4, 3], KNOWN_IDS = [2, 1];
+    const CARDS_KEY = 'kg_chart_cards';
+    const MIX_UNKNOWN_SHARE = 0.7;
+    // Quiz, "Words from: All": how often a word is picked, by bucket (0 = not sorted yet)
+    const BUCKET_WEIGHT = { 0: 3, 5: 4, 4: 3, 3: 3, 2: 2, 1: 1 };
+    // Random order where a heavier item tends to come earlier (Efraimidis–Spirakis)
+    const weightedShuffle = (arr, weightOf) => arr
+      .map(v => ({ v, k: Math.pow(Math.random(), 1 / Math.max(weightOf(v) || 1, 0.001)) }))
+      .sort((a, b) => b.k - a.k).map(x => x.v);
+
+
     // Meanings in the learner's own language instead of English (Marathi → Filipino). The meanings live in the
     // translations tables under a hidden language row, so they're edited in admin like any other translation.
     const MEANING_LANGS = { mr: { code: 'fil', name: 'Filipino', short: 'FIL' } };
@@ -701,7 +714,16 @@
         return !error;
       }, [user, languageCode]);
 
-      return { ratings, updateRating };
+      // Back to "not rated" (Cards: Undo of a word's first rating)
+      const clearRating = useCallback(async (vocabularyId) => {
+        if (!user) return false;
+        const { error } = await supabase.from(TABLES.userRatings).delete()
+          .eq('user_id', user.id).eq('vocabulary_id', vocabularyId).eq('language_code', languageCode);
+        if (!error) setRatings(prev => { const next = { ...prev }; delete next[vocabularyId]; return next; });
+        return !error;
+      }, [user, languageCode]);
+
+      return { ratings, updateRating, clearRating };
     }
 
     // ==========================================
@@ -2349,7 +2371,8 @@
       const pool = poolVocabulary || vocabulary;
       useAudioState();
       const savingRef = React.useRef(false);
-      const [quizTopic, setQuizTopic] = useState('all');
+      const [quizTopic, setQuizTopic] = useState('all'); // 'all' = unlocked topics, 'everything' = locked ones too, or a topic id
+      const [quizBucket, setQuizBucket] = useState('all'); // 'all' | 0 (not sorted yet) | 1..5 (a Cards bucket)
       const [quizType, setQuizType] = useState('native_to_image');
       const isListen = LISTEN_TYPES.includes(quizType);
       const [dailyTarget, setDailyTarget] = useState(() => loadFromStorage(STORAGE_KEYS.quizTarget, 10));
@@ -2383,7 +2406,10 @@
       const isTyped = quizType === 'word_builder' || quizType === 'type_word';
 
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
-      const filteredVocab = useMemo(() => quizTopic === 'all' ? vocabulary : vocabulary.filter(v => v.topic_id === quizTopic), [vocabulary, quizTopic]);
+      // Topic: the unlocked ones (default), every topic, or one topic (locked ones too). Then the Cards bucket, if one is picked.
+      const topicVocab = useMemo(() => (quizTopic === 'all' ? vocabulary : quizTopic === 'everything' ? pool : pool.filter(v => v.topic_id === quizTopic)), [vocabulary, pool, quizTopic]);
+      const bucketOf = (v) => ratings[v.id]?.rating || 0;
+      const filteredVocab = useMemo(() => (quizBucket === 'all' ? topicVocab : topicVocab.filter(v => bucketOf(v) === quizBucket)), [topicVocab, quizBucket, ratings]);
       const playableVocab = useMemo(() => isTyped ? filteredVocab.filter(v => v.translation?.native_text?.trim()) : filteredVocab, [filteredVocab, quizType]);
       const [quizOptions, setQuizOptions] = useState([]);
 
@@ -2419,7 +2445,7 @@
         const sessionRow = {
           user_id: user.id,
           language_code: languageCode,
-          topic_id: quizTopic === 'all' ? null : quizTopic,
+          topic_id: quizTopic === 'all' || quizTopic === 'everything' ? null : quizTopic,
           quiz_type: quizType,
           total_questions: sc.total,
           correct_answers: sc.correct,
@@ -2455,11 +2481,12 @@
 
       const startQuiz = useCallback(() => {
         const targetCount = dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length);
-        const shuffled = shuffleArr(playableVocab);
+        // All buckets: words you're still learning come up more often (weighted shuffle), well-known ones less
+        const shuffled = quizBucket === 'all' ? weightedShuffle(playableVocab, v => BUCKET_WEIGHT[bucketOf(v)]) : shuffleArr(playableVocab);
         const selected = shuffled.slice(0, targetCount);
         // Freeze each question's options now so re-renders can't reshuffle them
         const frozen = selected.map(q => {
-          const sameTopic = shuffleArr(filteredVocab.filter(v => v.id !== q.id));
+          const sameTopic = shuffleArr(topicVocab.filter(v => v.id !== q.id && v.topic_id === q.topic_id));
           const otherTopics = shuffleArr(pool.filter(v => v.id !== q.id && v.topic_id !== q.topic_id));
           // Skip options that read the same as the answer or each other (Korean 배 = pear, ship, stomach)
           const textOf = v => (v.translation?.native_text || '').trim();
@@ -2487,7 +2514,7 @@
         setSessionSaved(false);
         setQuizCompleted(false);
         setQuizStarted(true);
-      }, [playableVocab, filteredVocab, pool, dailyTarget, isListen, languageCode, isMcq, L.n, L.choices]);
+      }, [playableVocab, topicVocab, pool, dailyTarget, isListen, languageCode, isMcq, L.n, L.choices, quizBucket, ratings]);
 
       const generateQuestion = useCallback(() => {
         if (pool.length < 4 || quizWords.length < 1 || currentWordIndex >= quizWords.length) {
@@ -2622,12 +2649,34 @@
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Topic</label>
                   <select value={quizTopic} onChange={(e) => setQuizTopic(e.target.value)} className="w-full px-4 py-3 border rounded-xl">
                     <option value="all">{topics.some(t => t.locked) ? 'All unlocked topics' : 'All Topics'} ({vocabulary.length} words)</option>
+                    {topics.some(t => t.locked) && <option value="everything">All topics, locked ones too ({pool.length} words)</option>}
                     {topics.map(t => {
-                      const count = vocabulary.filter(v => v.topic_id === t.id).length;
-                      return <option key={t.id} value={t.id} disabled={t.locked}>{t.locked ? '🔒' : t.icon} {t.translation?.title_native} {t.locked ? '(locked)' : `(${count})`}</option>;
+                      const count = pool.filter(v => v.topic_id === t.id).length;
+                      if (!count) return null;
+                      return <option key={t.id} value={t.id}>{t.locked ? '🔒' : t.icon} {t.translation?.title_native} ({count})</option>;
                     })}
                   </select>
                 </div>
+
+                {user && (
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Words from <span className="text-gray-400 font-normal ml-2">(your Cards buckets)</span>
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {[['all', '🗂️', 'All'], [0, '📥', 'Not sorted'], ...BUCKET_ORDER.map(id => [id, getRatingById(id).emoji, getRatingById(id).description])].map(([id, icon, label]) => {
+                        const n = id === 'all' ? topicVocab.length : topicVocab.filter(v => bucketOf(v) === id).length;
+                        return (
+                          <button key={id} onClick={() => setQuizBucket(id)} disabled={id !== 'all' && !n}
+                            className={`px-3 py-2 rounded-xl text-sm font-medium border-2 transition-all disabled:opacity-40 ${quizBucket === id ? 'border-jade-500 bg-jade-50 text-jade-700' : 'border-gray-200 text-gray-600'}`}>
+                            {icon} {label} <span className="text-gray-400">{n}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {quizBucket === 'all' && <p className="text-xs text-gray-400 mt-2">All: words you're still learning (❌ 🤔 ✍ and not sorted) come up more often than ✓ ones.</p>}
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">
@@ -2740,7 +2789,7 @@
 
                 <button onClick={startQuiz} disabled={playableVocab.length < 1 || pool.length < 4 || (isMcq && !lv.loaded)}
                   className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">
-                  {isMcq && !lv.loaded ? 'Loading your level…' : pool.length < 4 ? 'Need 4+ words total' : playableVocab.length < 1 ? 'No words in topic' : `Start Quiz (${dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length)} words)`}
+                  {isMcq && !lv.loaded ? 'Loading your level…' : pool.length < 4 ? 'Need 4+ words total' : playableVocab.length < 1 ? (quizBucket === 'all' ? 'No words in topic' : 'No words in this bucket') : `Start Quiz (${dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length)} words)`}
                 </button>
               </div>
             </div>
@@ -4524,111 +4573,267 @@
       );
     }
 
-    function FlashcardView({ topics, vocabulary, ratings, onRate, languageCode, user }) {
-      const [selectedTopic, setSelectedTopic] = useState('all');
-      const [currentIndex, setCurrentIndex] = useState(0);
+    // ==========================================
+    // CARDS: sort every word into the 5 rating buckets (the same ratings as the Chart, Quiz and Progress)
+    // ==========================================
+    // Flip a card, then drag it onto a bucket. Words without a rating come first; once they are all sorted, a random
+    // mix (about 70% from ❌ 🤔 ✍, 30% from ✓ 💬). Tap a bucket to study only its cards. Locked topics are included.
+    function FlashcardView({ topics, vocabulary, ratings, onRate, onClearRating, languageCode, user }) {
+      const saved0 = loadFromStorage(CARDS_KEY, {});
+      const [selectedTopic, setSelectedTopic] = useState(() => (saved0.topic === 'all' || topics.some(t => t.id === saved0.topic) ? saved0.topic : 'all'));
+      const [mode, setMode] = useState('sort'); // 'sort' (unsorted first) | 'mix' | 1..5 (study one bucket)
+      const [currentId, setCurrentId] = useState(null);
       const [isFlipped, setIsFlipped] = useState(false);
       const [flagCard, setFlagCard] = useState(null);
+      const [drag, setDrag] = useState(null); // { x, y, target } while a card is being dragged
+      const [dropping, setDropping] = useState(null); // bucket the card is flying into
+      const [local, setLocal] = useState({}); // ratings set here, shown at once (the database catches up)
+      const [last, setLast] = useState(null); // { id, prev } for Undo
+      const [note, setNote] = useState(''); // a short message under the card
+      const dragRef = React.useRef(null);
+      const startRef = React.useRef(null);
+      const bucketRefs = React.useRef({});
+      const recentRef = React.useRef([]); // Mix: the last few cards, so one doesn't come straight back
+      const keepNoteRef = React.useRef(false); // the automatic switch to Mix keeps its "all sorted" message
 
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
-      const filteredVocab = selectedTopic === 'all' ? vocabulary : vocabulary.filter(v => v.topic_id === selectedTopic);
-      const currentItem = filteredVocab[currentIndex];
-      const currentRating = currentItem ? getRatingById(ratings[currentItem.id]?.rating) : null;
+      useEffect(() => { saveToStorage(CARDS_KEY, { topic: selectedTopic }); }, [selectedTopic]);
 
-      useEffect(() => { setCurrentIndex(0); setIsFlipped(false); }, [selectedTopic]);
+      const ratingOf = (id) => ((id in local ? local[id] : ratings[id]?.rating) || 0);
+      const deck = useMemo(() => (selectedTopic === 'all' ? vocabulary : vocabulary.filter(v => v.topic_id === selectedTopic)), [vocabulary, selectedTopic]);
+      const deckIndex = useMemo(() => new Map(deck.map((v, i) => [v.id, i])), [deck]);
+      const counts = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+      deck.forEach(v => { counts[ratingOf(v.id)]++; });
+      const current = deck.find(v => v.id === currentId) || null;
+      const currentRating = current ? getRatingById(ratingOf(current.id)) : null;
 
-      const goNext = () => { setIsFlipped(false); setTimeout(() => setCurrentIndex(prev => (prev + 1) % filteredVocab.length), 100); };
-      const goPrev = () => { setIsFlipped(false); setTimeout(() => setCurrentIndex(prev => (prev - 1 + filteredVocab.length) % filteredVocab.length), 100); };
-      const goRandom = () => { setIsFlipped(false); setTimeout(() => setCurrentIndex(Math.floor(Math.random() * filteredVocab.length)), 100); };
-      const handleRate = (ratingId) => { if (currentItem && user) { onRate(currentItem.id, ratingId); } };
+      // The next card after `fromId` in deck order, from the cards that fit the mode
+      const nextIn = (list, fromId) => {
+        const rest = list.filter(v => v.id !== fromId);
+        if (!rest.length) return list[0] || null;
+        const at = fromId != null && deckIndex.has(fromId) ? deckIndex.get(fromId) : -1;
+        return rest.find(v => deckIndex.get(v.id) > at) || rest[0];
+      };
+      const pickMix = (fromId, overrides) => {
+        const r = (v) => ((v.id in overrides ? overrides[v.id] : ratingOf(v.id)) || 0);
+        const avoid = new Set([fromId, ...recentRef.current]);
+        const unknown = deck.filter(v => r(v) === 0 || UNKNOWN_IDS.includes(r(v)));
+        const known = deck.filter(v => KNOWN_IDS.includes(r(v)));
+        let group = Math.random() < MIX_UNKNOWN_SHARE ? unknown : known;
+        if (!group.length) group = unknown.length ? unknown : known;
+        const fresh = group.filter(v => !avoid.has(v.id));
+        const pool = fresh.length ? fresh : group.filter(v => v.id !== fromId).length ? group.filter(v => v.id !== fromId) : group;
+        return pool[Math.floor(Math.random() * pool.length)] || null;
+      };
+      // overrides: ratings just set, not yet in `local` when this runs
+      const advance = (fromId, overrides = {}, m = mode) => {
+        const r = (v) => ((v.id in overrides ? overrides[v.id] : ratingOf(v.id)) || 0);
+        let next = null;
+        if (m === 'sort') {
+          next = nextIn(deck.filter(v => r(v) === 0), fromId);
+          if (!next && deck.length) {
+            keepNoteRef.current = true;
+            setMode('mix');
+            setNote('🎉 Everything here is sorted. Here is a mix: mostly words you are still learning.');
+            next = pickMix(fromId, overrides);
+          }
+        } else if (m === 'mix') {
+          next = pickMix(fromId, overrides);
+        } else {
+          next = nextIn(deck.filter(v => r(v) === m), fromId);
+        }
+        if (next) recentRef.current = [next.id, ...recentRef.current].slice(0, Math.min(4, Math.max(0, deck.length - 2)));
+        setIsFlipped(false);
+        setCurrentId(next ? next.id : null);
+      };
 
-      // Keyboard support: ←/→ prev/next, Space flip, 1-5 rate, R random
+      // New topic or mode: start from the first card that fits
+      useEffect(() => {
+        if (keepNoteRef.current) { keepNoteRef.current = false; return; } // already on a card from the switch
+        setNote('');
+        advance(null);
+      }, [selectedTopic, mode]);
+
+      const sortInto = (ratingId) => {
+        if (!current || !user) return;
+        const id = current.id, prev = ratingOf(id);
+        setLocal(l => ({ ...l, [id]: ratingId }));
+        setLast({ id, prev });
+        onRate(id, ratingId);
+        setNote('');
+        advance(id, { [id]: ratingId });
+      };
+      const undo = () => {
+        if (!last) return;
+        const { id, prev } = last;
+        setLocal(l => ({ ...l, [id]: prev }));
+        if (prev) onRate(id, prev); else onClearRating(id);
+        setLast(null);
+        setIsFlipped(false);
+        setCurrentId(id);
+      };
+
+      // ---------- drag ----------
+      // A tap flips the card. Once it shows the meaning, drag it onto the bucket it belongs in.
+      const targetAt = (px, py, dx, dy) => {
+        if (Math.hypot(dx, dy) < 50) return null;
+        let best = null, bestD = Infinity;
+        for (const id of BUCKET_ORDER) {
+          const el = bucketRefs.current[id];
+          if (!el) continue;
+          const b = el.getBoundingClientRect();
+          const d = Math.hypot(px - (b.left + b.width / 2), py - (b.top + b.height / 2));
+          if (d < bestD) { bestD = d; best = id; }
+        }
+        return best;
+      };
+      const onPointerDown = (e) => {
+        if (dropping) return;
+        const box = e.currentTarget.getBoundingClientRect();
+        // ox/oy: where the finger is on the card, so the card shrinks around the fingertip while dragging
+        startRef.current = { x: e.clientX, y: e.clientY, moved: false, ox: e.clientX - box.left, oy: e.clientY - box.top };
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+      };
+      const onPointerMove = (e) => {
+        const s = startRef.current;
+        if (!s) return;
+        const dx = e.clientX - s.x, dy = e.clientY - s.y;
+        if (!s.moved && Math.hypot(dx, dy) < 10) return;
+        s.moved = true;
+        if (!isFlipped) { setNote('Flip the card first (tap it), then drag it to a bucket.'); return; }
+        const d = { x: dx, y: dy, ox: s.ox, oy: s.oy, target: targetAt(e.clientX, e.clientY, dx, dy) };
+        dragRef.current = d;
+        setDrag(d);
+      };
+      const onPointerUp = () => {
+        const s = startRef.current;
+        startRef.current = null;
+        if (!s) return;
+        const d = dragRef.current;
+        dragRef.current = null;
+        setDrag(null);
+        if (!s.moved) { setIsFlipped(f => !f); setNote(''); return; }
+        if (d?.target) {
+          setDropping(d.target);
+          setTimeout(() => { setDropping(null); sortInto(d.target); }, 160);
+        }
+      };
+
+      // Keyboard: Space flip, 1-5 sort (1 = ✓ … 5 = ❌, once flipped), → skip, U undo
       useEffect(() => {
         const handleKey = (e) => {
           if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) || kgModalOpen()) return;
-          switch (e.key) {
-            case 'ArrowLeft': e.preventDefault(); goPrev(); break;
-            case 'ArrowRight': e.preventDefault(); goNext(); break;
-            case ' ': e.preventDefault(); setIsFlipped(f => !f); break;
-            case 'r': case 'R': e.preventDefault(); goRandom(); break;
-            default:
-              const num = parseInt(e.key);
-              if (num >= 1 && num <= 5 && user) handleRate(num);
+          if (e.key === ' ') { e.preventDefault(); setIsFlipped(f => !f); return; }
+          if (e.key === 'ArrowRight') { e.preventDefault(); advance(currentId); return; }
+          if (e.key === 'u' || e.key === 'U') { e.preventDefault(); undo(); return; }
+          const num = parseInt(e.key);
+          if (num >= 1 && num <= 5 && user) {
+            if (isFlipped) sortInto(num); else setNote('Flip the card first (Space), then sort it.');
           }
         };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
-      }, [currentItem, user, filteredVocab]);
+      });
 
-      if (!currentItem) return <div className="text-center py-12 text-gray-500">No flashcards available</div>;
+      const modeRating = typeof mode === 'number' ? getRatingById(mode) : null;
+      const left = mode === 'sort' ? counts[0] : modeRating ? counts[mode] : null;
+      // While dragging the card shrinks around the fingertip, so the buckets (and the one lit up) stay in view
+      const cardStyle = drag
+        ? { transform: `translate(${drag.x}px, ${drag.y}px) scale(0.45) rotate(${drag.x / 25}deg)`, transformOrigin: `${drag.ox}px ${drag.oy}px`, transition: 'transform 0.05s', touchAction: 'none', opacity: 0.9 }
+        : dropping ? { transform: 'scale(0.6)', opacity: 0, transition: 'all 0.16s ease-in', touchAction: 'none' }
+        : { transition: 'transform 0.2s', touchAction: isFlipped ? 'none' : 'pan-y' };
 
       return (
         <div className="max-w-2xl mx-auto p-4">
-          <div className="bg-white rounded-2xl shadow-lg p-4 mb-6 flex flex-wrap items-center justify-between gap-4">
-            <select value={selectedTopic} onChange={(e) => setSelectedTopic(e.target.value)} className="px-4 py-2 border rounded-xl font-medium">
-              <option value="all">{topics.some(t => t.locked) ? 'All unlocked topics' : 'All Topics'} ({vocabulary.length} words)</option>
+          <div className="bg-white rounded-2xl shadow-lg p-4 mb-4 space-y-3">
+            <select value={selectedTopic} onChange={(e) => setSelectedTopic(e.target.value)} className="w-full px-4 py-2 border rounded-xl font-medium">
+              <option value="all">All topics ({vocabulary.length} words)</option>
               {topics.map(t => {
                 const count = vocabulary.filter(v => v.topic_id === t.id).length;
-                return <option key={t.id} value={t.id} disabled={t.locked}>{t.locked ? '🔒' : t.icon} {t.translation?.title_native} {t.locked ? '(locked)' : `(${count})`}</option>;
+                if (!count) return null;
+                return <option key={t.id} value={t.id}>{t.locked ? '🔒' : t.icon} {t.translation?.title_native} ({count})</option>;
               })}
             </select>
-            <div className="text-gray-600 font-medium">{currentIndex + 1} / {filteredVocab.length}</div>
-          </div>
-
-          <div className={`flip-card ${isFlipped ? 'flipped' : ''} cursor-pointer mb-6`} onClick={() => setIsFlipped(!isFlipped)}>
-            <div className="flip-card-inner relative" style={{ minHeight: '350px' }}>
-              <div className="flip-card-front absolute inset-0 bg-white rounded-3xl shadow-xl p-8 flex flex-col items-center justify-center">
-                {currentRating && (
-                  <div className={`absolute top-4 right-4 px-4 py-2 rounded-full text-sm font-medium ${currentRating.color} text-white shadow-md`}>
-                    {currentRating.emoji} {currentRating.label}
-                  </div>
-                )}
-                <div className={`text-5xl font-bold text-gray-800 mb-4 ${fontClass}`}>{currentItem.translation?.native_text}</div>
-                <div className="text-3xl text-blue-600 font-devanagari mb-4">{currentItem.translation?.devanagari}</div>
-                <div className="absolute bottom-6 text-gray-400 text-sm">👆 Tap to flip <span className="hidden sm:inline text-gray-300 ml-1">(Space)</span></div>
-              </div>
-              <div className="flip-card-back absolute inset-0 bg-gradient-to-br from-jade-50 to-white rounded-3xl shadow-xl p-8 flex flex-col items-center justify-center">
-                <div className="w-32 h-32 mb-4 flex items-center justify-center">
-                  {currentItem.extra_data?.colorCode ? (
-                    <div className="w-24 h-24 rounded-xl shadow-lg" style={{ backgroundColor: currentItem.extra_data.colorCode }} />
-                  ) : (
-                    <img src={getImageUrl(currentItem.topic_id, currentItem.image_filename)} alt="" className="max-w-full max-h-full object-contain" />
-                  )}
-                </div>
-                <div className="text-3xl font-bold text-gray-800">{currentItem.display_text}</div>
-              </div>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <button onClick={() => setMode('sort')}
+                className={`px-3 py-1.5 rounded-full font-medium ${mode === 'sort' ? 'bg-jade-600 text-white' : 'bg-gray-100 text-gray-600'}`}>📥 To sort ({counts[0]})</button>
+              <button onClick={() => setMode('mix')}
+                className={`px-3 py-1.5 rounded-full font-medium ${mode === 'mix' ? 'bg-purple-500 text-white' : 'bg-gray-100 text-gray-600'}`}>🎲 Mix</button>
+              {modeRating && <span className={`px-3 py-1.5 rounded-full font-medium text-white ${modeRating.color}`}>Studying {modeRating.emoji} {modeRating.description} ({counts[mode]})</span>}
+              {last && <button onClick={undo} className="ml-auto px-3 py-1.5 rounded-full bg-gray-100 text-gray-600 font-medium" title="Undo (U)">↶ Undo</button>}
             </div>
           </div>
 
-          <div className="flex justify-center items-center gap-3 mb-4">
-            <SpeakButton text={currentItem.translation?.native_text} lang={languageCode} slow size="lg" />
-            <FlagButton onClick={() => setFlagCard(currentItem)} />
+          {!current ? (
+            <div className="bg-white rounded-3xl shadow p-10 text-center text-gray-500 mb-4">
+              {!deck.length ? 'No words in this topic.'
+                : modeRating ? <>Nothing in {modeRating.emoji} {modeRating.description} yet. <button onClick={() => setMode('sort')} className="text-jade-700 font-semibold underline">Back to sorting</button></>
+                : 'Nothing to show.'}
+            </div>
+          ) : (
+            <>
+              <div className={`flip-card ${isFlipped ? 'flipped' : ''} cursor-pointer mb-3 select-none relative z-10`} style={cardStyle}
+                onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => { startRef.current = null; dragRef.current = null; setDrag(null); }}>
+                <div className="flip-card-inner relative" style={{ minHeight: '300px' }}>
+                  <div className="flip-card-front absolute inset-0 bg-white rounded-3xl shadow-xl p-8 flex flex-col items-center justify-center">
+                    {currentRating && (
+                      <div className={`absolute top-4 right-4 px-3 py-1 rounded-full text-sm font-medium ${currentRating.color} text-white shadow-md`}>{currentRating.emoji} {currentRating.description}</div>
+                    )}
+                    {topics.find(t => t.id === current.topic_id)?.locked && <div className="absolute top-4 left-4 text-xs text-gray-400">🔒 locked topic</div>}
+                    <div className={`text-5xl font-bold text-gray-800 mb-4 text-center ${fontClass}`}>{current.translation?.native_text}</div>
+                    <div className="text-3xl text-blue-600 font-devanagari mb-4 text-center">{current.translation?.devanagari}</div>
+                    <div className="absolute bottom-6 text-gray-400 text-sm">👆 Tap to flip <span className="hidden sm:inline text-gray-300 ml-1">(Space)</span></div>
+                  </div>
+                  <div className="flip-card-back absolute inset-0 bg-gradient-to-br from-jade-50 to-white rounded-3xl shadow-xl p-8 flex flex-col items-center justify-center">
+                    <div className="w-32 h-32 mb-4 flex items-center justify-center">
+                      {current.extra_data?.colorCode ? (
+                        <div className="w-24 h-24 rounded-xl shadow-lg" style={{ backgroundColor: current.extra_data.colorCode }} />
+                      ) : (
+                        <img src={getImageUrl(current.topic_id, current.image_filename)} alt="" draggable="false" className="max-w-full max-h-full object-contain pointer-events-none" />
+                      )}
+                    </div>
+                    <div className="text-3xl font-bold text-gray-800 text-center">{current.display_text}</div>
+                    <div className="absolute bottom-6 text-gray-400 text-sm">👇 Drag to a bucket</div>
+                  </div>
+                </div>
+              </div>
+              <div className="flex justify-center items-center gap-3 mb-3">
+                <SpeakButton text={current.translation?.native_text} lang={languageCode} slow size="lg" />
+                <FlagButton onClick={() => setFlagCard(current)} />
+                <button onClick={() => advance(current.id)} className="px-4 py-2 bg-gray-100 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-200">Skip → <span className="hidden sm:inline text-gray-400 text-xs">(→)</span></button>
+              </div>
+            </>
+          )}
+          {/* One line kept free, so the buckets never move: the drop target while dragging, else a short note */}
+          <div className="min-h-[2.25rem] mb-3 flex items-center justify-center">
+            {drag ? (
+              // The bucket under the finger is hidden by it: name it here while dragging
+              <div className={`w-full text-center text-sm font-semibold rounded-full py-1.5 ${drag.target ? `${getRatingById(drag.target).color} text-white` : 'bg-gray-100 text-gray-500'}`}>
+                {drag.target ? `Drop in: ${getRatingById(drag.target).emoji} ${getRatingById(drag.target).description}` : 'Drag down to a bucket'}
+              </div>
+            ) : note ? <div className="text-center text-sm text-gray-500">{note}</div> : null}
           </div>
           {flagCard && <FlagModal item={flagCard} languageCode={languageCode} onClose={() => setFlagCard(null)} />}
 
-          <div className="flex justify-center gap-3 mb-6">
-            <button onClick={goPrev} className="px-6 py-3 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">← Prev</button>
-            <button onClick={goRandom} className="px-6 py-3 bg-purple-500 text-white rounded-xl hover:bg-purple-600 font-medium shadow-md">🎲 Random <span className="text-purple-300 text-xs hidden sm:inline">(R)</span></button>
-            <button onClick={goNext} className="px-6 py-3 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">Next →</button>
-          </div>
-
           {user ? (
-            <div className="bg-white rounded-2xl shadow-lg p-4">
-              <div className="text-center text-sm text-gray-500 mb-3">How well do you know this?</div>
-              <div className="flex flex-wrap justify-center gap-2">
-                {RATINGS.map((r) => (
-                  <button key={r.id} onClick={() => handleRate(r.id)}
-                    className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-                      ratings[currentItem.id]?.rating === r.id ? r.color + ' text-white shadow-lg' : 'bg-gray-100 hover:bg-gray-200'
-                    }`}>{r.emoji} {r.label}</button>
-                ))}
-              </div>
+            <div className="grid grid-cols-5 gap-2">
+              {BUCKET_ORDER.map(id => {
+                const r = getRatingById(id);
+                const hot = drag?.target === id || dropping === id;
+                return (
+                  <button key={id} ref={el => { bucketRefs.current[id] = el; }} onClick={() => setMode(id)} title={`${r.label}: tap to study these cards`}
+                    className={`rounded-2xl border-2 py-3 px-1 text-center transition-all ${hot ? `${r.color} text-white border-transparent scale-110 shadow-lg` : mode === id ? 'bg-white border-gray-400' : 'bg-white border-gray-200'}`}>
+                    <div className="text-2xl leading-none">{r.emoji}</div>
+                    <div className="text-lg font-bold mt-1">{counts[id]}</div>
+                    <div className={`text-[11px] leading-tight ${hot ? 'text-white' : 'text-gray-500'}`}>{r.description}</div>
+                  </button>
+                );
+              })}
             </div>
           ) : (
-            <div className="bg-amber-50 rounded-2xl p-4 text-center">
-              <p className="text-amber-700 text-sm">Sign in to save your progress</p>
-            </div>
+            <div className="bg-amber-50 rounded-2xl p-4 text-center"><p className="text-amber-700 text-sm">Sign in to sort your cards</p></div>
           )}
+          {left != null && current && <div className="text-center text-xs text-gray-400 mt-3">{mode === 'sort' ? `${left} still to sort` : `${left} in this bucket`} · tap a bucket to study only its cards</div>}
         </div>
       );
     }
@@ -5064,7 +5269,7 @@
       const rules = useRules(user, currentLanguage);
       const topics = useMemo(() => allTopics.filter(t => !priv.topics.has(t.id)), [allTopics, priv]);
       const vocabulary = useMemo(() => allVocabulary.filter(v => !priv.topics.has(v.topic_id)), [allVocabulary, priv]);
-      const { ratings, updateRating } = useUserRatings(currentLanguage);
+      const { ratings, updateRating, clearRating } = useUserRatings(currentLanguage);
       const path = useLearningPath({ user, languageCode: currentLanguage, topics, vocabulary, rules });
       const visibleTopics = path.topics;
       const fontClassApp = LANGUAGE_FONTS[currentLanguage] || 'font-body';
@@ -5122,7 +5327,7 @@
                   <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} />
                 )}
                 {activeView === 'flashcard' && (
-                  <FlashcardView topics={visibleTopics} vocabulary={path.unlockedVocab} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} />
+                  <FlashcardView topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} onClearRating={clearRating} languageCode={currentLanguage} user={user} />
                 )}
                 {activeView === 'progress' && (
                   <ProgressView topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} languageCode={currentLanguage} user={user} path={path.enabled || path.bypass ? path : null} meaningName={meaningName} />
