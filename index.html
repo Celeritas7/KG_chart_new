@@ -369,6 +369,24 @@
       mr: 'font-devanagari',
     };
 
+    // Word notes (kg_chart_vocabulary_translations.notes): English text with bits of the learner's script,
+    // so English uses DM Sans and the script falls back to the language font
+    const noteFontFamily = (languageCode) => {
+      const key = (LANGUAGE_FONTS[languageCode] || '').replace('font-', '');
+      const stack = (typeof tailwind !== 'undefined' && tailwind.config?.theme?.extend?.fontFamily?.[key]) || [];
+      return ['DM Sans', ...stack.filter(f => f !== 'sans-serif'), 'sans-serif'].map(f => f.includes(' ') ? `'${f}'` : f).join(', ');
+    };
+    function WordNote({ note, languageCode, className = '' }) {
+      const text = (note || '').trim();
+      if (!text) return null;
+      return (
+        <div data-word-note className={'flex gap-2 items-start text-left text-sm text-amber-900 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 ' + className}
+          style={{ fontFamily: noteFontFamily(languageCode) }}>
+          <span aria-hidden="true">📝</span><span className="leading-relaxed">{text}</span>
+        </div>
+      );
+    }
+
     const getRatingById = (id) => RATINGS.find(r => r.id === id);
 
     // Cards buckets = these ratings (Cards view below; the word quiz's "Words from" uses them too)
@@ -1089,7 +1107,7 @@
 
       return (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
-          <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl animate-scale-in" onClick={e => e.stopPropagation()}>
+          <div className="bg-white rounded-3xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-8 shadow-2xl animate-scale-in" onClick={e => e.stopPropagation()}>
             <div className="text-center">
               <div className="w-36 h-36 mx-auto mb-6 flex items-center justify-center bg-gray-50 rounded-2xl border">
                 {colorCode ? (
@@ -1150,7 +1168,8 @@
                 </div>
               )}
 
-              <div className="text-xl text-gray-600 mb-8">{item.display_text}</div>
+              <div className={'text-xl text-gray-600 ' + (item.translation?.notes?.trim() ? 'mb-3' : 'mb-8')}>{item.display_text}</div>
+              <WordNote note={item.translation?.notes} languageCode={languageCode} className="mb-6" />
 
               <div className="mb-6">
                 <p className="text-sm text-gray-500 mb-3">How well do you know this?</p>
@@ -5166,6 +5185,7 @@
                 <div className="text-[10px] mt-1 opacity-80">overall</div>
               </div>
             </div>
+            <WordNote note={item.translation?.notes} languageCode={languageCode} className="-mt-2 mb-4" />
             <div className="space-y-2">
               {STRENGTH_TYPES.map(q0 => quizTypeLabel(q0, languageCode, meaningName)).map(q => {
                 const list = byType?.[q.id] || [];
