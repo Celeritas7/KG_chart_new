@@ -4587,7 +4587,9 @@
       const [flagCard, setFlagCard] = useState(null);
       const [drag, setDrag] = useState(null); // { x, y, target } while a card is being dragged
       const [dropping, setDropping] = useState(null); // bucket the card is flying into
-      const [local, setLocal] = useState({}); // ratings set here, shown at once (the database catches up)
+      // ratings set here, shown at once (the database catches up). Ratings are per language, so AppContent gives this
+      // view key={currentLanguage}: a language switch starts Cards fresh instead of carrying these (and Undo) over.
+      const [local, setLocal] = useState({});
       const [last, setLast] = useState(null); // { id, prev } for Undo
       const [note, setNote] = useState(''); // a short message under the card
       const dragRef = React.useRef(null);
@@ -4654,23 +4656,35 @@
         advance(null);
       }, [selectedTopic, mode]);
 
+      // The card moves on at once; if the save fails (no signal, signed out) it goes back where it was and we say so
+      const NOT_SAVED = "⚠️ Not saved (no connection?). That card is back as it was; try again.";
       const sortInto = (ratingId) => {
         if (!current || !user) return;
         const id = current.id, prev = ratingOf(id);
         setLocal(l => ({ ...l, [id]: ratingId }));
         setLast({ id, prev });
-        onRate(id, ratingId);
         setNote('');
         advance(id, { [id]: ratingId });
+        Promise.resolve(onRate(id, ratingId)).then(ok => {
+          if (ok) return;
+          setLocal(l => ({ ...l, [id]: prev }));
+          setLast(l => (l && l.id === id ? null : l));
+          setNote(NOT_SAVED);
+        });
       };
       const undo = () => {
         if (!last) return;
         const { id, prev } = last;
+        const now = ratingOf(id);
         setLocal(l => ({ ...l, [id]: prev }));
-        if (prev) onRate(id, prev); else onClearRating(id);
         setLast(null);
         setIsFlipped(false);
         setCurrentId(id);
+        Promise.resolve(prev ? onRate(id, prev) : onClearRating(id)).then(ok => {
+          if (ok) return;
+          setLocal(l => ({ ...l, [id]: now }));
+          setNote(NOT_SAVED);
+        });
       };
 
       // ---------- drag ----------
@@ -5327,7 +5341,7 @@
                   <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} />
                 )}
                 {activeView === 'flashcard' && (
-                  <FlashcardView topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} onClearRating={clearRating} languageCode={currentLanguage} user={user} />
+                  <FlashcardView key={currentLanguage} topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} onClearRating={clearRating} languageCode={currentLanguage} user={user} />
                 )}
                 {activeView === 'progress' && (
                   <ProgressView topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} languageCode={currentLanguage} user={user} path={path.enabled || path.bypass ? path : null} meaningName={meaningName} />
