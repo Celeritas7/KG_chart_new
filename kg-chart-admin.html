@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Playfair+Display:wght@400;600;700&family=JetBrains+Mono:wght@300;400;500;600&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+Myanmar:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Sans+Sinhala:wght@400;500;700&family=Noto+Sans+Tamil:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&family=Noto+Sans+Kannada:wght@400;500;700&family=Noto+Sans+Telugu:wght@400;500;700&family=Noto+Sans+Thai:wght@400;500;700&family=Padauk:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="./js/kg-shared.js"></script>
 <style>
 :root { --transition: 0.25s ease; }
 [data-theme="jade"] {
@@ -280,8 +281,7 @@ const sb=supabase.createClient(SB_URL,SB_KEY);
 const BUCKET='vocabulary-assets';
 const ADMIN_USER_ID='d469efb7-f9e1-4b49-8b14-75a42b4d22e0';
 // "emoji:🌹" filenames: the picture is drawn from the emoji (same as the app), nothing in storage
-const EMOJI_IMG={};
-function emojiImg(e){if(e in EMOJI_IMG)return EMOJI_IMG[e];let u=null;try{const c=document.createElement('canvas');c.width=c.height=256;const g=c.getContext('2d');g.font='190px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';g.textAlign='center';g.textBaseline='middle';g.fillText(e,128,140);u=c.toDataURL('image/png');}catch(err){u=null;}return EMOJI_IMG[e]=u;}
+const emojiImg=KGShared.emojiImageUrl; // js/kg-shared.js
 const isRemoteImg=fn=>fn.startsWith('http')||fn.startsWith('emoji:');
 const imgUrl=(tid,fn)=>fn?(fn.startsWith('emoji:')?emojiImg(fn.slice(6)):fn.startsWith('http')?fn:`${SB_URL}/storage/v1/object/public/${BUCKET}/${tid}/${fn}`):null;
 
@@ -1043,7 +1043,7 @@ async function saveFlagEdit(flagId,vocabId,langCode,alsoResolve){
 // One phrase per language × colour × noun. Suggestions follow the language's word order and are marked unreviewed;
 // a person checks them (adjective forms and agreement can't be guessed). Pictures: the noun's emoji, recoloured in the app.
 const CP_DEFAULT_NOUNS=[['Car','🚗'],['Bus','🚌'],['Bicycle','🚲'],['Cat','🐈'],['Dog','🐕'],['Fish','🐟']];
-const CP_HEX={Red:'#e53935',Blue:'#1e88e5',Green:'#43a047',Yellow:'#fdd835',Orange:'#fb8c00',Purple:'#8e24aa',Pink:'#f06292',Brown:'#795548',Black:'#262626',White:'#ececec'};
+const CP_HEX=KGShared.COLOUR_HEX; // js/kg-shared.js, the same palette the app paints with
 const CP_JA_I=['赤','青','黒','白','黄色'];
 const CP_PATTERNS={
   my:{f:(c,n)=>n+c,note:'Noun + colour, no space: ကား + အနီရောင် → ကားအနီရောင်.'},
@@ -1904,14 +1904,14 @@ function renderLevels(el){
 // ===== RULES (kg_chart_settings 'unlock_rules') =====
 // Read the same way as resolveRules() in the app and kg_chart_rule_int() in kg-chart-rules.sql:
 // a language's own value first, then the global one, then the default; whole numbers only, kept in range.
-const RULE_TYPES=[['native_to_image','🔤 Native → Image',1],['image_to_native','🖼️ Image → Native',1],['devanagari_to_image','🕉️ Devanagari → Image',1],['english_to_native','🌐 English → Native',1],['listen_to_image','🔊 Listen → Image',1],['listen_to_native','👂 Listen → Native',1],['word_builder','🧩 Build the Word',0],['type_word','⌨️ Type the Word',0],['typing_recall','⌨️ Typing test, from memory',0]];
-const RULE_DEFAULT={min_attempts:1,quiz_types:RULE_TYPES.filter(t=>t[2]).map(t=>t[0]),level_up:{answers:40,pct:85}};
-const RULE_LIM={min_attempts:[1,3],answers:[10,200],pct:[50,100]};
+// Labels for admin; the list itself, defaults, limits and the reading are in js/kg-shared.js (the app uses the same)
+const RULE_LABELS={native_to_image:'🔤 Native → Image',image_to_native:'🖼️ Image → Native',devanagari_to_image:'🕉️ Devanagari → Image',english_to_native:'🌐 English → Native',listen_to_image:'🔊 Listen → Image',listen_to_native:'👂 Listen → Native',word_builder:'🧩 Build the Word',type_word:'⌨️ Type the Word',typing_recall:'⌨️ Typing test, from memory'};
+const RULE_TYPES=KGShared.RULE_QUIZ_TYPES.map(id=>[id,RULE_LABELS[id]||id,KGShared.MCQ_QUIZ_TYPES.includes(id)?1:0]);
+const RULE_DEFAULT=KGShared.RULE_DEFAULTS;
+const RULE_LIM=KGShared.RULE_LIMITS;
 let RULES={scope:'*'};
-const ruleInt=(c,[lo,hi],d)=>{const v=c.find(x=>typeof x==='number'&&Number.isInteger(x));return v===undefined?d:Math.min(Math.max(v,lo),hi);};
-function resolveRulesAdmin(val,lc){const g=val||{};const o=(lc&&g.languages&&g.languages[lc])||{};const known=RULE_TYPES.map(t=>t[0]);const tf=v=>Array.isArray(v)?[...new Set(v.filter(t=>known.includes(t)))]:[];
-  return{min_attempts:ruleInt([o.min_attempts,g.min_attempts],RULE_LIM.min_attempts,RULE_DEFAULT.min_attempts),quiz_types:[tf(o.quiz_types),tf(g.quiz_types)].find(t=>t.length)||RULE_DEFAULT.quiz_types,
-    level_up:{answers:ruleInt([o.level_up?.answers,g.level_up?.answers],RULE_LIM.answers,RULE_DEFAULT.level_up.answers),pct:ruleInt([o.level_up?.pct,g.level_up?.pct],RULE_LIM.pct,RULE_DEFAULT.level_up.pct)}};}
+const ruleInt=KGShared.ruleInt;
+const resolveRulesAdmin=(val,lc)=>KGShared.resolveRules(val,lc);
 const ruleSummary=r=>`A topic opens when every word in the one before it has been answered <b>${r.min_attempts}×</b> in each of these <b>${r.quiz_types.length}</b> quiz type${r.quiz_types.length===1?'':'s'}. The next difficulty level unlocks at <b>${r.level_up.pct}%</b> over the last <b>${r.level_up.answers}</b> multiple-choice answers.`;
 function renderRules(el){
   const langs=S.languages.filter(l=>l.is_active);const ov=S.rules?.languages||{};
@@ -1935,7 +1935,7 @@ function readRulesForm(){
   const min=Number(document.querySelector('input[name="r-min"]:checked')?.value||1);
   const types=RULE_TYPES.map(t=>t[0]).filter(id=>document.getElementById('r-qt-'+id)?.checked);
   const num=(id,lim,d)=>{const n=Math.round(Number(document.getElementById(id).value));return Number.isFinite(n)?Math.min(Math.max(n,lim[0]),lim[1]):d;};
-  return{min_attempts:min,quiz_types:types,level_up:{answers:num('r-ans',RULE_LIM.answers,40),pct:num('r-pct',RULE_LIM.pct,85)}};
+  return{min_attempts:min,quiz_types:types,level_up:{answers:num('r-ans',RULE_LIM.answers,RULE_DEFAULT.level_up.answers),pct:num('r-pct',RULE_LIM.pct,RULE_DEFAULT.level_up.pct)}};
 }
 function rulesLive(){const f=readRulesForm();const el=document.getElementById('r-summary');if(el)el.innerHTML=f.quiz_types.length?ruleSummary(f):'<span style="color:var(--danger,#dc2626)">Tick at least one quiz type.</span>';}
 async function writeRules(next,msg){
