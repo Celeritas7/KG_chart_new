@@ -343,6 +343,7 @@ async function loadAll(){
     ]);
     S.languages=a.data||[];S.topics=b.data||[];S.vocabulary=c.data||[];S.vocabTrans=d.data||[];
     S.topicTrans=e.data||[];S.quizSessions=f.data||[];S.flags=g.data||[];
+    if(S.flags.some(x=>x.colour_phrase_id)&&!CP.rows)await loadColourPhrases(); // 🎨 colour quiz flags show their phrase
     // Phase 8: learning path data (empty until kg-chart-phase8.sql is run)
     const[pu,pl,ps]=await Promise.all([
       sb.from('kg_chart_users').select('*').order('email'),
@@ -906,10 +907,13 @@ function renderChart(el){
 const FLAG_REASONS={pronunciation:'🔉 Devanagari',wrong_word:'❌ Wrong Word',missing_image:'🖼️ Missing Image',missing_translation:'🔤 Missing Translation',needs_review:'🤔 Needs Review'};
 // status 'converter' = the converter rule is wrong (fix it once in language-utils, not per word)
 const FLAG_STATUSES={open:'Open',converter:'🛠 Converter fix',resolved:'Resolved',dismissed:'Dismissed'};
+// A colour quiz flag's phrase: { native, meaning, picture } (null if not loaded / deleted)
+function flagPhrase(f){if(!f.colour_phrase_id)return null;const r=(CP.rows||[]).find(x=>x.id===f.colour_phrase_id);if(!r)return null;
+  const en=id=>S.vocabulary.find(v=>v.id===id)?.english_text||'?';return{native:r.native_text,meaning:`${en(r.colour_id)} ${en(r.noun_id)}`.toLowerCase(),picture:r.picture};}
 const flagMatches=f=>(!S.filters.flagStatus||f.status===S.filters.flagStatus)&&(!S.filters.flagReason||f.reason===S.filters.flagReason);
 // What the converter makes now for this flag's word/sentence ('' until the converter has loaded)
-function flagGenerated(f){const c=loadedConverters[f.language_code];if(!c)return'';const sen=f.sentence_id&&S.sentences.find(x=>x.id===f.sentence_id);const t=S.vocabTrans.find(tr=>tr.vocabulary_id===f.vocabulary_id&&tr.language_code===f.language_code);
-  const src=sen?sen.native_text:(c.usePronunciation?(t?.pinyin||t?.native_text):t?.native_text);try{return src?c.toDevanagari(src):'';}catch(e){return'';}}
+function flagGenerated(f){const c=loadedConverters[f.language_code];if(!c)return'';const sen=f.sentence_id&&S.sentences.find(x=>x.id===f.sentence_id);const ph=flagPhrase(f);const t=S.vocabTrans.find(tr=>tr.vocabulary_id===f.vocabulary_id&&tr.language_code===f.language_code);
+  const src=sen?sen.native_text:ph?ph.native:(c.usePronunciation?(t?.pinyin||t?.native_text):t?.native_text);try{return src?c.toDevanagari(src):'';}catch(e){return'';}}
 async function expandFlagCard(id){expandedFlag=expandedFlag===id?null:id;render();const f=S.flags.find(x=>x.id===id);
   if(expandedFlag&&f&&!loadedConverters[f.language_code]&&SCRIPT_RANGES[f.language_code]?.file){try{await loadConverterJS(f.language_code);render();}catch(e){}}}
 function useFlagSuggestion(id){const f=S.flags.find(x=>x.id===id);const el=document.getElementById(`flg-${id}-dev`);if(f?.suggestion&&el){el.value=f.suggestion;el.focus();toast('Suggestion copied into Devanagari: save to keep it');}}
@@ -938,27 +942,28 @@ function renderFlags(el){
     const cc=v?.extra_data?.colorCode;
     const isExpanded=expandedFlag===f.id;
     const sen=f.sentence_id?S.sentences.find(x=>x.id===f.sentence_id):null;
+    const ph=flagPhrase(f);const isPh=!!f.colour_phrase_id;
     const shown=f.shown_devanagari||'';const gen=isExpanded?flagGenerated(f):'';
-    const devBox=(f.reason==='pronunciation'||f.suggestion||shown)?`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px">${[['Shown when flagged',shown],['Suggested',f.suggestion],['Converter makes now',gen||(loadedConverters[f.language_code]?'—':'loading…')],['Saved override',sen?'':(trans?.devanagari||'')]].filter(([,v])=>v!==undefined).map(([k,v])=>`<div style="padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-card)"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${k}</div><div style="font-size:18px;color:var(--devanagari-color)">${v?escH(v):'<span style="font-size:12px;color:var(--text-muted)">—</span>'}</div></div>`).join('')}</div>`:'';
+    const devBox=(f.reason==='pronunciation'||f.suggestion||shown)?`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px">${[['Shown when flagged',shown],['Suggested',f.suggestion],['Converter makes now',gen||(loadedConverters[f.language_code]?'—':'loading…')],['Saved override',(sen||isPh)?'':(trans?.devanagari||'')]].filter(([,v])=>v!==undefined).map(([k,v])=>`<div style="padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-card)"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${k}</div><div style="font-size:18px;color:var(--devanagari-color)">${v?escH(v):'<span style="font-size:12px;color:var(--text-muted)">—</span>'}</div></div>`).join('')}</div>`:'';
 
     return`<div style="border:1px solid var(--border);border-radius:14px;margin-bottom:12px;overflow:hidden;transition:all 0.2s;${isExpanded?'box-shadow:var(--shadow-lg);border-color:var(--accent)':''}">
       <button type="button" class="flag-head" aria-expanded="${isExpanded}" style="display:flex;align-items:center;padding:14px 18px;gap:14px;cursor:pointer;background:${isExpanded?'var(--accent-dim)':'var(--bg-card)'}" onclick="expandFlagCard('${f.id}')">
         <div style="width:48px;height:48px;border-radius:10px;overflow:hidden;background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          ${cc?`<div style="width:32px;height:32px;border-radius:6px;background:${cc}"></div>`:(iu?`<img src="${iu}" style="width:100%;height:100%;object-fit:cover" onerror="this.outerHTML='📷'">`:`<span style="font-size:24px">${topic?.icon||'📷'}</span>`)}
+          ${isPh?`<span style="font-size:26px">${escH(ph?.picture||'🎨')}</span>`:cc?`<div style="width:32px;height:32px;border-radius:6px;background:${cc}"></div>`:(iu?`<img src="${iu}" style="width:100%;height:100%;object-fit:cover" onerror="this.outerHTML='📷'">`:`<span style="font-size:24px">${topic?.icon||'📷'}</span>`)}
         </div>
         <div style="flex:1;min-width:0">
-          <div style="font-weight:600;font-size:14px">${sen?`💬 ${escH(sen.english_text)}`:(v?.english_text||'Unknown')} <span style="font-size:11px;color:var(--text-muted);font-weight:400">${sen?escH(sen.group_name||'sentence'):`${topic?.icon||''} ${v?.topic_id||''}`}</span></div>
-          <div style="font-size:13px;color:var(--text-secondary);margin-top:2px">${sen?escH(sen.native_text):(trans?.native_text||'<em style=color:var(--text-muted)>No translation</em>')} ${shown?`<span style="color:var(--devanagari-color);margin-left:6px">${escH(shown)}</span>${f.suggestion?` → <span style="color:var(--success)">${escH(f.suggestion)}</span>`:''}`:(trans?.devanagari?`<span style="color:var(--devanagari-color);margin-left:6px">${trans.devanagari}</span>`:'')}</div>
+          <div style="font-weight:600;font-size:14px">${isPh?`🎨 ${escH(ph?.meaning||'(phrase deleted)')}`:sen?`💬 ${escH(sen.english_text)}`:(v?.english_text||'Unknown')} <span style="font-size:11px;color:var(--text-muted);font-weight:400">${isPh?'colour quiz':sen?escH(sen.group_name||'sentence'):`${topic?.icon||''} ${v?.topic_id||''}`}</span></div>
+          <div style="font-size:13px;color:var(--text-secondary);margin-top:2px">${isPh?escH(ph?.native||''):sen?escH(sen.native_text):(trans?.native_text||'<em style=color:var(--text-muted)>No translation</em>')} ${shown?`<span style="color:var(--devanagari-color);margin-left:6px">${escH(shown)}</span>${f.suggestion?` → <span style="color:var(--success)">${escH(f.suggestion)}</span>`:''}`:(trans?.devanagari?`<span style="color:var(--devanagari-color);margin-left:6px">${trans.devanagari}</span>`:'')}</div>
         </div>
-        <span class="flag-reason ${f.reason}" style="flex-shrink:0">${FLAG_REASONS[f.reason]||f.reason}</span>
+        <span class="flag-reason ${f.reason}" style="flex-shrink:0">${isPh&&f.reason==='missing_image'?'🎨 Picture/colour':(FLAG_REASONS[f.reason]||f.reason)}</span>
         <span style="font-size:11px;color:var(--text-muted);flex-shrink:0">${lg?.flag_emoji||''} ${f.language_code||''}</span>
         <span class="tag ${f.status}" style="flex-shrink:0">${FLAG_STATUSES[f.status]||f.status}</span>
         <span style="font-size:18px;transition:transform 0.2s;transform:rotate(${isExpanded?'180':'0'}deg)">▼</span>
       </button>
-      ${isExpanded&&sen?`<div style="padding:18px;border-top:1px solid var(--border);background:var(--bg-secondary)">
+      ${isExpanded&&(sen||isPh)?`<div style="padding:18px;border-top:1px solid var(--border);background:var(--bg-secondary)">
         ${devBox}
         <div style="font-size:13px;margin-bottom:12px"><span style="color:var(--text-muted)">Notes:</span> ${escH(f.notes||'—')} · <span style="color:var(--text-muted)">${new Date(f.created_at).toLocaleDateString()}</span></div>
-        <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Sentence lines are made by the converter: fix the rule (🛠 Converter fix) or edit the sentence in 💬 Sentences.</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">${isPh?'Fix the phrase or its picture in 🎨 Colour Phrases (then run the audio script if the text changed). The blue line is made by the converter: a wrong rule is a 🛠 Converter fix.':'Sentence lines are made by the converter: fix the rule (🛠 Converter fix) or edit the sentence in 💬 Sentences.'}</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">${f.status==='open'?`<button class="btn" onclick="resolveFlag('${f.id}','converter')">🛠 Converter fix</button><button class="btn" style="background:var(--success);color:#fff;border-color:var(--success)" onclick="resolveFlag('${f.id}','resolved')">✓ Resolve</button><button class="btn btn-warn" onclick="resolveFlag('${f.id}','dismissed')">✗ Dismiss</button>`:`<button class="btn" onclick="resolveFlag('${f.id}','open')">↩ Reopen</button>${f.status==='converter'?`<button class="btn" style="background:var(--success);color:#fff;border-color:var(--success)" onclick="resolveFlag('${f.id}','resolved')">✓ Fixed</button>`:''}`}</div>
       </div>`:isExpanded?`<div style="padding:18px;border-top:1px solid var(--border);background:var(--bg-secondary)">
         ${devBox}
@@ -1208,6 +1213,7 @@ async function exportFlags(fmt) {
     const v = S.vocabulary.find(x => x.id === f.vocabulary_id);
     const t = S.vocabTrans.find(tr => tr.vocabulary_id === f.vocabulary_id && tr.language_code === f.language_code);
     const sen = f.sentence_id ? S.sentences.find(x => x.id === f.sentence_id) : null;
+    const ph = flagPhrase(f);
     const generatedDev = flagGenerated(f);
     const leaked = generatedDev ? findLeakedChars(generatedDev, f.language_code) : [];
     return {
@@ -1216,8 +1222,9 @@ async function exportFlags(fmt) {
       english_text: v?.english_text || '',
       topic_id: v?.topic_id || '',
       language_code: f.language_code || '',
-      native_text: sen ? sen.native_text : (t?.native_text || ''),
+      native_text: sen ? sen.native_text : ph ? ph.native : (t?.native_text || ''),
       sentence: sen ? sen.english_text : '',
+      colour_phrase: ph ? ph.meaning : '',
       shown_devanagari: f.shown_devanagari || '',
       suggestion: f.suggestion || '',
       generated_devanagari: generatedDev,
@@ -1230,7 +1237,7 @@ async function exportFlags(fmt) {
     };
   });
 
-  const headers = ['flag_id','vocabulary_id','english_text','topic_id','language_code','native_text','sentence','shown_devanagari','suggestion','generated_devanagari','leaked_characters','leaked_unicode','flag_reason','flag_notes','flag_status','image_filename'];
+  const headers = ['flag_id','vocabulary_id','english_text','topic_id','language_code','native_text','sentence','colour_phrase','shown_devanagari','suggestion','generated_devanagari','leaked_characters','leaked_unicode','flag_reason','flag_notes','flag_status','image_filename'];
   if (fmt === 'csv') {
     downloadFile(`kg_flags_${S.filters.flagStatus || 'all'}${S.filters.flagReason ? '_' + S.filters.flagReason : ''}.csv`, toCSV(headers, rows), 'text/csv');
   } else {
