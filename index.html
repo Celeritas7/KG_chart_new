@@ -1125,8 +1125,9 @@
               <h2 className={`text-4xl font-bold text-gray-800 mb-2 ${fontClass}`}>
                 {item.translation?.native_text}
               </h2>
-              <div className="mb-3">
+              <div className="mb-3 flex flex-wrap justify-center items-center gap-2">
                 <SpeakButton text={item.translation?.native_text} lang={languageCode} slow size="lg" />
+                <PronounceCheck text={item.translation?.native_text} lang={languageCode} fontClass={fontClass} vocabularyId={item.id} source="word" compact />
               </div>
 
               {editingDev ? (
@@ -3616,6 +3617,178 @@
       return window.KGAudio.prefs.voice === 'm' ? 'f' : 'm';
     };
 
+    // ==========================================
+    // 🎙️ PRONUNCIATION CHECK (Edge Function kg-pronounce → Azure pronunciation assessment; docs/pronunciation-design.md)
+    // ==========================================
+    // Record on the phone, turn it into a 16 kHz mono WAV here (Azure's format), send it with the text; get back
+    // a 0–100 score, accuracy / fluency / completeness and each word's result. Only the scores are saved, never audio.
+    const PRON_MAX_SECONDS = 15;
+    const PRON_SUGGEST_RIGHT = 70; // Speak line by line: at or above this, "✓ I said it right" is suggested
+    const PRON_NOTICE_KEY = 'kg_chart_pron_notice_seen';
+    const pronCanRecord = () => !!(window.MediaRecorder && navigator.mediaDevices?.getUserMedia && (window.AudioContext || window.webkitAudioContext) && (window.OfflineAudioContext || window.webkitOfflineAudioContext));
+    const pronLabel = (score) => (score >= 80 ? { text: 'Good', cls: 'text-green-700', ring: '#16a34a' }
+      : score >= 60 ? { text: 'Getting there', cls: 'text-amber-600', ring: '#d97706' }
+      : { text: 'Try again', cls: 'text-red-600', ring: '#dc2626' });
+
+    // Any recording the browser can play (webm/opus, mp4/aac…) → { b64, seconds, peak } as 16 kHz 16-bit mono WAV
+    async function recordingToWav16k(blob) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      const raw = await blob.arrayBuffer();
+      const ctx = new AC();
+      let decoded;
+      try {
+        decoded = await new Promise((resolve, reject) => { const p = ctx.decodeAudioData(raw, resolve, reject); if (p && p.then) p.then(resolve, reject); });
+      } finally { try { ctx.close(); } catch (e) {} }
+      const frames = Math.max(1, Math.ceil(decoded.duration * 16000));
+      const off = new OAC(1, frames, 16000); // one channel: stereo is mixed down
+      const src = off.createBufferSource();
+      src.buffer = decoded; src.connect(off.destination); src.start();
+      const pcm = (await off.startRendering()).getChannelData(0);
+      let peak = 0;
+      const bytes = new Uint8Array(44 + pcm.length * 2), v = new DataView(bytes.buffer);
+      const tag = (o, s) => { for (let i = 0; i < 4; i++) bytes[o + i] = s.charCodeAt(i); };
+      tag(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); tag(8, 'WAVE'); tag(12, 'fmt ');
+      v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 16000, true);
+      v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); tag(36, 'data'); v.setUint32(40, pcm.length * 2, true);
+      for (let i = 0; i < pcm.length; i++) {
+        const x = Math.max(-1, Math.min(1, pcm[i]));
+        peak = Math.max(peak, Math.abs(x));
+        v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+      }
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      return { b64: btoa(bin), seconds: pcm.length / 16000, peak };
+    }
+
+    // Send to kg-pronounce. → { ok: true, score, … } or { ok: false, message }
+    async function checkPronunciation({ text, lang, wavB64, vocabularyId, sentenceId, source }) {
+      const { data, error } = await supabase.functions.invoke('kg-pronounce', {
+        body: { lang, text, audio: wavB64, vocabulary_id: vocabularyId || null, sentence_id: sentenceId || null, source },
+      });
+      if (!error) return data || { ok: false, message: 'No answer from the checker.' };
+      // A non-2xx answer still carries { reason, message } from the function
+      try { const body = await error.context.json(); if (body && body.message) return { ok: false, ...body }; } catch (e) {}
+      return { ok: false, reason: 'network', message: "Couldn't reach the checker. Check your connection and try again." };
+    }
+
+    // The score card (one design for every language)
+    function PronResult({ result, text, lang, fontClass, voice, onAgain }) {
+      const L = pronLabel(result.score);
+      const chip = (w) => {
+        if (w.error === 'Omission') return 'border-2 border-red-300 text-red-700 bg-white';
+        if (w.error === 'Insertion') return 'bg-gray-100 text-gray-400 line-through';
+        const a = w.accuracy == null ? 100 : w.accuracy;
+        return w.error === 'Mispronunciation' || a < 60 ? (a < 60 ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800')
+          : a < 80 ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-800';
+      };
+      const words = (result.words || []).filter(w => w.w);
+      return (
+        <div data-pron-result className="rounded-2xl border border-gray-100 bg-gray-50 p-4 text-left">
+          <div className="flex items-center gap-4">
+            <div className="w-16 h-16 rounded-full flex items-center justify-center shrink-0" style={{ background: `conic-gradient(${L.ring} ${result.score}%, #e5e7eb 0)` }}>
+              <div className={`w-12 h-12 rounded-full bg-white flex items-center justify-center text-xl font-bold ${L.cls}`}>{result.score}</div>
+            </div>
+            <div className="min-w-0">
+              <div className={`text-lg font-bold ${L.cls}`}>{L.text}</div>
+              <div className="text-xs text-gray-600">Accuracy {result.accuracy ?? '–'} · Fluency {result.fluency ?? '–'} · Completeness {result.completeness ?? '–'}</div>
+            </div>
+          </div>
+          {words.length > 0 && (
+            <div className={`flex flex-wrap gap-1.5 mt-3 text-lg ${fontClass}`}>
+              {words.map((w, i) => <span key={i} title={`${w.error === 'None' ? 'ok' : w.error}${w.accuracy != null ? ' · ' + w.accuracy : ''}`} className={`px-2.5 py-0.5 rounded-lg ${chip(w)}`}>{w.w}</span>)}
+            </div>
+          )}
+          <div className="text-[11px] text-gray-400 mt-2">Green = good · amber = close · red = said differently · outlined = missed</div>
+          <div className="flex flex-wrap gap-2 mt-3">
+            <button onClick={() => window.KGAudio.play(text, lang, { voice })} className="px-3 py-1.5 rounded-full bg-white border text-sm hover:bg-gray-50">🔊 Hear it</button>
+            <button onClick={onAgain} className="px-3 py-1.5 rounded-full bg-white border text-sm hover:bg-gray-50">↺ Again</button>
+            {result.limit ? <span className="text-[11px] text-gray-400 self-center ml-auto">{result.used}/{result.limit} today</span> : null}
+          </div>
+        </div>
+      );
+    }
+
+    // 🎙️ button + recording + checking + card. Hidden when signed out or the browser can't record.
+    function PronounceCheck({ text, lang, fontClass, vocabularyId, sentenceId, source = 'word', voice, label = '🎙️ Say it', compact = false, onResult }) {
+      const { user } = useAuth();
+      const [state, setState] = useState('idle'); // idle | recording | checking | result | error
+      const [result, setResult] = useState(null);
+      const [message, setMessage] = useState('');
+      const [secs, setSecs] = useState(0);
+      const recRef = React.useRef(null);
+      const timers = React.useRef([]);
+      const alive = React.useRef(true);
+      const [noticeSeen, setNoticeSeen] = useState(() => { try { return localStorage.getItem(PRON_NOTICE_KEY) === '1'; } catch (e) { return true; } });
+      const clearTimers = () => { timers.current.forEach(t => clearInterval(t)); timers.current = []; };
+      useEffect(() => () => { alive.current = false; clearTimers(); const r = recRef.current; if (r && r.state === 'recording') { r.onstop = null; r.stop(); r.stream?.getTracks().forEach(t => t.stop()); } }, []);
+      // A new word / line starts fresh
+      useEffect(() => { setState('idle'); setResult(null); setMessage(''); }, [text]);
+      if (!user || !text || !pronCanRecord()) return null;
+
+      const finish = async (blob) => {
+        if (!alive.current) return;
+        setState('checking');
+        try {
+          const wav = await recordingToWav16k(blob);
+          if (wav.seconds < 0.5) throw Object.assign(new Error('short'), { msg: 'That was too short. Hold the button a little longer.' });
+          if (wav.peak < 0.02) throw Object.assign(new Error('quiet'), { msg: "Didn't hear anything. Check the microphone and try again." });
+          const r = await checkPronunciation({ text, lang, wavB64: wav.b64, vocabularyId, sentenceId, source });
+          if (!alive.current) return;
+          if (r.ok) {
+            setResult(r); setState('result');
+            try { localStorage.setItem(PRON_NOTICE_KEY, '1'); } catch (e) {}
+            setNoticeSeen(true);
+            if (onResult) onResult(r);
+          } else { setMessage(r.message || 'Something went wrong. Try again.'); setState('error'); }
+        } catch (e) {
+          if (!alive.current) return;
+          setMessage(e.msg || "Couldn't read the recording. Try again."); setState('error');
+        }
+      };
+      const start = async () => {
+        window.KGAudio.stop();
+        setMessage(''); setResult(null);
+        let stream;
+        try { stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } }); }
+        catch (e) { setMessage('Microphone not allowed. Allow it in the browser settings to check your pronunciation.'); setState('error'); return; }
+        if (!alive.current) { stream.getTracks().forEach(t => t.stop()); return; }
+        const rec = new MediaRecorder(stream), chunks = [];
+        rec.stream = stream;
+        rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+        rec.onstop = () => { clearTimers(); stream.getTracks().forEach(t => t.stop()); finish(new Blob(chunks, { type: rec.mimeType || 'audio/webm' })); };
+        recRef.current = rec;
+        rec.start();
+        setSecs(0); setState('recording');
+        const t0 = Date.now();
+        timers.current.push(setInterval(() => {
+          const s = (Date.now() - t0) / 1000;
+          setSecs(Math.floor(s));
+          if (s >= PRON_MAX_SECONDS && rec.state === 'recording') rec.stop();
+        }, 250));
+      };
+      const stop = () => { const r = recRef.current; if (r && r.state === 'recording') r.stop(); };
+      const again = () => { setState('idle'); setResult(null); setMessage(''); };
+
+      const btn = compact ? 'h-11 px-4 text-base' : 'w-full py-3';
+      return (
+        <div className={compact ? (state === 'result' || state === 'error' ? 'basis-full' : '') : 'w-full'}>
+          {state === 'recording' ? (
+            <button onClick={stop} className={`${btn} rounded-full font-bold bg-red-500 text-white hover:bg-red-600 inline-flex items-center justify-center gap-2`}>
+              <span className="w-2.5 h-2.5 rounded-full bg-white animate-pulse" /> Stop · {secs}s
+            </button>
+          ) : state === 'checking' ? (
+            <button disabled className={`${btn} rounded-full font-bold bg-gray-100 text-gray-500 inline-flex items-center justify-center gap-2`}>Checking…</button>
+          ) : state !== 'result' ? (
+            <button onClick={start} className={`${btn} rounded-full font-bold border-2 border-jade-600 text-jade-700 bg-white hover:bg-jade-50 inline-flex items-center justify-center gap-2`}>{label}</button>
+          ) : null}
+          {state === 'idle' && !noticeSeen && <p className="text-[11px] text-gray-400 mt-1">Your recording is sent to Microsoft Azure to be checked and is not saved.</p>}
+          {state === 'error' && <p role="alert" className="text-sm text-red-600 mt-2">{message}</p>}
+          {state === 'result' && result && <div className="mt-2"><PronResult result={result} text={text} lang={lang} fontClass={fontClass} voice={voice} onAgain={again} /></div>}
+        </div>
+      );
+    }
+
     // Record yourself and play it back next to the real clip. Hidden where the browser can't record.
     function VoiceRecorder() {
       const [state, setState] = useState('idle'); // idle | recording | done | denied
@@ -3677,6 +3850,7 @@
       const [playing, setPlaying] = useState(-1); // listen: line being played, -1 = stopped
       const [queue, setQueue] = useState([]); // lines: line indexes still to say (missed ones go to the back)
       const [revealed, setRevealed] = useState(false);
+      const [pronSuggest, setPronSuggest] = useState(null); // 'right' | 'again' after a 🎙️ check of this line
       const [firstTry, setFirstTry] = useState({}); // lines: index -> right the first time?
       const [turn, setTurn] = useState(0); // lines: new recorder for every attempt
       const [flagLine, setFlagLine] = useState(null);
@@ -3748,7 +3922,7 @@
         setStep(id);
         startedAt.current = Date.now();
         if (id === 'listen' && !window.KGAudio.prefs.muted) setPlaying(0);
-        if (id === 'lines') { setQueue(lines.map((_, i) => i)); setRevealed(false); setFirstTry({}); }
+        if (id === 'lines') { setQueue(lines.map((_, i) => i)); setRevealed(false); setFirstTry({}); setPronSuggest(null); }
         if (id === 'whole') { setPeeked(new Set()); setShowAll(false); }
       };
 
@@ -3778,6 +3952,7 @@
         const next = ok ? queue.slice(1) : [...queue.slice(1), lineIdx];
         setFirstTry(ft);
         setRevealed(false);
+        setPronSuggest(null);
         setTurn(t => t + 1);
         window.KGAudio.stop();
         setQueue(next);
@@ -3936,6 +4111,8 @@
                 <div className="flex justify-center gap-2 mb-4">
                   <SpeakButton text={s.native_text} lang={languageCode} slow voice={speakerVoice(s)} />
                 </div>
+                <div className="mb-4"><PronounceCheck key={turn} text={s.native_text} lang={languageCode} fontClass={fontClass} sentenceId={s.id} source="speak_lines"
+                  voice={speakerVoice(s)} label="🎙️ Check me" onResult={(r) => { setPronSuggest(r.score >= PRON_SUGGEST_RIGHT ? 'right' : 'again'); setRevealed(true); }} /></div>
                 <div className="mb-5"><VoiceRecorder key={turn} /></div>
                 {revealed ? (
                   <>
@@ -3945,9 +4122,10 @@
                     </div>
                     {flagModal}
                     <div className="grid grid-cols-2 gap-3">
-                      <button onClick={() => judge(false)} className="py-3 border-2 border-orange-300 text-orange-700 rounded-xl font-bold hover:bg-orange-50">↺ Not yet</button>
-                      <button onClick={() => judge(true)} className="py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">✓ I said it right</button>
+                      <button onClick={() => judge(false)} className={`py-3 border-2 border-orange-300 text-orange-700 rounded-xl font-bold hover:bg-orange-50 ${pronSuggest === 'again' ? 'ring-4 ring-orange-200' : ''}`}>↺ Not yet</button>
+                      <button onClick={() => judge(true)} className={`py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700 ${pronSuggest === 'right' ? 'ring-4 ring-jade-200' : ''}`}>✓ I said it right</button>
                     </div>
+                    {pronSuggest && <p className="text-xs text-gray-400 mt-2">The score suggests {pronSuggest === 'right' ? '✓' : '↺'}; you still choose.</p>}
                   </>
                 ) : (
                   <button onClick={reveal} className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700">Show the line</button>
