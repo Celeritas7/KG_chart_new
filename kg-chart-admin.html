@@ -535,15 +535,10 @@ async function importSentences(rows){
 // Reviewers tick ✓ or send a fix; nothing changes for learners until a fix is accepted here (kg_chart_accept_review).
 // The items per language are built the same way as load() in kg-chart-review.html; keep the two in sync.
 const REV={lang:'',editing:null};
-const REV_MEANING_SOURCE={fil:'mr'}; // MEANING_LANGS mr → fil, turned round
-const revKey=(type,id,field)=>`${type}|${id}|${field}`;
-function revItems(L){
-  const src=REV_MEANING_SOURCE[L];const out=[];
-  S.vocabTrans.filter(t=>t.language_code===L&&t.native_text?.trim()).forEach(t=>out.push({key:revKey('word',t.vocabulary_id,'native_text'),text:t.native_text.trim()}));
-  S.topicTrans.filter(t=>t.language_code===L).forEach(t=>{if(t.title_native?.trim())out.push({key:revKey('topic',t.topic_id,'title_native'),text:t.title_native.trim()});if(t.question_native?.trim())out.push({key:revKey('topic',t.topic_id,'question_native'),text:t.question_native.trim()});});
-  S.sentences.forEach(s=>{if(s.language_code===L&&s.native_text?.trim())out.push({key:revKey('sentence',s.id,'native_text'),text:s.native_text.trim()});if(src&&s.language_code===src&&s.meaning_text?.trim())out.push({key:revKey('sentence',s.id,'meaning_text'),text:s.meaning_text.trim()});});
-  return out;
-}
+const REV_MEANING_SOURCE=KGShared.REVIEW_MEANING_SOURCE; // MEANING_LANGS mr → fil, turned round (js/kg-shared.js)
+const revKey=KGShared.reviewKey;
+// The same list the review page shows (js/kg-shared.js); admin counts everything, private lessons too
+function revItems(L){return KGShared.reviewItems({lang:L,vocabulary:S.vocabulary,vocabTrans:S.vocabTrans,topics:S.topics,topicTrans:S.topicTrans,sentences:S.sentences}).map(it=>({key:it.key,text:it.text}));}
 // The text the item has now ('' if it's gone) and a label saying what it is
 function revCurrent(r){
   if(r.item_type==='word'){const t=S.vocabTrans.find(x=>x.vocabulary_id===r.item_id&&x.language_code===r.language_code);const v=S.vocabulary.find(x=>x.id===r.item_id);return{text:t?.native_text?.trim()||'',label:`🔤 ${v?.english_text||'word'}`,sub:v?.topic_id||''};}
