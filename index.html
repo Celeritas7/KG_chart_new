@@ -425,7 +425,7 @@
     const useAudioState = () => React.useSyncExternalStore(window.KGAudio.subscribe, window.KGAudio.getVersion);
 
     // 🔊 (+ optional 🐢). A span, not a button, so it can sit inside quiz option buttons and clickable cards.
-    function SpeakButton({ text, lang, slow = false, size = 'md', className = '' }) {
+    function SpeakButton({ text, lang, slow = false, size = 'md', className = '', voice }) {
       useAudioState();
       const A = window.KGAudio;
       if (!text) return null;
@@ -433,7 +433,7 @@
       const dims = { sm: 'w-7 h-7 text-sm', md: 'w-9 h-9 text-base', lg: 'w-11 h-11 text-xl' }[size];
       const tap = (isSlow) => (e) => {
         e.stopPropagation(); e.preventDefault();
-        if (avail === true) A.play(text, lang, { slow: isSlow });
+        if (avail === true) A.play(text, lang, { slow: isSlow, voice });
         else if (avail === false) A.toast('No audio for this yet');
       };
       const onKey = (isSlow) => (e) => { if (e.key === 'Enter' || e.key === ' ') tap(isSlow)(e); };
@@ -3604,6 +3604,11 @@
     const SPEAK_SESSION_TYPES = { lines: 'speak_lines', whole: 'speak_paragraph' };
     // Conversations keep the speaker (A / B) in notes
     const speakerOf = (s) => { const n = (s.notes || '').trim(); return n && n.length <= 3 ? n : null; };
+    // In a conversation, A speaks in the learner's chosen voice (♀/♂ in the header) and B in the other one
+    const speakerVoice = (s) => {
+      if ((speakerOf(s) || '').toUpperCase() !== 'B') return undefined;
+      return window.KGAudio.prefs.voice === 'm' ? 'f' : 'm';
+    };
 
     // Record yourself and play it back next to the real clip. Hidden where the browser can't record.
     function VoiceRecorder() {
@@ -3722,7 +3727,7 @@
         if (!line) { setPlaying(-1); return; }
         playStarted.current = false;
         // No clip yet: pause about as long as the line takes to say, so the highlight still moves on
-        if (!window.KGAudio.play(line.native_text, languageCode, { silent: true })) playNextIn(800 + 90 * line.native_text.length);
+        if (!window.KGAudio.play(line.native_text, languageCode, { silent: true, voice: speakerVoice(line) })) playNextIn(800 + 90 * line.native_text.length);
       }, [step, playing]);
       useEffect(() => {
         if (step !== 'listen' || playing < 0 || !lines[playing]) return;
@@ -3761,7 +3766,7 @@
 
       // ---------- step 2: judge each line; a miss comes back at the end ----------
       const lineIdx = queue[0];
-      const reveal = () => { setRevealed(true); window.KGAudio.autoPlay(lines[lineIdx].native_text, languageCode); };
+      const reveal = () => { setRevealed(true); window.KGAudio.autoPlay(lines[lineIdx].native_text, languageCode, speakerVoice(lines[lineIdx])); };
       const judge = (ok) => {
         const ft = lineIdx in firstTry ? firstTry : { ...firstTry, [lineIdx]: ok };
         const next = ok ? queue.slice(1) : [...queue.slice(1), lineIdx];
@@ -3774,7 +3779,7 @@
       };
 
       // ---------- step 3 ----------
-      const peek = (i) => { setPeeked(p => new Set([...p, i])); window.KGAudio.autoPlay(lines[i].native_text, languageCode); };
+      const peek = (i) => { setPeeked(p => new Set([...p, i])); window.KGAudio.autoPlay(lines[i].native_text, languageCode, speakerVoice(lines[i])); };
 
       const LineText = ({ s, size = 'text-xl' }) => {
         const dev = sentenceHint(s.native_text, languageCode);
@@ -3891,11 +3896,10 @@
                     <div className="flex-1 min-w-0">
                       <LineText s={s} />
                       <div className="text-sm text-gray-500 mt-1"><Speaker s={s} />{s.display_text}</div>
-                    </div>
-                    <div className="flex gap-1 shrink-0 items-center">
-                      <SpeakButton text={s.native_text} lang={languageCode} size="sm" />
-                      <SpeakButton text={s.native_text} lang={languageCode} slow size="sm" />
-                      <FlagButton compact onClick={() => { stopAll(); setFlagLine(s); }} />
+                      <div className="flex gap-1 items-center mt-2">
+                        <SpeakButton text={s.native_text} lang={languageCode} slow size="sm" voice={speakerVoice(s)} />
+                        <FlagButton compact onClick={() => { stopAll(); setFlagLine(s); }} />
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -3924,8 +3928,7 @@
                 <div className="text-2xl font-semibold text-gray-800 mb-2"><Speaker s={s} />{s.display_text}</div>
                 <p className="text-sm text-gray-500 mb-4">Say it out loud{revealed ? '' : ', then check'}.</p>
                 <div className="flex justify-center gap-2 mb-4">
-                  <SpeakButton text={s.native_text} lang={languageCode} />
-                  <SpeakButton text={s.native_text} lang={languageCode} slow />
+                  <SpeakButton text={s.native_text} lang={languageCode} slow voice={speakerVoice(s)} />
                 </div>
                 <div className="mb-5"><VoiceRecorder key={turn} /></div>
                 {revealed ? (
@@ -3969,7 +3972,7 @@
                     </div>
                     <div className="shrink-0">
                       {open
-                        ? <SpeakButton text={s.native_text} lang={languageCode} size="sm" />
+                        ? <SpeakButton text={s.native_text} lang={languageCode} size="sm" voice={speakerVoice(s)} />
                         : <button onClick={() => peek(i)} title="Peek at this line" className="w-8 h-8 rounded-full bg-white border border-gray-200 hover:border-yellow-400">💡</button>}
                     </div>
                   </div>

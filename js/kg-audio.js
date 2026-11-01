@@ -55,12 +55,13 @@
       .catch(() => { manifests[lang] = null; emit(); });
   }
 
-  // Which clip to play: preferred voice, else the other voice, else none.
-  function resolve(text, lang) {
+  // Which clip to play: the asked-for voice (conversations: A and B), else the preferred voice, else the other one, else none.
+  function resolve(text, lang, voice) {
     const m = manifests[lang];
     if (!m || m === 'loading' || !norm(text)) return null;
     const h = hash(text);
-    const order = prefs.voice === 'm' ? ['m', 'f'] : ['f', 'm'];
+    const first = voice === 'm' || voice === 'f' ? voice : prefs.voice;
+    const order = first === 'm' ? ['m', 'f'] : ['f', 'm'];
     const g = order.find(v => m[v].has(h));
     return g ? `${BASE}/${lang}/${g}/${h}.mp3` : null;
   }
@@ -84,7 +85,7 @@
 
   function play(text, lang, opts) {
     const slow = !!(opts && opts.slow);
-    const url = resolve(text, lang);
+    const url = resolve(text, lang, opts && opts.voice);
     if (!url) { if (!(opts && opts.silent)) toast('No audio for this yet'); return false; }
     const key = keyOf(text, lang, slow);
     if (current && current.key === key) { audio.pause(); audio.currentTime = 0; setCurrent(null); return true; }
@@ -100,7 +101,7 @@
     return true;
   }
   // Used after answering: respects mute, never shows a toast
-  function autoPlay(text, lang) { if (!prefs.muted) play(text, lang, { silent: true }); }
+  function autoPlay(text, lang, voice) { if (!prefs.muted) play(text, lang, { silent: true, voice }); }
   function stop() { audio.pause(); setCurrent(null); }
   function stateOf(text, lang, slow) { return current && current.key === keyOf(text, lang, slow) ? current.state : null; }
 
