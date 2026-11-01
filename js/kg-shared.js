@@ -55,5 +55,45 @@
     return (emojiCache[emoji] = url);
   }
 
-  window.KGShared = { MCQ_QUIZ_TYPES, RULE_QUIZ_TYPES, RULE_DEFAULTS, RULE_LIMITS, ruleInt, resolveRules, COLOUR_HEX, COLOUR_OUTLINE, emojiImageUrl };
+  // ---- Review list (kg-chart-review.html for reviewers, admin → 🧐 Reviews for progress) ----
+  // Marathi meanings are written in Filipino (the app's MEANING_LANGS mr → fil), so a Filipino reviewer checks those.
+  const REVIEW_MEANING_SOURCE = { fil: 'mr' };
+  const reviewKey = (type, id, field) => `${type}|${id}|${field}`;
+  // Every checkable text for one language: { key, type, id, field, text, meaning, context, contextLang, group, note, pic, topic }.
+  // Rows can be for any languages; only `lang` (and its meaning source) are used. hiddenTopics / hiddenGroup leave
+  // private lessons out (the review page does that for reviewers who aren't listed; admin counts everything).
+  function reviewItems({ lang, vocabulary = [], vocabTrans = [], topics = [], topicTrans = [], sentences = [], hiddenTopics = new Set(), hiddenGroup = () => false }) {
+    const L = lang, src = REVIEW_MEANING_SOURCE[L];
+    const topicById = Object.fromEntries(topics.map(t => [t.id, t]));
+    const tr = (rows, key, lc) => new Map(rows.filter(r => r.language_code === lc).map(r => [r[key], r]));
+    const vMain = tr(vocabTrans, 'vocabulary_id', L), vSrc = src ? tr(vocabTrans, 'vocabulary_id', src) : new Map();
+    const tMain = tr(topicTrans, 'topic_id', L), tSrc = src ? tr(topicTrans, 'topic_id', src) : new Map();
+    const topicLabel = (id) => { const t = topicById[id]; return t ? `${t.icon || ''} ${tMain.get(id)?.title_native || t.name_english || t.title_english || id.replace(/_/g, ' ')}`.trim() : id; };
+    const items = [];
+    const add = (it) => items.push({ key: reviewKey(it.type, it.id, it.field), ...it });
+    for (const v of vocabulary) {
+      const t = vMain.get(v.id);
+      if (!t || !t.native_text?.trim() || hiddenTopics.has(v.topic_id)) continue;
+      add({ type: 'word', id: v.id, field: 'native_text', text: t.native_text.trim(), meaning: v.english_text,
+        context: src ? vSrc.get(v.id)?.native_text : '', contextLang: src, group: topicLabel(v.topic_id), note: t.notes,
+        pic: v.image_filename, topic: v.topic_id });
+    }
+    for (const tp of topics) {
+      const t = tMain.get(tp.id);
+      if (!t || hiddenTopics.has(tp.id)) continue;
+      const s = tSrc.get(tp.id);
+      if (t.title_native?.trim()) add({ type: 'topic', id: tp.id, field: 'title_native', text: t.title_native.trim(), meaning: `Topic: ${tp.id.replace(/_/g, ' ')}`, context: s?.title_native, contextLang: src, group: 'Topic titles' });
+      if (t.question_native?.trim()) add({ type: 'topic', id: tp.id, field: 'question_native', text: t.question_native.trim(), meaning: t.question_english || s?.question_english || '', context: s?.question_native, contextLang: src, group: 'Topic questions' });
+    }
+    for (const s of sentences) {
+      if (hiddenGroup(s)) continue;
+      if (s.language_code === L && s.native_text?.trim()) add({ type: 'sentence', id: s.id, field: 'native_text', text: s.native_text.trim(), meaning: s.english_text, group: s.group_name || 'Sentences', note: s.notes && s.notes.length > 3 ? s.notes : '' });
+      // Filipino reviewer: the Filipino meaning of each Marathi sentence
+      if (src && s.language_code === src && s.meaning_text?.trim()) add({ type: 'sentence', id: s.id, field: 'meaning_text', text: s.meaning_text.trim(), meaning: s.english_text, context: s.native_text, contextLang: src, group: s.group_name || 'Sentences' });
+    }
+    return items;
+  }
+
+  window.KGShared = { MCQ_QUIZ_TYPES, RULE_QUIZ_TYPES, RULE_DEFAULTS, RULE_LIMITS, ruleInt, resolveRules, COLOUR_HEX, COLOUR_OUTLINE, emojiImageUrl,
+    REVIEW_MEANING_SOURCE, reviewKey, reviewItems };
 })();

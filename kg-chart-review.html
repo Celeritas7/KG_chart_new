@@ -7,6 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧐</text></svg>">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="./js/kg-audio.js"></script>
+<script src="./js/kg-shared.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+Devanagari:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Sans+Sinhala:wght@400;500;700&family=Noto+Sans+Tamil:wght@400;500;700&family=Padauk:wght@400;700&family=Noto+Sans+Myanmar:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&family=Noto+Sans+Thai:wght@400;500;700&family=Noto+Sans+Kannada:wght@400;500;700&family=Noto+Sans+Telugu:wght@400;500;700&display=swap" rel="stylesheet">
@@ -85,8 +86,8 @@ const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 const sb = supabase.createClient(SB_URL, SB_KEY);
 const BUCKET = 'vocabulary-assets';
 // Same as MEANING_LANGS in the app: Marathi meanings are written in Filipino, so a Filipino reviewer checks those
-const MEANING_LANGS = { mr: 'fil' };
-const MEANING_SOURCE = Object.fromEntries(Object.entries(MEANING_LANGS).map(([src, m]) => [m, src]));
+// (js/kg-shared.js, which admin → 🧐 Reviews uses too)
+const MEANING_SOURCE = KGShared.REVIEW_MEANING_SOURCE;
 const LANG_KEY = 'kg_review_lang', TAB_KEY = 'kg_review_tab';
 
 const R = { user: null, admin: false, langs: [], allLangs: [], lang: '', tab: 'words', filter: 'todo', items: [], reviews: [], open: null, loading: false };
@@ -174,32 +175,9 @@ async function load() {
   const hidGroups = new Set(hidden.flatMap(r => (r.sentence_groups || []).map(g => `${r.language_code || ''}|${g}`)));
   const hiddenGroup = (s) => hidGroups.has(`${s.language_code}|${s.group_name}`) || hidGroups.has(`|${s.group_name}`);
 
-  const topicName = Object.fromEntries((topics.data || []).map(t => [t.id, t]));
-  const tr = (rows, key, lc) => new Map((rows || []).filter(r => r.language_code === lc).map(r => [r[key], r]));
-  const vMain = tr(vtr.data, 'vocabulary_id', L), vSrc = src ? tr(vtr.data, 'vocabulary_id', src) : new Map();
-  const tMain = tr(ttr.data, 'topic_id', L), tSrc = src ? tr(ttr.data, 'topic_id', src) : new Map();
-  const topicLabel = (id) => { const t = topicName[id]; return t ? `${t.icon || ''} ${tMain.get(id)?.title_native || t.name_english || t.title_english || id.replace(/_/g, ' ')}`.trim() : id; };
-  const items = [];
-  for (const v of vocab.data || []) {
-    const t = vMain.get(v.id);
-    if (!t || !t.native_text?.trim() || hidTopics.has(v.topic_id)) continue;
-    items.push({ type: 'word', id: v.id, field: 'native_text', text: t.native_text.trim(), meaning: v.english_text,
-      context: src ? vSrc.get(v.id)?.native_text : '', contextLang: src, group: topicLabel(v.topic_id), note: t.notes,
-      pic: v.image_filename, topic: v.topic_id });
-  }
-  for (const tp of topics.data || []) {
-    const t = tMain.get(tp.id);
-    if (!t || hidTopics.has(tp.id)) continue;
-    const s = tSrc.get(tp.id);
-    if (t.title_native?.trim()) items.push({ type: 'topic', id: tp.id, field: 'title_native', text: t.title_native.trim(), meaning: `Topic: ${tp.id.replace(/_/g, ' ')}`, context: s?.title_native, contextLang: src, group: 'Topic titles' });
-    if (t.question_native?.trim()) items.push({ type: 'topic', id: tp.id, field: 'question_native', text: t.question_native.trim(), meaning: t.question_english || s?.question_english || '', context: s?.question_native, contextLang: src, group: 'Topic questions' });
-  }
-  for (const s of sents.data || []) {
-    if (hiddenGroup(s)) continue;
-    if (s.language_code === L && s.native_text?.trim()) items.push({ type: 'sentence', id: s.id, field: 'native_text', text: s.native_text.trim(), meaning: s.english_text, group: s.group_name || 'Sentences', note: s.notes && s.notes.length > 3 ? s.notes : '' });
-    // Filipino reviewer: the Filipino meaning of each Marathi sentence
-    if (src && s.language_code === src && s.meaning_text?.trim()) items.push({ type: 'sentence', id: s.id, field: 'meaning_text', text: s.meaning_text.trim(), meaning: s.english_text, context: s.native_text, contextLang: src, group: s.group_name || 'Sentences' });
-  }
+  // The list itself is built in js/kg-shared.js, the same way admin → 🧐 Reviews counts progress
+  const items = KGShared.reviewItems({ lang: L, vocabulary: vocab.data || [], vocabTrans: vtr.data || [], topics: topics.data || [],
+    topicTrans: ttr.data || [], sentences: sents.data || [], hiddenTopics: hidTopics, hiddenGroup });
   R.items = items;
   R.reviews = revs.data || [];
   R.loadError = revs.error?.message || null;
@@ -210,7 +188,7 @@ async function load() {
 }
 
 // My answer for this item, if it's about the text shown now (an accepted fix counts once its text is in place)
-const keyOf = (it) => `${it.type}|${it.id}|${it.field}`;
+const keyOf = (it) => it.key || KGShared.reviewKey(it.type, it.id, it.field);
 function reviewOf(it) {
   const mine = R.reviews.filter(r => `${r.item_type}|${r.item_id}|${r.field}` === keyOf(it));
   return mine.find(r => r.shown_text === it.text) || mine.find(r => r.status === 'accepted' && r.suggestion === it.text) || null;

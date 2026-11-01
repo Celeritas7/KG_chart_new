@@ -199,7 +199,20 @@
     // The word and topic lists wait for this before building the blue line. Without it, a database answer that
     // beats the converter files shows the native text there until a reload. A converter that hangs is given up on
     // after 8 s (that language then falls back to the native text, as when its file fails to load).
-    const convertersReady = Promise.race([loadAllConverters(), new Promise(resolve => setTimeout(resolve, 8000))]);
+    const convertersAll = loadAllConverters();
+    let convertersLate = false; // the 8 s wait ran out before every converter had loaded
+    const convertersReady = Promise.race([convertersAll.then(() => 'all'), new Promise(resolve => setTimeout(() => resolve('wait'), 8000))])
+      .then(w => { if (w === 'wait') convertersLate = true; });
+    // 0, then 1 once converters that missed the 8 s wait have loaded: the word and topic lists build the blue line again
+    function useLateConverters() {
+      const [late, setLate] = useState(0);
+      useEffect(() => {
+        let cancelled = false;
+        convertersReady.then(() => { if (convertersLate) convertersAll.then(() => { if (!cancelled) setLate(1); }); });
+        return () => { cancelled = true; };
+      }, []);
+      return late;
+    }
 
     // Get converter for a language code
     function getConverter(langCode) {
@@ -544,11 +557,15 @@
     function useTopics(languageCode, meaningsInEnglish) {
       const [topics, setTopics] = useState([]);
       const [loading, setLoading] = useState(true);
+      const lateConverters = useLateConverters();
+      const lateSeen = React.useRef(0);
 
       useEffect(() => {
         if (!languageCode) return;
         let cancelled = false;
-        setLoading(true);
+        // A late converter only rebuilds the list in place; a language or meaning switch shows the spinner
+        if (lateSeen.current === lateConverters) setLoading(true);
+        lateSeen.current = lateConverters;
 
         Promise.all([supabase
           .from(TABLES.topics)
@@ -592,7 +609,7 @@
             setLoading(false);
           });
         return () => { cancelled = true; };
-      }, [languageCode, meaningsInEnglish]);
+      }, [languageCode, meaningsInEnglish, lateConverters]);
 
       return { topics, loading };
     }
@@ -607,11 +624,15 @@
     function useVocabulary(languageCode, meaningsInEnglish) {
       const [vocabulary, setVocabulary] = useState([]);
       const [loading, setLoading] = useState(true);
+      const lateConverters = useLateConverters();
+      const lateSeen = React.useRef(0);
 
       useEffect(() => {
         if (!languageCode) return;
         let cancelled = false;
-        setLoading(true);
+        // A late converter only rebuilds the list in place; a language or meaning switch shows the spinner
+        if (lateSeen.current === lateConverters) setLoading(true);
+        lateSeen.current = lateConverters;
 
         Promise.all([supabase
           .from(TABLES.vocabulary)
@@ -658,7 +679,7 @@
             setLoading(false);
           });
         return () => { cancelled = true; };
-      }, [languageCode, meaningsInEnglish]);
+      }, [languageCode, meaningsInEnglish, lateConverters]);
 
       return { vocabulary, loading };
     }
@@ -666,9 +687,14 @@
     function useUserRatings(languageCode) {
       const { user } = useAuth();
       const [ratings, setRatings] = useState({});
+      // Which user + language `ratings` holds; until it matches, they are still loading (Cards waits for them)
+      const [loadedFor, setLoadedFor] = useState(null);
+      const want = user && languageCode ? `${user.id}|${languageCode}` : null;
 
       useEffect(() => {
-        if (!user || !languageCode) return;
+        if (!want) return;
+        let cancelled = false;
+        setRatings({}); // not the previous language's ratings while this one loads
 
         supabase
           .from(TABLES.userRatings)
@@ -676,11 +702,14 @@
           .eq('user_id', user.id)
           .eq('language_code', languageCode)
           .then(({ data }) => {
+            if (cancelled) return; // switched language while loading
             const map = {};
             (data || []).forEach(r => { map[r.vocabulary_id] = r; });
             setRatings(map);
+            setLoadedFor(want);
           });
-      }, [user, languageCode]);
+        return () => { cancelled = true; };
+      }, [want]);
 
       const updateRating = useCallback(async (vocabularyId, rating) => {
         if (!user) return false;
@@ -714,7 +743,7 @@
         return !error;
       }, [user, languageCode]);
 
-      return { ratings, updateRating, clearRating };
+      return { ratings, ratingsLoaded: !want || loadedFor === want, updateRating, clearRating };
     }
 
     // ==========================================
@@ -4581,7 +4610,7 @@
     // ==========================================
     // Flip a card, then drag it onto a bucket. Words without a rating come first; once they are all sorted, a random
     // mix (about 70% from ❌ 🤔 ✍, 30% from ✓ 💬). Tap a bucket to study only its cards. Locked topics are included.
-    function FlashcardView({ topics, vocabulary, ratings, onRate, onClearRating, languageCode, user }) {
+    function FlashcardView({ topics, vocabulary, ratings, ratingsLoaded = true, onRate, onClearRating, languageCode, user }) {
       const saved0 = loadFromStorage(CARDS_KEY, {});
       const [selectedTopic, setSelectedTopic] = useState(() => (saved0.topic === 'all' || topics.some(t => t.id === saved0.topic) ? saved0.topic : 'all'));
       const [mode, setMode] = useState('sort'); // 'sort' (unsorted first) | 'mix' | 1..5 (study one bucket)
@@ -4658,6 +4687,14 @@
         setNote('');
         advance(null);
       }, [selectedTopic, mode]);
+      // The words or the saved ratings arrived after Cards opened: if the card on show no longer fits
+      // (none yet, or an already-sorted word while sorting), start again from the first card that does
+      useEffect(() => {
+        if (!ratingsLoaded) return;
+        const cur = deck.find(v => v.id === currentId);
+        const fits = cur && (typeof mode === 'number' ? ratingOf(cur.id) === mode : mode !== 'sort' || ratingOf(cur.id) === 0);
+        if (!fits) advance(null);
+      }, [ratingsLoaded, deck.length]);
 
       // The card moves on at once; if the save fails (no signal, signed out) it goes back where it was and we say so
       const NOT_SAVED = "⚠️ Not saved (no connection?). That card is back as it was; try again.";
@@ -4736,21 +4773,24 @@
         }
       };
 
-      // Keyboard: Space flip, 1-5 sort (1 = ✓ … 5 = ❌, once flipped), → skip, U undo
+      // Keyboard: Space flip, 1-5 sort (1 = ✓ … 5 = ❌, once flipped), → skip, U undo.
+      // Registered once; it calls the newest handler (which sees the current card), so it isn't re-added on every render.
+      const keyRef = React.useRef(null);
+      keyRef.current = (e) => {
+        if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) || kgModalOpen()) return;
+        if (e.key === ' ') { e.preventDefault(); setIsFlipped(f => !f); return; }
+        if (e.key === 'ArrowRight') { e.preventDefault(); advance(currentId); return; }
+        if (e.key === 'u' || e.key === 'U') { e.preventDefault(); undo(); return; }
+        const num = parseInt(e.key);
+        if (num >= 1 && num <= 5 && user) {
+          if (isFlipped) sortInto(num); else setNote('Flip the card first (Space), then sort it.');
+        }
+      };
       useEffect(() => {
-        const handleKey = (e) => {
-          if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) || kgModalOpen()) return;
-          if (e.key === ' ') { e.preventDefault(); setIsFlipped(f => !f); return; }
-          if (e.key === 'ArrowRight') { e.preventDefault(); advance(currentId); return; }
-          if (e.key === 'u' || e.key === 'U') { e.preventDefault(); undo(); return; }
-          const num = parseInt(e.key);
-          if (num >= 1 && num <= 5 && user) {
-            if (isFlipped) sortInto(num); else setNote('Flip the card first (Space), then sort it.');
-          }
-        };
+        const handleKey = (e) => keyRef.current(e);
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
-      });
+      }, []);
 
       const modeRating = typeof mode === 'number' ? getRatingById(mode) : null;
       const left = mode === 'sort' ? counts[0] : modeRating ? counts[mode] : null;
@@ -5287,7 +5327,7 @@
       const rules = useRules(user, currentLanguage);
       const topics = useMemo(() => allTopics.filter(t => !priv.topics.has(t.id)), [allTopics, priv]);
       const vocabulary = useMemo(() => allVocabulary.filter(v => !priv.topics.has(v.topic_id)), [allVocabulary, priv]);
-      const { ratings, updateRating, clearRating } = useUserRatings(currentLanguage);
+      const { ratings, ratingsLoaded, updateRating, clearRating } = useUserRatings(currentLanguage);
       const path = useLearningPath({ user, languageCode: currentLanguage, topics, vocabulary, rules });
       const visibleTopics = path.topics;
       const fontClassApp = LANGUAGE_FONTS[currentLanguage] || 'font-body';
@@ -5345,7 +5385,7 @@
                   <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} />
                 )}
                 {activeView === 'flashcard' && (
-                  <FlashcardView key={currentLanguage} topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} onClearRating={clearRating} languageCode={currentLanguage} user={user} />
+                  <FlashcardView key={currentLanguage} topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} ratingsLoaded={ratingsLoaded} onRate={updateRating} onClearRating={clearRating} languageCode={currentLanguage} user={user} />
                 )}
                 {activeView === 'progress' && (
                   <ProgressView topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} languageCode={currentLanguage} user={user} path={path.enabled || path.bypass ? path : null} meaningName={meaningName} />
