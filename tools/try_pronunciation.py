@@ -14,6 +14,9 @@ Needs the same two env vars as gen_kg_audio.py:
     python tools/try_pronunciation.py              # all languages (11 short clips, about 33 recognition calls)
     python tools/try_pronunciation.py --lang my    # one language
     python tools/try_pronunciation.py --save       # also keep the WAV clips in audio-cache/pron-test/
+    python tools/try_pronunciation.py --lang my --text "ဘာလိုချင်လဲ"
+        # one sentence: what Azure hears (and how it splits it into words), then the score for the sentence
+        # written as is, split into syllables, and split the way Azure split it. Shows how to send sentences.
 
 The results also go to audio-cache/pron-test/results.json: paste the printed summary (or that file) back to Claude.
 Cost: a few seconds of speech per language, well inside Azure's free monthly allowance.
@@ -58,7 +61,7 @@ def plain(text: str) -> str:
     return "".join(ch for ch in t if not ch.isspace() and ch not in PUNCT).lower()
 
 
-def call(req: urllib.request.Request, timeout: int = 30):
+def call(req: urllib.request.Request, timeout: int = 60):
     """(status, body text). Retries only on throttling."""
     for attempt in range(4):
         try:
@@ -157,6 +160,66 @@ def run_one(lang: str, key: str, region: str, save: bool) -> dict:
     return res
 
 
+def burmese_syllables(text: str) -> str:
+    """Spaces between Burmese syllables: a new syllable starts at a consonant (or independent vowel) that is not
+    killed by asat (်), not stacked (္ before or after) and not the start of the text."""
+    out, chars = [], list(unicodedata.normalize("NFC", text))
+    for i, ch in enumerate(chars):
+        j = i + 1
+        while j < len(chars) and chars[j] == "\u1037":  # dot below (့) can sit before asat: ကြည့်
+            j += 1
+        nxt = chars[j] if j < len(chars) else ""
+        prev = chars[i - 1] if i else ""
+        starts = ("\u1000" <= ch <= "\u1021" or "\u1023" <= ch <= "\u102a" or ch == "\u103f") \
+            and nxt not in ("\u103a", "\u1039") and prev != "\u1039"
+        if starts and out and out[-1] != " ":
+            out.append(" ")
+        out.append(ch)
+    return "".join(out).strip()
+
+
+def words_of(data: dict):
+    best = (data.get("NBest") or [{}])[0]
+    out = []
+    for w in best.get("Words") or []:
+        p = w.get("PronunciationAssessment") or w
+        acc = p.get("AccuracyScore")
+        out.append(f"{w.get('Word', '')}:{p.get('ErrorType', '-')}" + (f"/{round(acc)}" if isinstance(acc, (int, float)) else ""))
+    return out
+
+
+def text_mode(lang: str, text: str, key: str, region: str) -> None:
+    locale, voice, _, _ = TESTS[lang]
+    text = unicodedata.normalize("NFC", text).strip()
+    print(f"Sentence: {text}   ({lang}, {locale}, voice {voice})\n")
+    wav = synth(text, locale, voice, key, region)
+    st, d = recognise(wav, locale, key, region)
+    best = (d.get("NBest") or [{}])[0]
+    lexical = best.get("Lexical") or ""
+    print(f"Azure hears:      '{heard(d)}'   (HTTP {st}, {d.get('RecognitionStatus')})")
+    print(f"Azure's words:    '{lexical}'   ({len(lexical.split())} word(s))\n")
+    variants = [("as is", text)]
+    if lang == "my":
+        variants.append(("syllables", burmese_syllables(text)))
+    if lexical and lexical.replace(" ", "") != text.replace(" ", "") and len(lexical.split()) > 1:
+        pass  # Azure heard different text: its split isn't a fair reference
+    elif lexical and len(lexical.split()) > 1:
+        variants.append(("Azure's split", lexical))
+    seen = set()
+    for name, ref in variants:
+        if ref in seen:
+            continue
+        seen.add(ref)
+        st, d = recognise(wav, locale, key, region, reference=ref)
+        s = scores(d) if st == 200 else None
+        if s:
+            print(f"{name:14} '{ref}'\n               score {s['pron']} (accuracy {s['accuracy']}, fluency {s['fluency']}, "
+                  f"completeness {s['completeness']})  words: {' '.join(words_of(d)) or '-'}")
+        else:
+            print(f"{name:14} '{ref}'\n               no score (HTTP {st}, {d.get('RecognitionStatus')})")
+    print("\nPaste all of this back to Claude.")
+
+
 def line(r: dict) -> str:
     if "error" in r:
         return f"{r['lang']:3} {r['locale']:6}  ERROR  {r['error']}"
@@ -188,6 +251,12 @@ def main() -> None:
     key, region = os.environ.get("AZURE_SPEECH_KEY"), os.environ.get("AZURE_SPEECH_REGION")
     if not key or not region:
         sys.exit("Set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION first (the same as for gen_kg_audio.py).")
+    if "--text" in args:
+        i = args.index("--text")
+        if i + 1 >= len(args) or len(langs) != 1:
+            sys.exit('Use it like: python tools/try_pronunciation.py --lang my --text "ဘာလိုချင်လဲ"')
+        text_mode(langs[0], args[i + 1], key, region)
+        return
 
     print(f"Testing {len(langs)} language(s) in region {region}...\n")
     results = []
