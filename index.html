@@ -3737,6 +3737,9 @@
           if (!alive.current) return;
           if (r.ok) {
             setResult(r); setState('result');
+            if (r.saved !== false) window.dispatchEvent(new CustomEvent(PRON_EVENT, { detail: {
+              id: 'new-' + Date.now(), created_at: new Date().toISOString(), language_code: lang, vocabulary_id: vocabularyId || null,
+              sentence_id: vocabularyId ? null : (sentenceId || null), reference_text: text, score: r.score, source } }));
             try { localStorage.setItem(PRON_NOTICE_KEY, '1'); } catch (e) {}
             setNoticeSeen(true);
             if (onResult) onResult(r);
@@ -3785,6 +3788,133 @@
           {state === 'idle' && !noticeSeen && <p className="text-[11px] text-gray-400 mt-1">Your recording is sent to Microsoft Azure to be checked and is not saved.</p>}
           {state === 'error' && <p role="alert" className="text-sm text-red-600 mt-2">{message}</p>}
           {state === 'result' && result && <div className="mt-2"><PronResult result={result} text={text} lang={lang} fontClass={fontClass} voice={voice} onAgain={again} /></div>}
+        </div>
+      );
+    }
+
+    // ---------- pronunciation history (Progress) ----------
+    const PRON_EVENT = 'kg-pron-saved'; // a check was just saved (detail = the row), so lists update without a reload
+    const pronTone = (score) => (score >= 80 ? 'bg-green-100 text-green-800' : score >= 60 ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-800');
+    // The learner's own checks for one language, newest first (RLS: own rows only). null while loading.
+    function usePronunciationHistory(user, languageCode) {
+      const [rows, setRows] = useState(null);
+      const uid = user?.id || null; // the id, not the object: a new user object for the same person must not reload (and drop new rows)
+      useEffect(() => {
+        if (!uid || !languageCode) { setRows([]); return; }
+        let cancelled = false;
+        setRows(null);
+        supabase.from('kg_chart_pronunciation_attempts')
+          .select('id, created_at, language_code, vocabulary_id, sentence_id, reference_text, score, source')
+          .eq('user_id', uid).eq('language_code', languageCode)
+          .order('created_at', { ascending: false }).limit(500)
+          .then(({ data, error }) => { if (!cancelled) setRows(error ? [] : (data || [])); });
+        return () => { cancelled = true; };
+      }, [uid, languageCode]);
+      useEffect(() => {
+        const add = (e) => { const r = e.detail; if (r && r.language_code === languageCode) setRows(rs => [r, ...(rs || [])]); };
+        window.addEventListener(PRON_EVENT, add);
+        return () => window.removeEventListener(PRON_EVENT, add);
+      }, [languageCode]);
+      return rows;
+    }
+    const dayKey = (d) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+    const shortWhen = (iso) => {
+      const d = new Date(iso), now = new Date();
+      const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      if (dayKey(d) === dayKey(now)) return 'today ' + time;
+      const y = new Date(now); y.setDate(now.getDate() - 1);
+      if (dayKey(d) === dayKey(y)) return 'yesterday ' + time;
+      return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
+    };
+
+    // Progress → 🎙️ Pronunciation: numbers for the last 7 days, daily average for 14 days, recent checks, what to practise
+    function PronunciationCard({ rows, fontClass }) {
+      const DAYS = 14;
+      const [sel, setSel] = useState(null); // the day whose bar is tapped / hovered
+      const data = useMemo(() => {
+        const list = rows || [];
+        const now = new Date(), start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (DAYS - 1));
+        const days = Array.from({ length: DAYS }, (_, i) => { const d = new Date(start); d.setDate(start.getDate() + i); return { key: dayKey(d), date: d, scores: [] }; });
+        const byKey = new Map(days.map(d => [d.key, d]));
+        list.forEach(r => { const d = byKey.get(dayKey(new Date(r.created_at))); if (d && r.score != null) d.scores.push(r.score); });
+        days.forEach(d => { d.avg = d.scores.length ? Math.round(d.scores.reduce((a, b) => a + b, 0) / d.scores.length) : null; });
+        const weekAgo = Date.now() - 7 * 864e5;
+        const week = list.filter(r => new Date(r.created_at).getTime() >= weekAgo && r.score != null);
+        const avg7 = week.length ? Math.round(week.reduce((a, r) => a + r.score, 0) / week.length) : null;
+        const best = list.reduce((m, r) => (r.score != null && (m == null || r.score > m) ? r.score : m), null);
+        // latest check per word / line; practise the ones under 70
+        const latest = new Map();
+        list.forEach(r => { const k = r.vocabulary_id || r.sentence_id || r.reference_text; if (!latest.has(k)) latest.set(k, { ...r, tries: 0 }); latest.get(k).tries++; });
+        const practise = [...latest.values()].filter(r => r.score != null && r.score < 70).sort((a, b) => a.score - b.score).slice(0, 5);
+        return { days, weekCount: week.length, avg7, best, practise, recent: list.slice(0, 8) };
+      }, [rows]);
+
+      return (
+        <div data-pron-card className="bg-white rounded-2xl shadow-lg p-6">
+          <h3 className="text-lg font-bold text-gray-800 mb-1">🎙️ Pronunciation</h3>
+          <p className="text-xs text-gray-400 mb-4">Your 🎙️ checks in this language. They don't count toward unlocking.</p>
+          {rows === null ? <div className="text-sm text-gray-400">Loading…</div> : !rows.length ? (
+            <div className="text-sm text-gray-500">No checks yet. Tap a word and press <b>🎙️ Say it</b>, or try <b>🎙️ Check me</b> in Speak → Line by line.</div>
+          ) : (
+            <>
+              <div className="grid grid-cols-3 gap-3 mb-5">
+                {[['Checks', data.weekCount, 'last 7 days'], ['Average', data.avg7 == null ? '–' : data.avg7, 'last 7 days'], ['Best', data.best == null ? '–' : data.best, 'ever']].map(([label, value, sub]) => (
+                  <div key={label} className="rounded-xl bg-gray-50 p-3 text-center">
+                    <div className="text-2xl font-bold text-gray-800">{value}</div>
+                    <div className="text-xs font-medium text-gray-600">{label}</div>
+                    <div className="text-[10px] text-gray-400">{sub}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="text-xs font-semibold text-gray-500 mb-1">Average score per day · last {DAYS} days</div>
+              <div className="text-xs text-gray-600 h-4 mb-1" aria-live="polite">
+                {sel ? `${sel.date.toLocaleDateString([], { day: 'numeric', month: 'short' })}: ${sel.avg == null ? 'no checks' : `average ${sel.avg} (${sel.scores.length} check${sel.scores.length === 1 ? '' : 's'})`}` : 'Tap a bar to see the day.'}
+              </div>
+              <div className="relative h-28 border-b border-gray-200" onMouseLeave={() => setSel(null)}>
+                {[50, 100].map(g => <div key={g} className="absolute left-0 right-0 border-t border-dashed border-gray-100" style={{ bottom: `${g}%` }}><span className="absolute -top-2 right-0 text-[9px] text-gray-300 bg-white pl-1">{g}</span></div>)}
+                <div className="absolute inset-0 flex items-end gap-0.5 pr-5">
+                  {data.days.map(d => (
+                    <button key={d.key} data-day={d.key} onClick={() => setSel(d)} onMouseEnter={() => setSel(d)} aria-label={`${d.date.toLocaleDateString()}: ${d.avg == null ? 'no checks' : 'average ' + d.avg}`}
+                      className="flex-1 h-full flex items-end justify-center group">
+                      {d.avg != null && <span className={`w-2.5 rounded-t ${sel && sel.key === d.key ? 'bg-jade-700' : 'bg-jade-500 group-hover:bg-jade-600'}`} style={{ height: `${Math.max(d.avg, 3)}%` }} />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex pr-5 text-[9px] text-gray-400 mt-1">
+                {data.days.map((d, i) => <span key={d.key} className="flex-1 text-center">{i % 3 === 1 || i === DAYS - 1 ? d.date.getDate() : ''}</span>)}
+              </div>
+
+              {data.practise.length > 0 && (
+                <div className="mt-5">
+                  <div className="text-xs font-semibold text-gray-500 mb-2">To practise (latest score under 70)</div>
+                  <div className="space-y-1.5">
+                    {data.practise.map(r => (
+                      <div key={r.id} className="flex items-center gap-2">
+                        <span className={`flex-1 min-w-0 truncate text-gray-800 ${fontClass}`}>{r.reference_text}</span>
+                        <span className="text-[10px] text-gray-400">{r.tries}×</span>
+                        <span className={`w-10 text-center text-xs font-bold py-0.5 rounded-lg ${pronTone(r.score)}`}>{r.score}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-5">
+                <div className="text-xs font-semibold text-gray-500 mb-2">Recent checks</div>
+                <div className="space-y-1.5">
+                  {data.recent.map(r => (
+                    <div key={r.id} className="flex items-center gap-2">
+                      <span className="text-sm w-5 text-center" title={r.source === 'speak_lines' ? 'Speak line' : 'Word'}>{r.source === 'speak_lines' ? '🗣️' : '🔤'}</span>
+                      <span className={`flex-1 min-w-0 truncate text-gray-800 ${fontClass}`}>{r.reference_text}</span>
+                      <span className="text-[10px] text-gray-400 whitespace-nowrap">{shortWhen(r.created_at)}</span>
+                      <span className={`w-10 text-center text-xs font-bold py-0.5 rounded-lg ${r.score == null ? 'bg-gray-100 text-gray-400' : pronTone(r.score)}`}>{r.score ?? '–'}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </div>
       );
     }
@@ -5075,6 +5205,7 @@
 
     function ProgressView({ topics, vocabulary, ratings, languageCode, user, path , meaningName}) {
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
+      const pron = usePronunciationHistory(user, languageCode);
 
       const stats = useMemo(() => {
         const result = { total: vocabulary.length, rated: 0, byRating: {}, byTopic: {} };
@@ -5112,7 +5243,8 @@
 
       return (
         <div className="max-w-4xl mx-auto p-4 space-y-6">
-          {path && <LearningPathCard path={path} vocabulary={vocabulary} ratings={ratings} fontClass={fontClass} languageCode={languageCode} meaningName={meaningName} />}
+          {path && <LearningPathCard path={path} vocabulary={vocabulary} ratings={ratings} fontClass={fontClass} languageCode={languageCode} meaningName={meaningName} pron={pron} />}
+          <PronunciationCard rows={pron} fontClass={fontClass} />
           <div className="bg-white rounded-3xl shadow-xl p-6">
             <h2 className="text-2xl font-bold text-gray-800 mb-6">Overall Progress</h2>
             <div className="mb-4">
@@ -5371,7 +5503,7 @@
       );
     }
 
-    function WordStrengthModal({ item, byType, rating, fontClass, onClose, languageCode, meaningName }) {
+    function WordStrengthModal({ item, byType, rating, fontClass, onClose, languageCode, meaningName, pronList = [] }) {
       const r = getRatingById(rating);
       const overall = overallPct(byType, rating);
       return (
@@ -5388,7 +5520,23 @@
               </div>
             </div>
             <WordNote note={item.translation?.notes} languageCode={languageCode} className="-mt-2 mb-4" />
+            <div className="mb-4 flex justify-center"><PronounceCheck text={item.translation?.native_text} lang={languageCode} fontClass={fontClass} vocabularyId={item.id} source="word" /></div>
             <div className="space-y-2">
+              {(() => {
+                const last = pronList.slice(0, STRENGTH_WINDOW).reverse(); // oldest → newest, like the quiz rows
+                const latest = pronList[0]?.score;
+                return (
+                  <div data-pron-row className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl">
+                    <span className="text-xl w-7 text-center">🎙️</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-gray-800">Pronunciation</div>
+                      <div className="text-xs text-gray-400">{pronList.length ? `${pronList.length} check${pronList.length === 1 ? '' : 's'} · not part of the overall %` : 'Not checked yet'}</div>
+                    </div>
+                    <div className="flex gap-1">{last.map((a, i) => <span key={i} title={String(a.score)} className={'w-2.5 h-2.5 rounded-full ' + (a.score >= 80 ? 'bg-green-500' : a.score >= 60 ? 'bg-amber-400' : 'bg-red-500')} />)}</div>
+                    <span className={'w-12 text-center text-xs font-bold py-1 rounded-lg ' + (latest == null ? 'bg-gray-100 text-gray-400' : pronTone(latest))}>{latest == null ? '–' : latest}</span>
+                  </div>
+                );
+              })()}
               {STRENGTH_TYPES.map(q0 => quizTypeLabel(q0, languageCode, meaningName)).map(q => {
                 const list = byType?.[q.id] || [];
                 const pct = strengthPct(list);
@@ -5421,7 +5569,7 @@
       );
     }
 
-    function LearningPathCard({ path, vocabulary, ratings, fontClass, languageCode, meaningName }) {
+    function LearningPathCard({ path, vocabulary, ratings, fontClass, languageCode, meaningName, pron }) {
       const rules = React.useContext(RulesContext);
       const firstOpen = path.topics.find(t => !t.locked && !path.status[t.id].complete && !path.status[t.id].empty);
       const [open, setOpen] = useState(firstOpen?.id || null);
@@ -5484,7 +5632,8 @@
               );
             })}
           </div>
-          {word && <WordStrengthModal item={word} byType={path.attempts[String(word.id)]} rating={ratings[word.id]?.rating} fontClass={fontClass} onClose={() => setWord(null)} languageCode={languageCode} meaningName={meaningName} />}
+          {word && <WordStrengthModal item={word} byType={path.attempts[String(word.id)]} rating={ratings[word.id]?.rating} fontClass={fontClass} onClose={() => setWord(null)} languageCode={languageCode} meaningName={meaningName}
+            pronList={(pron || []).filter(r => r.vocabulary_id === word.id)} />}
         </div>
       );
     }
