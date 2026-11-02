@@ -5307,10 +5307,19 @@
       const last = list.slice(-STRENGTH_WINDOW);
       return Math.round(100 * last.filter(a => a.c).length / last.length);
     }
-    function overallPct(byType, rating) {
+    // Overall = the last 5 answers in any quiz type, plus the Cards rating as one more, but only while that rating is
+    // the newest evidence: once the word has been answered after the rating was set, those answers speak for
+    // themselves. (A wrong answer files an unrated word under ❌ automatically; this stops that ❌ dragging the
+    // overall down after later right answers.) ratingAt: ms of the rating's last_reviewed_at / updated_at.
+    const ratingCounts = (byType, rating, ratingAt) => {
+      if (ratingScore(rating) == null) return false;
+      const newest = Object.values(byType || {}).flat().reduce((m, a) => Math.max(m, a.t || 0), 0);
+      return !newest || (ratingAt || 0) >= newest;
+    };
+    const ratingTime = (row) => Date.parse(row?.last_reviewed_at || row?.updated_at || '') || 0;
+    function overallPct(byType, rating, ratingAt) {
       const all = Object.values(byType || {}).flat().sort((a, b) => a.t - b.t).slice(-STRENGTH_WINDOW).map(a => (a.c ? 1 : 0));
-      const rs = ratingScore(rating);
-      if (rs != null) all.push(rs);
+      if (ratingCounts(byType, rating, ratingAt)) all.push(ratingScore(rating));
       return all.length ? Math.round(100 * all.reduce((s, x) => s + x, 0) / all.length) : null;
     }
     const strengthClass = (p) => (p == null ? 'bg-gray-100 text-gray-400' : p >= 80 ? 'bg-green-500 text-white' : p >= 40 ? 'bg-amber-400 text-gray-900' : 'bg-red-500 text-white');
@@ -5503,9 +5512,10 @@
       );
     }
 
-    function WordStrengthModal({ item, byType, rating, fontClass, onClose, languageCode, meaningName, pronList = [] }) {
+    function WordStrengthModal({ item, byType, rating, ratingAt, fontClass, onClose, languageCode, meaningName, pronList = [] }) {
       const r = getRatingById(rating);
-      const overall = overallPct(byType, rating);
+      const overall = overallPct(byType, rating, ratingAt);
+      const ratingUsed = ratingCounts(byType, rating, ratingAt);
       return (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
           <div className="bg-white rounded-3xl shadow-2xl p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
@@ -5557,12 +5567,12 @@
                 <span className="text-xl w-7 text-center">🃏</span>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-gray-800">Flashcard rating</div>
-                  <div className="text-xs text-gray-400">{r ? r.label : 'Not rated'}</div>
+                  <div className="text-xs text-gray-400">{r ? r.label : 'Not rated'}{r && !ratingUsed ? ' · not in the overall: you\'ve answered since. Re-sort it in Cards to update it.' : ''}</div>
                 </div>
                 <span className="text-lg">{r?.emoji || ''}</span>
               </div>
             </div>
-            <p className="text-xs text-gray-400 mt-4">Strength = % correct over the last {STRENGTH_WINDOW} attempts. Overall mixes all quiz types with the flashcard rating counted as one attempt.</p>
+            <p className="text-xs text-gray-400 mt-4">Strength = % correct over the last {STRENGTH_WINDOW} attempts. Overall = your last {STRENGTH_WINDOW} answers in any quiz type, plus your Cards rating as one more, but only if you set it after those answers.</p>
             <button onClick={onClose} className="w-full mt-4 py-3 bg-gray-100 rounded-xl font-medium hover:bg-gray-200">Close</button>
           </div>
         </div>
@@ -5615,7 +5625,7 @@
                           {words.map(w => {
                             const byType = path.attempts[String(w.id)];
                             const cnt = path.counts[String(w.id)] || {};
-                            const ov = overallPct(byType, ratings[w.id]?.rating);
+                            const ov = overallPct(byType, ratings[w.id]?.rating, ratingTime(ratings[w.id]));
                             return (
                               <tr key={w.id} onClick={() => setWord(w)} className="cursor-pointer hover:opacity-80">
                                 <td className="px-1 py-1"><div className={'font-medium text-gray-800 ' + fontClass}>{w.translation?.native_text}</div><div className="text-xs text-gray-400">{w.display_text}</div></td>
@@ -5632,7 +5642,7 @@
               );
             })}
           </div>
-          {word && <WordStrengthModal item={word} byType={path.attempts[String(word.id)]} rating={ratings[word.id]?.rating} fontClass={fontClass} onClose={() => setWord(null)} languageCode={languageCode} meaningName={meaningName}
+          {word && <WordStrengthModal item={word} byType={path.attempts[String(word.id)]} rating={ratings[word.id]?.rating} ratingAt={ratingTime(ratings[word.id])} fontClass={fontClass} onClose={() => setWord(null)} languageCode={languageCode} meaningName={meaningName}
             pronList={(pron || []).filter(r => r.vocabulary_id === word.id)} />}
         </div>
       );
