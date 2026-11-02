@@ -50,6 +50,27 @@ export function checkWav(b: Uint8Array): string | null {
   return null;
 }
 
+// Burmese is written without spaces between words, but Azure scores Burmese per syllable and can't line up a
+// sentence sent as one block (owner's test 2 Nov: ဘာလိုချင်လဲ as is → 0, as "ဘာ လို ချင် လဲ" → 99).
+// So Burmese reference text gets a space between syllables. A syllable starts at a consonant (or independent vowel)
+// that isn't killed by ် (also when ့ sits before it) and isn't stacked (္). Same rule as tools/try_pronunciation.py.
+export function burmeseSyllables(text: string): string {
+  const chars = Array.from(text.normalize('NFC'));
+  let out = '';
+  chars.forEach((ch, i) => {
+    let j = i + 1;
+    while (j < chars.length && chars[j] === '့') j++;
+    const nxt = chars[j] || '', prev = chars[i - 1] || '';
+    const starts = ((ch >= 'က' && ch <= 'အ') || (ch >= 'ဣ' && ch <= 'ဪ') || ch === 'ဿ')
+      && nxt !== '်' && nxt !== '္' && prev !== '္';
+    if (starts && out && !out.endsWith(' ')) out += ' ';
+    out += ch;
+  });
+  return out.replace(/\s+/g, ' ').trim();
+}
+// The text Azure is asked to score (the saved row keeps the text as shown)
+export const referenceFor = (lang: string, text: string) => (lang === 'my' ? burmeseSyllables(text) : text);
+
 type Pa = { AccuracyScore?: number; FluencyScore?: number; CompletenessScore?: number; PronScore?: number; ErrorType?: string };
 const r = (x: unknown) => (typeof x === 'number' && isFinite(x) ? Math.max(0, Math.min(100, Math.round(x))) : null);
 
@@ -153,7 +174,7 @@ export function makeHandler(deps: Deps) {
     if (used >= limit) return fail(429, 'limit', `That's ${limit} checks today, the daily limit. More tomorrow.`);
 
     // 4. Azure
-    const az = await callAzure(deps, wav, locale, text);
+    const az = await callAzure(deps, wav, locale, referenceFor(body.lang, text));
     if ('error' in az) return fail(az.error === 'azure_slow' ? 503 : 502, az.error!, az.message!);
     const p = parseAzure(az.data);
     if (p.status !== 'Success') return json(200, { ok: false, reason: 'no_speech', message: "Didn't catch that. Try again, a little louder." });
