@@ -256,6 +256,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
     <div class="nav-item" data-page="coverage"><span class="icon">📋</span>Coverage<span class="badge" id="badge-coverage">-</span></div>
     <div class="nav-section-label">Analytics</div>
     <div class="nav-item" data-page="quiz-stats"><span class="icon">🧠</span>Quiz Stats</div>
+    <div class="nav-item" data-page="pronunciation"><span class="icon">🎙️</span>Pronunciation</div>
     <div class="nav-item" data-page="levels"><span class="icon">🎚️</span>Learner Levels</div>
     <div class="nav-item" data-page="rules"><span class="icon">⚖️</span>Rules</div>
   </nav>
@@ -407,6 +408,7 @@ function render(){
     case'flags':t.textContent='Flags';a.innerHTML=`<button class="btn" onclick="exportFlags('csv')">⬇ CSV</button><button class="btn" onclick="exportFlags('json')">⬇ JSON</button><button class="btn" onclick="triggerImport('flags')">⬆ Import</button><button class="btn btn-accent" onclick="runConverterScan()">🔍 Scan Conversions</button>`;renderFlags(c);break;
     case'coverage':t.textContent='Coverage';a.innerHTML=`<button class="btn" onclick="exportMissing('csv','selected')">⬇ Selected Lang</button><button class="btn" onclick="exportMissing('csv','all')">⬇ All Languages</button><button class="btn" onclick="copyAIPrompt()">📋 AI Prompt</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderCoverage(c);break;
     case'quiz-stats':t.textContent='Quiz Stats';a.innerHTML='';renderQuiz(c);break;
+    case'pronunciation':t.textContent='Pronunciation';a.innerHTML=`<button class="btn" onclick="PRON.data=null;render()">↻ Refresh</button><button class="btn" onclick="exportPron()">⬇ CSV</button>`;renderPron(c);break;
     case'levels':t.textContent='Learner Levels';a.innerHTML='';renderLevels(c);break;
     case'rules':t.textContent='Rules';a.innerHTML='';renderRules(c);break;
   }
@@ -1184,6 +1186,68 @@ function exportMistakes(){
   const rows=mistakeRows().map(r=>({language_code:r.session.language_code,source:r.session.quiz_type,kind:r.kind,native_text:r.tg.native,meaning:r.tg.meaning,typed:r.answer_text||'',answered_at:r.answered_at||r.session.created_at,vocabulary_id:r.vocabulary_id||'',sentence_id:r.sentence_id||''}));
   if(!rows.length){toast('No mistakes to export','error');return;}
   downloadFile(`kg_typed_mistakes_${MIST.lang||'all'}.csv`,toCSV(Object.keys(rows[0]),rows),'text/csv');toast(`Exported ${rows.length} mistakes`);
+}
+
+// ===== PRONUNCIATION (kg_chart_pronunciation_attempts, written by the Edge Function kg-pronounce) =====
+// Every learner's 🎙️ checks: who, how often, how well, and the words they find hardest. Admin reads all rows (RLS).
+// Emails come from kg_chart_admin_user_emails() when that function exists; otherwise learners show as short ids.
+let PRON={data:null,emails:null,loading:false,error:null,lang:'',user:'',days:30};
+const pronTone=s=>s==null?'background:var(--bg-tertiary);color:var(--text-muted)':s>=80?'background:#dcfce7;color:#166534':s>=60?'background:#fef3c7;color:#92400e':'background:#fee2e2;color:#991b1b';
+const pronName=uid=>(PRON.emails&&PRON.emails[uid])||('Learner '+String(uid).slice(0,6));
+async function loadPron(){
+  PRON.loading=true;PRON.error=null;
+  const[{data,error},em]=await Promise.all([
+    sb.from('kg_chart_pronunciation_attempts').select('id,user_id,language_code,vocabulary_id,sentence_id,source,reference_text,score,accuracy,fluency,completeness,created_at').order('created_at',{ascending:false}).limit(5000),
+    sb.rpc('kg_chart_admin_user_emails')]);
+  PRON.loading=false;
+  if(error){PRON.error=error.message;PRON.data=[];return;}
+  PRON.data=data||[];
+  PRON.emails=em&&!em.error&&Array.isArray(em.data)?Object.fromEntries(em.data.map(r=>[r.user_id,r.email])):null;
+}
+function pronRows(){
+  const since=PRON.days?Date.now()-PRON.days*864e5:0;
+  return(PRON.data||[]).filter(r=>(!PRON.lang||r.language_code===PRON.lang)&&(!PRON.user||r.user_id===PRON.user)&&Date.parse(r.created_at)>=since);
+}
+function renderPron(el){
+  if(PRON.data===null){if(!PRON.loading)loadPron().then(()=>{if(S.page==='pronunciation')render();});el.innerHTML='<div class="empty-state"><div class="icon">🎙️</div><p>Loading pronunciation checks…</p></div>';return;}
+  const all=PRON.data||[];
+  const langs=[...new Set(all.map(r=>r.language_code))].sort();
+  const users=[...new Set(all.map(r=>r.user_id))];
+  const sel=(v,opts,on)=>`<select onchange="${on}">${opts.map(([k,l])=>`<option value="${escH(k)}" ${String(v)===String(k)?'selected':''}>${l}</option>`).join('')}</select>`;
+  const langName=c=>{const l=S.languages.find(x=>x.code===c);return l?`${l.flag_emoji||''} ${escH(l.name_english||c)}`:escH(c);};
+  const bar=`<div class="filter-bar">${sel(PRON.lang,[['','All languages'],...langs.map(c=>[c,langName(c)])],"PRON.lang=this.value;render()")}${sel(PRON.user,[['','All learners'],...users.map(u=>[u,escH(pronName(u))])],"PRON.user=this.value;render()")}${sel(PRON.days,[[7,'Last 7 days'],[30,'Last 30 days'],[0,'All time']],"PRON.days=+this.value;render()")}<span class="filter-count">${pronRows().length} checks</span></div>`;
+  const note=PRON.emails?'':`<p style="font-size:12px;color:var(--text-muted);margin:-4px 0 12px">Learners show as short ids: run <span class="mono">kg-chart-admin-user-emails.sql</span> to see their emails.</p>`;
+  if(PRON.error){el.innerHTML=bar+`<div class="empty-state"><div class="icon">⚠️</div><p>${escH(PRON.error)}</p></div>`;return;}
+  const rows=pronRows();
+  if(!rows.length){el.innerHTML=bar+note+`<div class="empty-state"><div class="icon">🎙️</div><p>No pronunciation checks here yet. Learners make them with 🎙️ Say it, 🎙️ Check me in Speak, or Quiz → 🎙️ Say.</p></div>`;return;}
+  const avg=a=>a.length?Math.round(a.reduce((x,y)=>x+y,0)/a.length):null;
+  const scored=rows.filter(r=>r.score!=null);
+  const tiles=[['🎙️',rows.length,'Checks'],['👥',new Set(rows.map(r=>r.user_id)).size,'Learners'],['📈',avg(scored.map(r=>r.score))??'–','Average score'],['🔤',new Set(rows.map(r=>r.language_code+'|'+r.reference_text)).size,'Words & lines']];
+  // per learner + language
+  const byL={};rows.forEach(r=>{const k=r.user_id+'|'+r.language_code;(byL[k]=byL[k]||{user:r.user_id,lang:r.language_code,items:[]}).items.push(r);});
+  const learners=Object.values(byL).sort((a,b)=>b.items.length-a.items.length);
+  // hardest: latest score per learner + item, then averaged over learners; at least 1 check
+  const latest={};rows.forEach(r=>{const k=r.user_id+'|'+r.language_code+'|'+(r.vocabulary_id||r.sentence_id||r.reference_text);if(!latest[k])latest[k]={...r,tries:0};latest[k].tries++;});
+  const byItem={};Object.values(latest).forEach(r=>{const k=r.language_code+'|'+r.reference_text;(byItem[k]=byItem[k]||{text:r.reference_text,lang:r.language_code,source:r.source,scores:[],tries:0,users:new Set()});byItem[k].scores.push(r.score);byItem[k].tries+=r.tries;byItem[k].users.add(r.user_id);});
+  const hardest=Object.values(byItem).map(x=>({...x,avg:avg(x.scores.filter(s=>s!=null))})).filter(x=>x.avg!=null).sort((a,b)=>a.avg-b.avg).slice(0,15);
+  const chip=s=>`<span style="display:inline-block;min-width:38px;text-align:center;font-weight:700;font-size:12px;padding:2px 6px;border-radius:8px;${pronTone(s)}">${s??'–'}</span>`;
+  const when=iso=>new Date(iso).toLocaleString([], {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+  el.innerHTML=bar+note+`<div style="display:flex;gap:14px;margin-bottom:18px;flex-wrap:wrap">${tiles.map(([i,v,l])=>`<div class="stat-tile"><span class="st-icon">${i}</span><div><div class="st-val">${v}</div><div class="st-label">${l}</div></div></div>`).join('')}</div>
+  <h3 style="font-size:15px;margin:6px 0 8px">Learners</h3>
+  <table class="data-table" style="margin-bottom:22px"><thead><tr><th>Learner</th><th>Lang</th><th>Checks</th><th>Average</th><th>Last 7 days</th><th>Words & lines</th><th>Last check</th></tr></thead><tbody>${learners.map(g=>{
+    const wk=g.items.filter(r=>Date.parse(r.created_at)>=Date.now()-7*864e5);
+    return`<tr style="cursor:pointer" onclick="PRON.user='${g.user}';render()"><td>${escH(pronName(g.user))}</td><td class="mono">${escH(g.lang)}</td><td><b>${g.items.length}</b></td><td>${chip(avg(g.items.filter(r=>r.score!=null).map(r=>r.score)))}</td><td>${wk.length} · ${chip(avg(wk.filter(r=>r.score!=null).map(r=>r.score)))}</td><td>${new Set(g.items.map(r=>r.reference_text)).size}</td><td style="font-size:12px;white-space:nowrap">${when(g.items[0].created_at)}</td></tr>`;}).join('')}</tbody></table>
+  <h3 style="font-size:15px;margin:6px 0 4px">Hardest words & lines</h3>
+  <p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">Each learner's latest score for it, averaged. Lowest first.</p>
+  <table class="data-table" style="margin-bottom:22px"><thead><tr><th>Word / line</th><th>Lang</th><th>Average (latest)</th><th>Learners</th><th>Tries</th></tr></thead><tbody>${hardest.map(x=>`<tr><td style="font-size:16px">${x.source==='speak_lines'?'🗣️ ':''}${escH(x.text)}</td><td class="mono">${escH(x.lang)}</td><td>${chip(x.avg)}</td><td>${x.users.size}</td><td>${x.tries}</td></tr>`).join('')}</tbody></table>
+  <h3 style="font-size:15px;margin:6px 0 8px">Recent checks</h3>
+  <table class="data-table"><thead><tr><th>When</th><th>Learner</th><th>Word / line</th><th>Score</th><th>Accuracy · fluency · completeness</th></tr></thead><tbody>${rows.slice(0,60).map(r=>`<tr><td style="font-size:12px;white-space:nowrap">${when(r.created_at)}</td><td style="font-size:12px">${escH(pronName(r.user_id))} <span class="mono" style="color:var(--text-muted)">${escH(r.language_code)}</span></td><td style="font-size:16px">${r.source==='speak_lines'?'🗣️ ':''}${escH(r.reference_text)}</td><td>${chip(r.score)}</td><td style="font-size:12px;color:var(--text-secondary)">${r.accuracy??'–'} · ${r.fluency??'–'} · ${r.completeness??'–'}</td></tr>`).join('')}</tbody></table>`;
+}
+function exportPron(){
+  if(!PRON.data){toast('Open the page first','error');return;}
+  const rows=pronRows().map(r=>({created_at:r.created_at,learner:pronName(r.user_id),user_id:r.user_id,language_code:r.language_code,source:r.source,text:r.reference_text,score:r.score??'',accuracy:r.accuracy??'',fluency:r.fluency??'',completeness:r.completeness??'',vocabulary_id:r.vocabulary_id||'',sentence_id:r.sentence_id||''}));
+  if(!rows.length){toast('No checks to export','error');return;}
+  downloadFile(`kg_pronunciation_${PRON.lang||'all'}.csv`,toCSV(Object.keys(rows[0]),rows),'text/csv');toast(`Exported ${rows.length} checks`);
 }
 
 async function resolveFlag(id,status){
