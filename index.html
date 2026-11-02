@@ -3126,12 +3126,181 @@
       try { const d = ROMAN_HINT_LANGS.includes(langCode) ? conv.toRoman(text) : conv.toDevanagari(text); return d && d !== text ? d : ''; } catch (e) { return ''; }
     }
 
+    // ==========================================
+    // 🎙️ SAY IT (Quiz → Say): say words, Azure scores them (the kg-pronounce Edge Function, like 🎙️ Say it elsewhere)
+    // ==========================================
+    // Each check is saved with the scores (Progress → 🎙️ Pronunciation) and uses one of the daily checks.
+    // No quiz session is saved: it doesn't count toward unlocking or word strength.
+    const SAY_SETTINGS_KEY = 'kg_chart_say_quiz';
+    const SAY_STYLES = [
+      { id: 'recall', icon: '🖼️', label: 'From the picture', help: 'See the picture and meaning, say the word from memory. Peek only if stuck.' },
+      { id: 'read', icon: '👀', label: 'Read it aloud', help: 'See the word, say it. Just pronunciation.' },
+    ];
+    function SayPicture({ item }) {
+      const [failed, setFailed] = useState(false);
+      if (item.extra_data?.colorCode) return <div className="w-24 h-24 rounded-xl shadow-lg mx-auto" style={{ backgroundColor: item.extra_data.colorCode }} />;
+      if (!item.image_filename || failed) return null;
+      return <div className="w-36 h-36 mx-auto flex items-center justify-center"><img src={getImageUrl(item.topic_id, item.image_filename)} alt="" onError={() => setFailed(true)} className="max-w-full max-h-full object-contain" /></div>;
+    }
+
+    function SayItView({ topics, vocabulary, languageCode, user, modeToggle }) {
+      const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
+      const saved0 = loadFromStorage(SAY_SETTINGS_KEY, {});
+      const [topic, setTopic] = useState(() => saved0.topic || 'all');
+      const [style, setStyle] = useState(() => (SAY_STYLES.some(x => x.id === saved0.style) ? saved0.style : 'recall'));
+      const [count, setCount] = useState(() => ([5, 10, 15, 20].includes(saved0.count) ? saved0.count : 10));
+      const [phase, setPhase] = useState('setup'); // setup | run | done
+      const [items, setItems] = useState([]);
+      const [idx, setIdx] = useState(0);
+      const [results, setResults] = useState({}); // word id -> { score, peeked } (skipped: absent)
+      const [peek, setPeek] = useState(false);
+      useEffect(() => { saveToStorage(SAY_SETTINGS_KEY, { topic, style, count }); }, [topic, style, count]);
+
+      const words = vocabulary.filter(v => v.translation?.native_text?.trim());
+      const topicIds = new Set(words.map(v => v.topic_id));
+      const usableTopics = topics.filter(t => topicIds.has(t.id));
+      const pool = topic === 'all' || !usableTopics.some(t => t.id === topic) ? words : words.filter(v => v.topic_id === topic);
+      const start = (list) => {
+        setItems(list); setIdx(0); setResults({}); setPeek(false); setPhase('run');
+      };
+      const item = items[idx];
+      const res = item ? results[item.id] : null;
+      const next = () => { window.KGAudio.stop(); setPeek(false); if (idx + 1 < items.length) setIdx(i => i + 1); else setPhase('done'); };
+
+      if (!user) {
+        return (
+          <div className="max-w-2xl mx-auto p-6"><div className="bg-white rounded-3xl shadow-xl p-8">{modeToggle}
+            <p className="text-center text-gray-500">Sign in to check your pronunciation.</p></div></div>
+        );
+      }
+
+      // ---------- setup ----------
+      if (phase === 'setup') {
+        return (
+          <div className="max-w-2xl mx-auto p-6">
+            <div className="bg-white rounded-3xl shadow-xl p-8">
+              <div className="text-center mb-8">
+                <div className="w-20 h-20 bg-jade-100 rounded-full flex items-center justify-center mx-auto mb-4"><span className="text-4xl">🎙️</span></div>
+                <h2 className="text-3xl font-bold text-gray-800">Quiz Mode</h2>
+              </div>
+              {modeToggle}
+              {!pronCanRecord() ? (
+                <div className="bg-yellow-50 text-yellow-800 rounded-2xl p-4 text-sm">This browser can't record. Try Chrome or Safari on your phone.</div>
+              ) : !words.length ? (
+                <div className="text-center text-gray-500 py-6"><div className="text-4xl mb-2">📭</div>No words to say yet.</div>
+              ) : (
+                <div className="space-y-6">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Topic</label>
+                    <select value={pool === words ? 'all' : topic} onChange={e => setTopic(e.target.value)} className={`w-full px-4 py-3 border rounded-xl ${fontClass}`}>
+                      <option value="all">All unlocked topics ({words.length} words)</option>
+                      {usableTopics.map(t => <option key={t.id} value={t.id}>{t.icon} {topicTitle(t)} ({words.filter(v => v.topic_id === t.id).length})</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Style</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      {SAY_STYLES.map(x => (
+                        <button key={x.id} onClick={() => setStyle(x.id)} className={`p-3 rounded-xl border-2 transition-all ${style === x.id ? 'border-jade-500 bg-jade-50' : 'border-gray-200'}`}>
+                          <div className="text-2xl mb-1">{x.icon}</div><div className="text-sm font-medium">{x.label}</div>
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-400 mt-2">{SAY_STYLES.find(x => x.id === style).help}</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">How many</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {[5, 10, 15, 20].map(c => <button key={c} onClick={() => setCount(c)} className={`py-3 rounded-xl border-2 font-medium ${count === c ? 'border-jade-500 bg-jade-50 text-jade-700' : 'border-gray-200'}`}>{c}</button>)}
+                    </div>
+                  </div>
+                  <button onClick={() => start(shuffleArr(pool).slice(0, count))} className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700">
+                    Start ({Math.min(count, pool.length)} words)
+                  </button>
+                  <p className="text-xs text-gray-400 text-center">Each word uses one of your daily pronunciation checks. Scores appear in Progress → 🎙️ Pronunciation; they don't count toward unlocking.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      // ---------- results ----------
+      if (phase === 'done') {
+        const said = items.filter(v => results[v.id]);
+        const avg = said.length ? Math.round(said.reduce((a, v) => a + results[v.id].score, 0) / said.length) : null;
+        const low = items.filter(v => results[v.id] && results[v.id].score < 70);
+        return (
+          <div className="max-w-2xl mx-auto p-6">
+            <div data-say-done className="bg-white rounded-3xl shadow-xl p-6 sm:p-8">
+              <div className="text-center mb-5">
+                <div className="text-6xl mb-2">{avg == null ? '🙂' : avg >= 80 ? '🎉' : avg >= 60 ? '👏' : '💪'}</div>
+                <h2 className="text-2xl font-bold text-gray-800">{avg == null ? 'No words said' : `Average ${avg}`}</h2>
+                <p className="text-gray-500 text-sm">{said.length} of {items.length} words checked{items.length - said.length ? ` · ${items.length - said.length} skipped` : ''}</p>
+              </div>
+              <div className="space-y-1.5 mb-6">
+                {items.map(v => { const r = results[v.id]; return (
+                  <div key={v.id} className="flex items-center gap-2">
+                    <span className={`flex-1 min-w-0 truncate text-gray-800 ${fontClass}`}>{v.translation.native_text}</span>
+                    <span className="text-xs text-gray-400 truncate max-w-[35%]">{v.display_text}</span>
+                    {r?.peeked && <span title="You peeked" className="text-xs">👀</span>}
+                    <span className={`w-10 text-center text-xs font-bold py-0.5 rounded-lg ${r ? pronTone(r.score) : 'bg-gray-100 text-gray-400'}`}>{r ? r.score : 'skip'}</span>
+                  </div>
+                ); })}
+              </div>
+              <div className="flex flex-col gap-3">
+                {low.length > 0 && <button onClick={() => start(shuffleArr(low))} className="py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Practise the {low.length} under 70 again</button>}
+                <div className="grid grid-cols-2 gap-3">
+                  <button onClick={() => setPhase('setup')} className="py-3 border-2 border-gray-200 rounded-xl font-medium">Back to setup</button>
+                  <button onClick={() => start(shuffleArr(pool).slice(0, count))} className="py-3 border-2 border-jade-300 text-jade-700 rounded-xl font-medium">↺ New set</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // ---------- one word ----------
+      const shown = style === 'read' || peek || !!res;
+      return (
+        <div className="max-w-2xl mx-auto p-6">
+          <div className="flex items-center justify-between mb-4">
+            <button onClick={() => { window.KGAudio.stop(); setPhase('setup'); }} className="text-gray-500 hover:text-gray-700 font-medium">← Back</button>
+            <div className="text-sm text-gray-500">{idx + 1} / {items.length}</div>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-2 mb-4"><div className="bg-jade-500 h-2 rounded-full transition-all" style={{ width: `${(idx / items.length) * 100}%` }} /></div>
+          <div data-say-card className="bg-white rounded-3xl shadow-xl p-6 text-center">
+            <SayPicture item={item} />
+            <div className="text-xl text-gray-600 mt-3">{item.display_text}</div>
+            {shown ? (
+              <div className="mt-3">
+                <div className={`text-3xl font-bold text-gray-800 ${fontClass}`}>{item.translation.native_text}</div>
+                {item.translation.devanagari && item.translation.devanagari !== item.translation.native_text && <div className="text-lg text-blue-600 font-devanagari">{item.translation.devanagari}</div>}
+                {(peek || res) && <div className="mt-2 flex justify-center"><SpeakButton text={item.translation.native_text} lang={languageCode} slow size="sm" /></div>}
+              </div>
+            ) : (
+              <button onClick={() => setPeek(true)} className="mt-3 px-4 py-2 rounded-full bg-gray-100 text-gray-600 text-sm hover:bg-gray-200">👀 Show the word</button>
+            )}
+            <div className="mt-5">
+              <PronounceCheck key={item.id} text={item.translation.native_text} lang={languageCode} fontClass={fontClass} vocabularyId={item.id} source="word"
+                onResult={(r) => setResults(m => ({ ...m, [item.id]: { score: r.score, peeked: style === 'recall' && peek } }))} />
+            </div>
+          </div>
+          <div className="flex gap-3 mt-4">
+            {!res && <button onClick={next} className="flex-1 py-3 border-2 border-gray-200 text-gray-500 rounded-xl font-medium">Skip</button>}
+            {res && <button onClick={next} className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700">{idx + 1 >= items.length ? 'See results' : 'Next →'}</button>}
+          </div>
+        </div>
+      );
+    }
+
     function QuizModeToggle({ mode, onChange }) {
       return (
-        <div className="flex bg-gray-100 rounded-2xl p-1 mb-6">
-          {[['words', '🔤', 'Words'], ['sentences', '💬', 'Sentences'], ['typing', '⌨️', 'Typing'], ['speak', '🗣️', 'Speak'], ['colours', '🎨', 'Colours']].map(([id, icon, label]) => (
+        // Six modes: two rows of three on a phone, one row from sm up
+        <div className="grid grid-cols-3 sm:flex gap-1 bg-gray-100 rounded-2xl p-1 mb-6">
+          {[['words', '🔤', 'Words'], ['sentences', '💬', 'Sentences'], ['typing', '⌨️', 'Typing'], ['speak', '🗣️', 'Speak'], ['say', '🎙️', 'Say'], ['colours', '🎨', 'Colours']].map(([id, icon, label]) => (
             <button key={id} onClick={() => onChange(id)}
-              className={`flex-1 py-2 px-1 rounded-xl font-medium transition-all ${mode === id ? 'bg-white shadow text-jade-700' : 'text-gray-500 hover:text-gray-700'}`}>
+              className={`sm:flex-1 min-w-0 py-2 px-1 rounded-xl font-medium transition-all ${mode === id ? 'bg-white shadow text-jade-700' : 'text-gray-500 hover:text-gray-700'}`}>
               <span className="block sm:inline">{icon}</span> <span className="text-xs sm:text-base">{label}</span>
             </button>
           ))}
@@ -3140,10 +3309,11 @@
     }
 
     function QuizView(props) {
-      const [mode, setMode] = useState(() => { const m = loadFromStorage(QUIZ_MODE_KEY, 'words'); return ['sentences', 'typing', 'speak', 'colours'].includes(m) ? m : 'words'; });
+      const [mode, setMode] = useState(() => { const m = loadFromStorage(QUIZ_MODE_KEY, 'words'); return ['sentences', 'typing', 'speak', 'say', 'colours'].includes(m) ? m : 'words'; });
       useEffect(() => { saveToStorage(QUIZ_MODE_KEY, mode); }, [mode]);
       const toggle = <QuizModeToggle mode={mode} onChange={setMode} />;
       if (mode === 'colours') return <ColourQuizView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
+      if (mode === 'say') return <SayItView topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
       if (mode === 'speak') return <SpeakView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
       if (mode === 'typing') return <TypingView vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
       return mode === 'sentences'
