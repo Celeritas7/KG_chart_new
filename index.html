@@ -2175,9 +2175,16 @@
     const twGraphemes = (s) => (typeof Intl !== 'undefined' && Intl.Segmenter)
       ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s || ''), x => x.segment)
       : Array.from(s || '');
+    // Burmese marks after a consonant in the standard (Unicode) order. Keyboards let you type them in another
+    // order that looks the same on screen, e.g. \u1038 before \u103A (\u1019\u1038\u103A shows as \u1019\u103A\u1038). NFC fixes only \u1037/\u103A.
+    // Medials \u103B \u103C \u103D \u103E, then \u1031, upper vowels, lower vowels, \u102B/\u102C, \u1036, \u1037, \u103A, \u1038. A stacked consonant (\u1039) ends the run.
+    const MM_MARK_RANK = { '\u103B': 1, '\u103C': 2, '\u103D': 3, '\u103E': 4, '\u1031': 5, '\u102D': 6, '\u102E': 6, '\u1032': 6,
+      '\u102F': 7, '\u1030': 7, '\u102B': 8, '\u102C': 8, '\u1036': 9, '\u1037': 10, '\u103A': 11, '\u1038': 12 };
+    const mmCanon = (s) => (s || '').replace(/[\u102B-\u1032\u1036-\u1038\u103A-\u103E]{2,}/g, run =>
+      Array.from(run).map((c, i) => [c, i]).sort((x, y) => (MM_MARK_RANK[x[0]] - MM_MARK_RANK[y[0]]) || (x[1] - y[1])).map(x => x[0]).join(''));
     // Same rule for typed text and the stored word
     function twNorm(s, lang) {
-      let t = (s || '').normalize('NFC').replace(/[\u200B-\u200D\uFEFF]/g, '').trim().replace(/\s+/g, ' ');
+      let t = mmCanon((s || '').normalize('NFC').replace(/[\u200B-\u200D\uFEFF]/g, '')).trim().replace(/\s+/g, ' ');
       t = t.replace(/[\u104B\u104A\u0964\u0965.,!?\uFF01\uFF1F\u3002\u3001]+$/u, '').trim();
       // Marathi: nasal consonant + virama before a consonant = anusvara (सन्त्रे → संत्रे)
       if (NO_DEVANAGARI_LANGS.includes(lang)) t = t.replace(/[\u0919\u091E\u0923\u0928\u092E]\u094D(?=[\u0915-\u0939])/g, '\u0902');
@@ -4791,14 +4798,25 @@
       } catch (e) { console.warn('Typing best: account not reachable, keeping this device\'s', e); return local; }
     }
     const TYPING_LANG_TAGS = { my: 'my-MM', ja: 'ja-JP', zh: 'zh-CN', si: 'si-LK', ko: 'ko-KR', ta: 'ta-IN', th: 'th-TH', ms: 'ms-MY', te: 'te-IN', mr: 'mr-IN', kn: 'kn-IN' };
-    const typingNorm = (s) => (s || '').normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase();
+    const typingNorm = (s) => mmCanon((s || '').normalize('NFC').replace(/[​-‍﻿]/g, '')).replace(/\s+/g, ' ').trim().toLowerCase();
     const typingChars = (s) => Array.from((s || '').normalize('NFC')).filter(c => !/\s/.test(c)).length;
     // How much of the typed text matches the start of the target (in code points of the normalised forms)
     function typingMatch(typed, target) {
       const a = Array.from(typingNorm(typed)), b = Array.from(typingNorm(target));
       let i = 0;
       while (i < a.length && i < b.length && a[i] === b[i]) i++;
-      return { ok: i, total: a.length, wrong: a.length > i, done: a.length === b.length && i === b.length };
+      let wrong = a.length > i;
+      // Burmese: marks of the syllable still being typed may come in any order (း before ်) — not a mistake
+      // while every typed mark is one the target has there
+      if (wrong) {
+        let base = a.length - 1;
+        while (base > 0 && MM_MARK_RANK[a[base]]) base--;
+        if (base < a.length - 1 && i > base && a[base] === b[base]) {
+          const want = []; for (let j = base + 1; j < b.length && MM_MARK_RANK[b[j]]; j++) want.push(b[j]);
+          if (a.slice(base + 1).every(c => { const k = want.indexOf(c); if (k < 0) return false; want.splice(k, 1); return true; })) wrong = false;
+        }
+      }
+      return { ok: i, total: a.length, wrong, done: a.length === b.length && i === b.length };
     }
 
     function TypingView({ vocabulary, languageCode, user, modeToggle, meaningName }) {
@@ -5031,7 +5049,7 @@
       if (!item) return <LoadingSpinner />;
       // ---------- running ----------
       const m = typingMatch(typed, item.text);
-      const target = Array.from(item.text.normalize('NFC'));
+      const target = Array.from(mmCanon(item.text.normalize('NFC')));
       const showTarget = mode === 'copy';
       const next = items[idx + 1];
       return (
