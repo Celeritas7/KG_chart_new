@@ -7,6 +7,8 @@
   const listeners = new Set();
   let state = { busy: false, done: 0, total: 0, failed: 0, message: '', lastSync: settings.lastSync || 0 };
   let controller;
+  let paused = false;
+  const attempts = new Map();
   const emit = patch => { state = { ...state, ...patch }; listeners.forEach(fn => fn(state)); };
   const normalize = urls => [...new Set(urls.map(store.key).filter(Boolean))];
   async function stats(urls) {
@@ -21,7 +23,7 @@
   async function ready() {
     if (!('serviceWorker' in navigator) || !('caches' in window)) throw new Error('Picture downloads need a secure browser connection.');
     await navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' });
-    await navigator.serviceWorker.ready;
+
     // Check the actual controlling worker, not merely registration success.
     const deadline = Date.now() + 20000;
     while (Date.now() < deadline) {
@@ -39,8 +41,9 @@
     }
     throw new Error('The image update is still installing. Reopen the app and try again.');
   }
-  async function download(urls, refresh = false) {
+  async function download(urls, refresh = false, automatic = false) {
     if (state.busy) return;
+    if (!automatic) paused = false;
     const list = normalize(urls);
     controller = new AbortController();
     emit({ busy: true, done: 0, total: list.length, failed: 0, message: 'Preparing picture storage…' });
@@ -73,17 +76,36 @@
   }
   window.KGImageDownloads = {
     stats, download, ready, normalize,
-    pause: () => controller?.abort(),
+    pause: () => { paused = true; controller?.abort(); },
     subscribe(fn) { listeners.add(fn); fn(state); return () => listeners.delete(fn); },
-    autoEnabled: () => !!settings.auto,
-    setAuto(value) { settings.auto = value; persist(); },
+    autoEnabled: () => settings.auto !== false,
+    wifiOnly: () => !!settings.wifiOnly,
+    setWifiOnly(value) { settings.wifiOnly = value; persist(); if (value) controller?.abort(); attempts.clear(); },
+    setAuto(value) { settings.auto = value; paused = !value; attempts.clear(); if (!value) controller?.abort(); persist(); },
     async auto(urls) {
       const connection = navigator.connection;
-      // Never infer Wi-Fi from effectiveType='4g'. Unknown/metered networks require a manual sync.
-      if (!settings.auto || !navigator.onLine || document.hidden || state.busy || connection?.saveData || !['wifi','ethernet'].includes(connection?.type)) return;
-      if (Date.now() - (settings.autoAttempt || 0) < 86400000) return;
-      settings.autoAttempt = Date.now(); persist();
-      await download(urls, true);
+      if (settings.auto === false || paused || !navigator.onLine || document.hidden || state.busy) return;
+      if (connection?.saveData) { emit({message: 'Data Saver is on. Use Download pictures to download manually.'}); return; }
+      if (settings.wifiOnly && !['wifi', 'ethernet'].includes(connection?.type)) {
+        emit({message: 'Waiting for detectable Wi-Fi. You can download manually if your browser cannot identify Wi-Fi.'}); return;
+      }
+      const list = normalize(urls);
+      if (!list.length) return;
+      const signature = JSON.stringify([...list].sort());
+      if (Date.now() - (attempts.get(signature) || 0) < 300000) return;
+      attempts.set(signature, Date.now());
+      try {
+        const cache = await caches.open(store.CACHE);
+        const pending = [];
+        for (const url of list) {
+          const response = await cache.match(url);
+          if (!response || Date.now() - Number(response.headers.get('X-KG-Saved-At') || 0) >= 86400000) pending.push(url);
+        }
+        if (paused || settings.auto === false || state.busy || document.hidden || !navigator.onLine) return;
+        if (pending.length) await download(pending, true, true);
+      } catch (error) {
+        emit({message: error.message || 'Automatic picture download failed. You can retry manually.'});
+      }
     }
   };
 })();
