@@ -1,5 +1,9 @@
 # KG Chart
 
+For the separately installable offline edition under development, see
+[`offline/README.md`](offline/README.md). The existing online deployment remains
+unchanged until that separate edition is fully tested.
+
 Picture-chart vocabulary app for learning Asian languages through Devanagari. Learners see each word in its native script, in Devanagari and in English, hear it in a male or female voice, and work through topics by quiz.
 
 - **Live app:** `index.html` (GitHub Pages, repo `Celeritas7/KG_chart_new`)

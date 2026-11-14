@@ -1,0 +1,15 @@
+{
+  "id": "/kg-chart-offline",
+  "name": "KG Chart Offline",
+  "short_name": "KG Offline",
+  "description": "Independent, locally installed edition of KG Chart with downloadable learning packs.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#00695c",
+  "icons": [
+    {"src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "./icons/kg-brand.svg", "sizes": "any", "type": "image/svg+xml"}
+  ]
+}
