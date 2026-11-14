@@ -1,0 +1,33 @@
+name: KG Chart editions — shared-source validation
+on:
+  push:
+    branches: [main, 'feat/kg-chart-offline-*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check-both:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run check:online
+      - run: npm run build:offline
+      - run: npx playwright-core install chromium
+      - run: npm run test:offline
+        env:
+          KG_EXPECT_BROWSER: '1'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kg-chart-offline-preview
+          path: offline-dist/
+          if-no-files-found: error
+          retention-days: 7
+      # Deliberately no GitHub Pages deploy here: both repository Pages
+      # paths would share one origin. Release needs a separate hostname.
