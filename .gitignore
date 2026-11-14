@@ -1,4 +1,6 @@
 node_modules/
+dist-offline/
+dist-online/
 kg-chart-admin/
 images/
 Temp/

@@ -1,0 +1,4 @@
+[submodule "offline/language-utils"]
+	path = offline/language-utils
+	url = https://github.com/Celeritas7/language-utils.git
+	branch = main

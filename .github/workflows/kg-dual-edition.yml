@@ -1,0 +1,45 @@
+name: KG Chart - both editions
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: [kg-v*]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Compile and test both editions from the same SHA
+        run: npm run check:both
+      - name: Verify online source remains unchanged by the offline build
+        run: git diff --exit-code -- index.html sw.js manifest.webmanifest js/
+      - name: Package the existing online edition
+        uses: actions/upload-artifact@v4
+        with:
+          name: kg-chart-online-${{ github.sha }}
+          path: dist-online/
+          retention-days: 14
+      - name: Package the separate offline edition
+        uses: actions/upload-artifact@v4
+        with:
+          name: kg-chart-offline-${{ github.sha }}
+          path: dist-offline/
+          retention-days: 14
+
+# This pipeline creates reviewable, matching release artifacts; it intentionally does not
+# publish to the current online origin. Production offline hosting requires its own origin,
+# configured OAuth redirect allowlist and real installed-app acceptance tests.

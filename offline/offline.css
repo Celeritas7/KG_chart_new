@@ -1,0 +1,23 @@
+/* Small offline controls. Learner pages and quiz styles still come from the shared Tailwind build. */
+.kg-offline-start { margin: 3rem auto; max-width: 30rem; text-align: center; font: 600 1rem 'DM Sans',sans-serif; color: #075e54; }
+.kg-offline-toolbar { position: relative; z-index: 70; background: #e7f8f2; border-bottom: 1px solid #99caba; color: #164e43; font: 400 .9rem 'DM Sans',sans-serif; }
+.kg-offline-toolbar summary { display:flex;align-items:center;flex-wrap:wrap;gap:.6rem;cursor:pointer;list-style-position:inside;padding:.65rem 1rem;min-height:44px; }
+.kg-offline-toolbar .kg-offline-pill { display:inline-block;background:white;border-radius:30px;padding:.18rem .65rem;border:1px solid #b2dfd1;font-size:.75rem; }
+.kg-offline-body { margin:0 auto;max-width:1200px;padding:.65rem 1rem 1.1rem; }
+.kg-offline-description { padding-bottom:.6rem;line-height:1.5; }
+.kg-offline-grid { display:flex;flex-wrap:wrap;gap:.8rem;align-items:end; }
+.kg-offline-grid > label { flex: 0 1 auto; }
+.kg-offline-toolbar select { border:1px solid #9bcabf;background:white;border-radius:.55rem;padding:.45rem;display:block;margin-top:.2rem;min-width:180px; }
+.kg-offline-actions {display:flex;flex-wrap:wrap;gap:.45rem;align-items:center; }
+.kg-offline-actions button,.kg-offline-fatal button {border:1px solid #0c8069;background:#087b64;color:white;border-radius:.55rem;padding:.5rem .85rem;min-height:40px;font-weight:600;}
+.kg-offline-actions button:disabled {background:#c6d8d2;border-color:#c6d8d2;color:#60726e;cursor:default;}
+.kg-offline-actions button:not(:disabled):hover{background:#065d4b;}
+.kg-offline-meter {display:flex;gap:.7rem;align-items:center;flex-wrap:wrap;padding-top:.7rem;color:#355f54;font-size:.78rem;}
+.kg-offline-meter progress {width: min(100%,360px);height:12px;accent-color:#087b64;}
+.kg-offline-message {white-space:normal;overflow-wrap:anywhere;font-size:.83rem;margin:.4rem 0;}
+.kg-offline-options{align-items:center;font-size:.78rem;margin-top:.6rem;}
+.kg-offline-options input{margin-right:.25rem;accent-color:#087b64;}
+.kg-offline-foot {font-size:.75rem;color:#52766b;margin-top:.7rem;line-height:1.5;}
+.kg-offline-fatal {max-width:550px;margin:10vh auto;background:#fef7f4;border:1px solid #f7bea7;border-radius:1rem;padding:2rem;line-height:1.5;}
+.kg-offline-fatal h1{font-size:1.4rem;font-weight:700;}.kg-offline-fatal p{margin:.8rem 0;}
+@media (max-width:640px) { .kg-offline-body {padding:.5rem .7rem 1rem;} .kg-offline-toolbar summary {padding:.5rem .7rem;} .kg-offline-actions button {flex:1;} }
