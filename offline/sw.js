@@ -47,8 +47,13 @@ self.addEventListener('install', event => event.waitUntil((async () => {
 self.addEventListener('activate', event => event.waitUntil((async () => {
   await self.clients.claim();
   // Retain the previous shell for rollback; never touch another PWA's origin.
-  const old = (await caches.keys()).filter(k => k.startsWith(SHELL_CACHE_PREFIX) && k !== CURRENT_SHELL).sort();
-  if (old.length > 1) await Promise.all(old.slice(0, -1).map(k => caches.delete(k)));
+  try {
+    const old = (await caches.keys()).filter(k => k.startsWith(SHELL_CACHE_PREFIX) && k !== CURRENT_SHELL).sort();
+    if (old.length > 1) await Promise.all(old.slice(0, -1).map(k => caches.delete(k)));
+  } catch (_) {
+    // Cache cleanup is optional. A transient storage failure must not strand
+    // the user behind an older worker or touch their downloaded media packs.
+  }
 })()));
 
 self.addEventListener('message', event => {
@@ -127,19 +132,43 @@ self.addEventListener('fetch', event => {
   if (isMedia) {
     event.respondWith((async () => {
       // Per-client owner; never search another account's packs or unvalidated staging caches.
-      const cached = await localMedia(event.request, client.owner);
-      if (cached) return cached;
+      try {
+        const cached = await localMedia(event.request, client.owner);
+        if (cached) return cached;
+      } catch (_) {
+        // A temporarily inaccessible local pack must not block a valid
+        // published media request when the device is back online.
+      }
       return fetch(event.request);
     })());
     return;
   }
   if (!ownOrigin) return;
   event.respondWith((async () => {
-    const cache = await caches.open(CURRENT_SHELL);
-    const key = event.request.mode === 'navigate' ? new URL('./index.html', self.registration.scope) : event.request;
-    const hit = await cache.match(key, { ignoreSearch: event.request.mode === 'navigate' });
-    if (hit) return hit;
+    const navigation = event.request.mode === 'navigate';
+    const key = navigation ? new URL('./index.html', self.registration.scope) : event.request;
+    try {
+      const cache = await caches.open(CURRENT_SHELL);
+      const hit = await cache.match(key, { ignoreSearch: navigation });
+      if (hit) return hit;
+    } catch (_) {
+      // CacheStorage can reject after an interrupted media download or under
+      // browser storage pressure. Never let that rejection become ERR_FAILED
+      // for the app's navigation: a connected visit can still load from Pages.
+    }
     try { return await fetch(event.request); }
-    catch (_) { return (await cache.match('./index.html')) || new Response('KG Chart Offline is recovering. Reopen the app while online to repair the installation.', { status: 503, headers: { 'Content-Type': 'text/plain' } }); }
+    catch (_) {
+      if (navigation) {
+        try {
+          const cache = await caches.open(CURRENT_SHELL);
+          const fallback = await cache.match('./index.html');
+          if (fallback) return fallback;
+        } catch (_) { /* Local shell is temporarily unavailable. */ }
+      }
+      // Never return HTML as a missing JS/CSS/font response. More importantly,
+      // always resolve respondWith(), even when both cache and network fail.
+      return new Response('KG Chart Offline cannot read its saved app shell. Reconnect and reopen to repair it. Your downloaded packs and progress have not been cleared.',
+        { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } });
+    }
   })());
 });
