@@ -3,14 +3,17 @@ const SHELL_CACHE_PREFIX = 'kg-offline-shell-';
 const MEDIA_PREFIX = 'kg-offline-pack-';
 const CLIENT_OWNERS = new Map();
 const CURRENT_SHELL = SHELL_CACHE_PREFIX + 'APP_REVISION';
-// Only a complete shell can be made active. skipWaiting is deliberately omitted.
+// Older releases can leave users stranded behind cache-first HTML with no
+// "Apply update" button. Rescue those installations once, without reloading
+// their open tabs. Later releases require an explicit, safe user action.
+const LEGACY_RECOVERY_MARKER = 'kg-offline-legacy-update-recovered-v1';
 self.addEventListener('install', event => event.waitUntil((async () => {
   const manifest = await fetch('./shell-manifest.json', { cache: 'no-store' }).then(r => { if (!r.ok) throw Error('Shell manifest unavailable'); return r.json(); });
-  const cache = await caches.open(CURRENT_SHELL);
   // The generated build manifest is exhaustive; hard-coded lists can silently
   // omit a newly added script, icon or font and yield a false offline-ready state.
   if (!Array.isArray(manifest.files) || manifest.version !== 'APP_REVISION' ||
       !manifest.files.some(x => x.path === 'index.html')) throw Error('Invalid offline shell manifest');
+  const cache = await caches.open(CURRENT_SHELL);
   const urls = [...new Set(['./', './shell-manifest.json', './offline-build.json',
     ...manifest.files.map(x => './' + x.path)])];
   const hashes = new Map(manifest.files.map(f=>[new URL('./'+f.path,self.registration.scope).href,f.sha256]));
@@ -27,6 +30,14 @@ self.addEventListener('install', event => event.waitUntil((async () => {
       }
       await cache.put(path, response);
     }
+    const installed = await caches.keys();
+    if (installed.some(name => name.startsWith(SHELL_CACHE_PREFIX) && name !== CURRENT_SHELL) &&
+        !installed.includes(LEGACY_RECOVERY_MARKER)) {
+      // This one-time activation migrates existing stuck clients. Their current
+      // JS and quiz remain running; only a later navigation loads the new shell.
+      await caches.open(LEGACY_RECOVERY_MARKER);
+      await self.skipWaiting();
+    }
   } catch (e) {
     await caches.delete(CURRENT_SHELL); // incomplete candidate only, older cache is untouched
     throw e;
@@ -41,6 +52,24 @@ self.addEventListener('activate', event => event.waitUntil((async () => {
 })()));
 
 self.addEventListener('message', event => {
+  if (event.data?.type === 'KG_OFFLINE_APPLY_UPDATE' && event.source?.id) {
+    event.waitUntil((async () => {
+      // A waiting worker is installed only after manifest hashes were verified.
+      // Refuse an update if the browser has since evicted its critical shell.
+      const cache = await caches.open(CURRENT_SHELL);
+      const index = await cache.match('./index.html');
+      const manifest = await cache.match('./shell-manifest.json');
+      if (!index || !manifest) throw Error('New app shell is incomplete');
+      const metadata = await manifest.json();
+      if (metadata.version !== 'APP_REVISION' || !Array.isArray(metadata.files) ||
+          !metadata.files.some(file => file.path === 'index.html'))
+        throw Error('New app shell version is invalid');
+      for (const file of metadata.files) {
+        if (!await cache.match('./' + file.path)) throw Error('New app shell is incomplete');
+      }
+      await self.skipWaiting();
+    })());
+  }
   if (event.data?.type === 'KG_OFFLINE_OWNER' && /^[\da-f-]{36}$/i.test(event.data.id || '') && event.source?.id) {
     try {
       const root=new URL(event.data.mediaRoot);

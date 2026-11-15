@@ -1,6 +1,10 @@
 /* Small offline controls. Learner pages and quiz styles still come from the shared Tailwind build. */
 .kg-offline-start { margin: 3rem auto; max-width: 30rem; text-align: center; font: 600 1rem 'DM Sans',sans-serif; color: #075e54; }
 .kg-offline-toolbar { position: relative; z-index: 70; background: #e7f8f2; border-bottom: 1px solid #99caba; color: #164e43; font: 400 .9rem 'DM Sans',sans-serif; }
+.kg-offline-update { display:flex;align-items:center;justify-content:space-between;gap:.8rem;flex-wrap:wrap;padding:.7rem 1rem;background:#fef3c7;border-bottom:1px solid #d3a858;color:#713f12;line-height:1.45; }
+.kg-offline-update button {border:1px solid #92400e;background:#92400e;color:white;border-radius:.55rem;padding:.55rem 1rem;min-height:44px;font-weight:700;cursor:pointer;}
+.kg-offline-update button:disabled {background:#ddd1b7;color:#5c5243;border-color:#b7a584;cursor:default;}
+.kg-offline-update-error {display:block;color:#9f1239;font-weight:600;margin-top:.35rem;}
 .kg-offline-toolbar summary { display:flex;align-items:center;flex-wrap:wrap;gap:.6rem;cursor:pointer;list-style-position:inside;padding:.65rem 1rem;min-height:44px; }
 .kg-offline-toolbar .kg-offline-pill { display:inline-block;background:white;border-radius:30px;padding:.18rem .65rem;border:1px solid #b2dfd1;font-size:.75rem; }
 .kg-offline-body { margin:0 auto;max-width:1200px;padding:.65rem 1rem 1.1rem; }
@@ -20,4 +24,4 @@
 .kg-offline-foot {font-size:.75rem;color:#52766b;margin-top:.7rem;line-height:1.5;}
 .kg-offline-fatal {max-width:550px;margin:10vh auto;background:#fef7f4;border:1px solid #f7bea7;border-radius:1rem;padding:2rem;line-height:1.5;}
 .kg-offline-fatal h1{font-size:1.4rem;font-weight:700;}.kg-offline-fatal p{margin:.8rem 0;}
-@media (max-width:640px) { .kg-offline-body {padding:.5rem .7rem 1rem;} .kg-offline-toolbar summary {padding:.5rem .7rem;} .kg-offline-actions button {flex:1;} }
+@media (max-width:640px) { .kg-offline-body {padding:.5rem .7rem 1rem;} .kg-offline-toolbar summary {padding:.5rem .7rem;} .kg-offline-actions button {flex:1;} .kg-offline-update {padding:.7rem;} .kg-offline-update button {width:100%;} }

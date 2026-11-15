@@ -32,7 +32,9 @@ test('app shell manifest has a file hash for every locally bundled asset',async(
   assert(manifest.files.some(f=>f.path.startsWith('assets/fonts/')));
   for(const file of manifest.files) assert.match(file.sha256,/^[a-f0-9]{64}$/);
   const worker=await fs.readFile(path.join(built,'sw.js'),'utf8');
-  assert.doesNotMatch(worker,/APP_REVISION|skipWaiting\(/);
+  assert.doesNotMatch(worker,/APP_REVISION/);
+  assert.match(worker,/KG_OFFLINE_APPLY_UPDATE/);
+  assert.match(worker,/kg-offline-legacy-update-recovered-v1/);
   assert.match(worker,/crypto\.subtle\.digest/);
 });
 
