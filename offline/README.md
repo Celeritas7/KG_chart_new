@@ -95,6 +95,27 @@ No existing website storage needs to be cleared. Offline content and account
 progress are stored under this new origin; the two editions meet at Supabase,
 not through sharing localStorage or service-worker caches.
 
+### App-shell updates (separate from language-pack updates)
+
+- When online, the installed edition checks for a newer service worker on open
+  and on reconnection. A fully verified update displays a visible **New app
+  version downloaded → Update app now** bar above the fold; it is available
+  even when the language-pack controls are collapsed.
+- **Update app now** is disabled while a quiz screen, a language-pack download,
+  or synchronization is active. Once the user chooses it, the waiting worker
+  activates and the page reloads **only if** the app is still safe to reload.
+  Offline packs, account authorization, IndexedDB outbox, and unsent progress
+  are not cleared; unsent work does not require a network sync to update.
+- Existing installations of the earlier cache-first release have no update
+  button in their cached JavaScript. On the **first deployment of this repair**,
+  an installer with a fully verified new shell can take control once without
+  reloading an open page. Finish any quiz and close/reopen the app while online
+  to see the repaired UI. A persistent marker prevents later releases from
+  force-activating again. This one-time recovery does not clear user storage.
+- If a new shell cannot be fully downloaded, hashed, or retained in cache,
+  activation fails and the previous working shell remains available. There is
+  no reason to clear site data or uninstall the PWA during normal recovery.
+
 ## Quiz and asset audit
 
 | Existing activity | Required local assets | Current implementation intent |
@@ -196,6 +217,10 @@ Automated checks completed in this branch:
 - Simulated service-worker cold navigation succeeds with the network stalled;
   shell hash mismatch and storage-full installation failures preserve the
   earlier working shell.
+- A new shell is only manually activated on future releases; quiz/download/sync
+  state blocks the update button, and a quiz opened during activation prevents
+  automatic reload. A single verified legacy rescue preserves old shell and
+  account-scoped downloaded media.
 - Confirmed missing public-image responses (including Storage's HTTP 400 with a
   `not_found` response) create hashed placeholders without aborting the pack.
   Interrupted downloads reuse verified files, and refreshed downloads replace
@@ -216,6 +241,8 @@ Automated checks completed in this branch:
   tabs/devices, and genuine server-side simultaneous writes.
 - Browser/background differences across Android/iOS/desktop; service worker
   and storage eviction rules vary.
+- Physical Android/iPad acceptance of the in-place legacy recovery and the
+  later **Update app now** button, including two tabs and an active quiz.
 - A separate offline origin has been reported as deployed, but **this fix has not
   been merged, deployed or device-tested**. Do not claim public offline readiness
   before the Android acceptance checks pass.

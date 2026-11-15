@@ -42,6 +42,7 @@
   let packs = new Map(), activeCaches = [], progress = { phase: 'opening', done: 0, total: 0, bytes: 0, remaining: null, failures: 0, missingImages: 0 };
   let syncing = false, syncError = '', lastSync = null, pendingCount = 0;
   let options = { autoUpdate: true, wifiOnly: true }, knownLanguages = [], selectedLang = 'my', quizBusy = false, panelOpen = false, shellReady = false;
+  let pendingShellUpdate = null, applyingShellUpdate = false, shellUpdateError = '';
   let appVersion = 'unknown';
   const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('kg-offline-account-events') : null;
   const notify = () => { listeners.forEach(fn => fn()); renderPanel(); };
@@ -919,7 +920,17 @@
     const complete=ready.length && shellReady ? 'All required app files and saved lessons can open without a network request.' :
       ready.length ? 'Language pack saved. Finish installing the app shell and reopen once while online before going offline.' :
       'No complete pack yet. Sign in and download before taking this edition offline.';
+    const updateBlocked=quizBusy || busy || syncing;
+    const updateReason=quizBusy ? 'Leave the quiz to update safely.' :
+      busy ? 'Finish or pause the language-pack download first.' :
+      syncing ? 'Wait for synchronization to finish.' : '';
     node.innerHTML=`<section class="kg-offline-toolbar" role="region" aria-label="KG Chart Offline controls">
+      ${pendingShellUpdate ? `<div class="kg-offline-update" role="status" aria-live="polite">
+        <span><strong>New app version downloaded.</strong> Your saved packs and unsent study progress will be kept.
+          ${updateReason ? esc(updateReason) : 'Apply it when you are ready.'}
+          ${shellUpdateError ? `<span class="kg-offline-update-error">${esc(shellUpdateError)}</span>` : ''}</span>
+        <button id="kg-shell-update" ${updateBlocked || applyingShellUpdate?'disabled':''}>${applyingShellUpdate?'Updating…':'Update app now'}</button>
+      </div>` : ''}
       <details ${panelOpen || (!ready.length && currentEnrollment()) ? 'open' : ''}>
         <summary><strong>⬇ KG Chart Offline</strong> <span class="kg-offline-pill">${offline?'Offline':'Connected'}</span>
         <span class="kg-offline-pill">${pendingCount?pendingCount+' pending':'Saved on this device'}</span></summary>
@@ -952,6 +963,12 @@
     </section>`;
     node.querySelector('details')?.addEventListener('toggle',e=>{panelOpen=e.target.open;});
     node.querySelector('#kg-pack-lang')?.addEventListener('change',e=>{selectedLang=e.target.value;renderPanel();});
+    node.querySelector('#kg-shell-update')?.addEventListener('click',async()=>{
+      if(!pendingShellUpdate || quizBusy || busy || syncing || applyingShellUpdate) return;
+      applyingShellUpdate=true;shellUpdateError='';notify();
+      try { await pendingShellUpdate(); }
+      catch(e) { applyingShellUpdate=false;shellUpdateError=humanError(e);notify(); }
+    });
     node.querySelector('#kg-download')?.addEventListener('click',()=>downloadPack(selectedLang,{refresh:packs.has(selectedLang)})
       .catch(e=>{progress.phase=humanError(e);notify();}));
     node.querySelector('#kg-pause')?.addEventListener('click',()=>{pauseRequested=true;progress.phase='Pausing after current files…';notify();});
@@ -997,7 +1014,9 @@
     appVersion=build?.appVersion||'unknown';
     progress.phase=currentEnrollment() ? 'Saved packs are ready.' : 'Sign in online to authorize this device and download lessons.';
     notify();
-    navigator.serviceWorker?.addEventListener('controllerchange',()=>{shellReady=false;tellWorker();notify();});
+    navigator.serviceWorker?.addEventListener('controllerchange',()=>{
+      shellReady=false;pendingShellUpdate=null;applyingShellUpdate=false;tellWorker();notify();
+    });
     navigator.serviceWorker?.addEventListener('message',event=>{
       if(event.data?.type==='KG_OFFLINE_SHELL_READY') {
         shellReady=true;
@@ -1031,9 +1050,11 @@
   window.KGOffline={
     ready:init().catch(e=>{fatal(e);throw e;}), wrapClient,afterVerified,downloadPack,
     pause:()=>{pauseRequested=true;},sync,exportRecovery,importRecovery,
-    setQuizBusy:value=>{quizBusy=!!value;},
+    setQuizBusy:value=>{if(quizBusy!==!!value){quizBusy=!!value;notify();}},
+    canApplyShellUpdate:()=>!quizBusy && !busy && !syncing,
+    offerShellUpdate:apply=>{pendingShellUpdate=typeof apply==='function'?apply:null;applyingShellUpdate=false;shellUpdateError='';notify();},
     tellWorker,notice:message=>{progress.phase=message;notify();},fatal,
-    status:()=>({ownerId:owner,shellReady,readyLanguages:[...packs.keys()],pending:pendingCount,lastSync,progress:{...progress},syncError}),
+    status:()=>({ownerId:owner,shellReady,readyLanguages:[...packs.keys()],pending:pendingCount,lastSync,progress:{...progress},syncError,quizBusy,updateAvailable:!!pendingShellUpdate}),
     subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},
   };
 })();

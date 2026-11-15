@@ -20,6 +20,7 @@ function worker(revision,existing=new Map(),{badFile=null,quotaFile=null,network
   const manifest={version:revision,files:Object.entries(responses).filter(([path])=>path!=='./' && path!=='./offline-build.json')
     .map(([path,body])=>({path:path.slice(2),sha256:sha(body)}))};
   const listeners=new Map();
+  let skipWaitingCalls=0;
   const key=url=>new URL(url?.url||url,scope).href;
   class Cache {
     constructor(name){this.name=name;this.items=new Map();}
@@ -44,7 +45,8 @@ function worker(revision,existing=new Map(),{badFile=null,quotaFile=null,network
   };
   const context={caches:cacheStorage,indexedDB,crypto:webcrypto,URL,Response,TextEncoder,Uint8Array,
     fetch:download,self:{registration:{scope},location:{origin:new URL(scope).origin},
-      clients:{claim:async()=>{}},addEventListener(type,handler){listeners.set(type,handler);}}};
+      clients:{claim:async()=>{}},skipWaiting:async()=>{skipWaitingCalls++;},
+      addEventListener(type,handler){listeners.set(type,handler);}}};
   vm.runInNewContext(source.replaceAll('APP_REVISION',revision),context,{filename:'offline/sw.js'});
   async function event(type,properties={}){
     let result;
@@ -52,7 +54,7 @@ function worker(revision,existing=new Map(),{badFile=null,quotaFile=null,network
     listeners.get(type)(input);
     return result;
   }
-  return {event,caches:existing,cacheStorage,indexedDB};
+  return {event,caches:existing,cacheStorage,indexedDB,manifest,get skipWaitingCalls(){return skipWaitingCalls;}};
 }
 
 test('service worker hashes every generated shell file and opens a cached launch with the network stalled',async()=>{
@@ -81,6 +83,51 @@ test('corrupt downloads and exhausted storage reject an update without losing th
   await assert.rejects(worker('v-three',caches,{quotaFile:'icons/apple-touch-icon.png'}).event('install'),/Storage full/);
   assert(caches.has('kg-offline-shell-v-one'));
   assert(!caches.has('kg-offline-shell-v-three'));
+});
+
+test('normal updates wait for explicit action; incomplete shell and unknown senders cannot activate',async()=>{
+  const w=worker('v-one');
+  await w.event('install');
+  assert.equal(w.skipWaitingCalls,0,'Fresh installations never force activation');
+  await w.event('message',{data:{type:'KG_OFFLINE_APPLY_UPDATE'}});
+  assert.equal(w.skipWaitingCalls,0,'A request without an owning client is ignored');
+  const shell=w.caches.get('kg-offline-shell-v-one');
+  shell.items.delete(scope+'shell-manifest.json');
+  await assert.rejects(w.event('message',{data:{type:'KG_OFFLINE_APPLY_UPDATE'},source:{id:'tab-1'}}),/incomplete/);
+  assert.equal(w.skipWaitingCalls,0,'An incomplete installation never activates');
+  await shell.put('./shell-manifest.json',new Response(JSON.stringify(w.manifest)));
+  const icon=shell.items.get(scope+'icons/apple-touch-icon.png');
+  shell.items.delete(scope+'icons/apple-touch-icon.png');
+  await assert.rejects(w.event('message',{data:{type:'KG_OFFLINE_APPLY_UPDATE'},source:{id:'tab-1'}}),/incomplete/);
+  assert.equal(w.skipWaitingCalls,0,'A missing cached dependency prevents activation');
+  shell.items.set(scope+'icons/apple-touch-icon.png',icon);
+  await w.event('message',{data:{type:'KG_OFFLINE_APPLY_UPDATE'},source:{id:'tab-1'}});
+  assert.equal(w.skipWaitingCalls,1,'A verified waiting worker activates after user request');
+});
+
+test('one-time legacy rescue activates only complete shells and leaves downloaded packs untouched',async()=>{
+  const caches=new Map();
+  const old=worker('v-old',caches);
+  await old.event('install');
+  const media=await old.cacheStorage.open('kg-offline-pack-88888888-8888-4888-8888-888888888888-my-v1');
+  await media.put('./saved-image.jpg',new Response('my offline picture'));
+  const failed=worker('v-broken',caches,{badFile:'./assets/app.js'});
+  await assert.rejects(failed.event('install'),/hash mismatch/);
+  assert.equal(failed.skipWaitingCalls,0,'Broken rescue must not take over');
+  assert(!caches.has('kg-offline-legacy-update-recovered-v1'));
+
+  const rescue=worker('v-rescue',caches);
+  await rescue.event('install');
+  assert.equal(rescue.skipWaitingCalls,1,'Legacy clients get one automatic, non-reloading activation');
+  assert(caches.has('kg-offline-shell-v-old'),'Old shell remains for rollback');
+  assert.equal(await (await media.match('./saved-image.jpg')).text(),'my offline picture');
+  assert(caches.has('kg-offline-legacy-update-recovered-v1'));
+
+  const later=worker('v-later',caches);
+  await later.event('install');
+  assert.equal(later.skipWaitingCalls,0,'Later releases wait for a visible Apply update action');
+  await later.event('message',{data:{type:'KG_OFFLINE_APPLY_UPDATE'},source:{id:'tab-1'}});
+  assert.equal(later.skipWaitingCalls,1);
 });
 
 test('public media placeholders are served only to their verified owning client',async()=>{
