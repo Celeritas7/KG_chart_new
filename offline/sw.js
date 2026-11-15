@@ -41,8 +41,16 @@ self.addEventListener('activate', event => event.waitUntil((async () => {
 })()));
 
 self.addEventListener('message', event => {
-  if (event.data?.type === 'KG_OFFLINE_OWNER' && /^[\da-f-]{36}$/i.test(event.data.id || ''))
-    CLIENT_OWNERS.set(event.source.id, event.data.id);
+  if (event.data?.type === 'KG_OFFLINE_OWNER' && /^[\da-f-]{36}$/i.test(event.data.id || '') && event.source?.id) {
+    try {
+      const root=new URL(event.data.mediaRoot);
+      // The owning page supplies the public Storage root from its SDK config;
+      // never hard-code a production project or serve another arbitrary origin.
+      if (root.protocol === 'https:' && root.hostname.endsWith('.supabase.co') &&
+          root.pathname === '/storage/v1/object/public/vocabulary-assets/' && !root.search && !root.hash)
+        CLIENT_OWNERS.set(event.source.id,{owner:event.data.id,mediaRoot:root.href});
+    } catch (_) { /* Malformed or missing Storage root must not unlock media. */ }
+  }
   if (event.data?.type === 'KG_OFFLINE_LOCK') CLIENT_OWNERS.delete(event.source.id);
   if (event.data?.type === 'KG_OFFLINE_CHECK_SHELL') {
     event.waitUntil((async () => {
@@ -85,12 +93,12 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   const ownOrigin = url.origin === self.location.origin;
-  const isMedia = url.origin === 'https://ulgrfumbwjovbjzjiems.supabase.co' &&
-    url.pathname.startsWith('/storage/v1/object/public/vocabulary-assets/');
+  const client=CLIENT_OWNERS.get(event.clientId);
+  const isMedia = client && url.href.startsWith(client.mediaRoot);
   if (isMedia) {
     event.respondWith((async () => {
       // Per-client owner; never search another account's packs or unvalidated staging caches.
-      const cached = await localMedia(event.request, CLIENT_OWNERS.get(event.clientId));
+      const cached = await localMedia(event.request, client.owner);
       if (cached) return cached;
       return fetch(event.request);
     })());

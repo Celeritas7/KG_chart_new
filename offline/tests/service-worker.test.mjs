@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 import { createHash, webcrypto } from 'node:crypto';
+import { IDBFactory } from 'fake-indexeddb';
 
 const scope='https://kg-offline.example/';
 const source=await fs.readFile(new URL('../sw.js',import.meta.url),'utf8');
 const sha=value=>createHash('sha256').update(value).digest('hex');
 
-function worker(revision,existing=new Map(),{badFile=null,quotaFile=null,networkDown=false}={}) {
+function worker(revision,existing=new Map(),{badFile=null,quotaFile=null,networkDown=false,indexedDB=new IDBFactory()}={}) {
   const responses={
     './':'<h1>KG Chart</h1>',
     './index.html':'<h1>KG Chart</h1>',
@@ -41,7 +42,7 @@ function worker(revision,existing=new Map(),{badFile=null,quotaFile=null,network
     if(body===undefined)return new Response('Missing',{status:404});
     return new Response(body);
   };
-  const context={caches:cacheStorage,crypto:webcrypto,URL,Response,TextEncoder,Uint8Array,
+  const context={caches:cacheStorage,indexedDB,crypto:webcrypto,URL,Response,TextEncoder,Uint8Array,
     fetch:download,self:{registration:{scope},location:{origin:new URL(scope).origin},
       clients:{claim:async()=>{}},addEventListener(type,handler){listeners.set(type,handler);}}};
   vm.runInNewContext(source.replaceAll('APP_REVISION',revision),context,{filename:'offline/sw.js'});
@@ -51,7 +52,7 @@ function worker(revision,existing=new Map(),{badFile=null,quotaFile=null,network
     listeners.get(type)(input);
     return result;
   }
-  return {event,caches:existing};
+  return {event,caches:existing,cacheStorage,indexedDB};
 }
 
 test('service worker hashes every generated shell file and opens a cached launch with the network stalled',async()=>{
@@ -80,4 +81,35 @@ test('corrupt downloads and exhausted storage reject an update without losing th
   await assert.rejects(worker('v-three',caches,{quotaFile:'icons/apple-touch-icon.png'}).event('install'),/Storage full/);
   assert(caches.has('kg-offline-shell-v-one'));
   assert(!caches.has('kg-offline-shell-v-three'));
+});
+
+test('public media placeholders are served only to their verified owning client',async()=>{
+  const w=worker('v-one');
+  const owner='88888888-8888-4888-8888-888888888888';
+  const storageRoot='https://example.supabase.co/storage/v1/object/public/vocabulary-assets/';
+  const mediaUrl=storageRoot+'body/claw.jpg';
+  const cacheName='kg-offline-pack-'+owner+'-my-v1';
+  const db=await new Promise((resolve,reject)=>{
+    const r=w.indexedDB.open('kg-chart-offline-v1',1);
+    r.onupgradeneeded=()=>{r.result.createObjectStore('kv');r.result.createObjectStore('outbox',{keyPath:'id'});};
+    r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);
+  });
+  await new Promise((resolve,reject)=>{
+    const tx=db.transaction('kv','readwrite');
+    tx.objectStore('kv').put([cacheName],'active-caches:'+owner);
+    tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
+  });
+  db.close();
+  await (await w.cacheStorage.open(cacheName)).put(mediaUrl,
+    new Response('<svg>Image unavailable</svg>',{headers:{'Content-Type':'image/svg+xml'}}));
+
+  // A different account or unknown client must not discover this account's media.
+  const request={method:'GET',mode:'no-cors',url:mediaUrl};
+  assert.equal(await w.event('fetch',{request,clientId:'client-1'}),undefined);
+  await w.event('message',{data:{type:'KG_OFFLINE_OWNER',id:owner,mediaRoot:storageRoot},source:{id:'client-1'}});
+  const saved=await w.event('fetch',{request,clientId:'client-1'});
+  assert.equal(await saved.text(),'<svg>Image unavailable</svg>');
+  assert.equal(await w.event('fetch',{request,clientId:'client-2'}),undefined);
+  await w.event('message',{data:{type:'KG_OFFLINE_LOCK'},source:{id:'client-1'}});
+  assert.equal(await w.event('fetch',{request,clientId:'client-1'}),undefined);
 });

@@ -7,17 +7,16 @@
 ## Audit of the existing application (2026-11-14)
 
 - Source: `Celeritas7/KG_chart_new`, baseline commit `fc6880bdab1d` (2026-11-12).
-- Live Supabase project: `ulgrfumbwjovbjzjiems`, bucket `vocabulary-assets`.
+- Published images and audio use the `vocabulary-assets` bucket. The offline runtime
+  derives its Storage origin from the canonical learner's configured Supabase client;
+  the offline code does not embed a second project identifier.
 - The existing `sw.js` handles a small fallback shell and public picture cache only.
 - The existing learner `index.html` fetches React, ReactDOM, Babel, Tailwind,
   Supabase JS, Google Fonts, and `language-utils` from remote services.
-- The existing online app writes ratings to `kg_chart_user_ratings`, quiz history
-  to `kg_chart_quiz_sessions` and `kg_chart_quiz_answers`, completions to
-  `kg_chart_topic_completions`, level preferences to `kg_chart_user_levels`, and
-  audio/typing preferences to `kg_chart_user_prefs`. Its server RPCs are
-  `kg_chart_is_allowed`, `kg_chart_is_admin`, `kg_chart_my_answers`, and
-  `kg_chart_check_level_up`. The **current live schema has no `quiz_level` column**
-  in `kg_chart_quiz_sessions`; the offline sync strips that field.
+- The online app persists personal ratings, quiz history, completions, level
+  preferences, and audio/typing preferences through existing protected APIs.
+  The offline edition uses the same compatible data model without introducing
+  production migrations or publishing account-specific data in this report.
 - RLS restricts quiz inserts and user progress to the authenticated/allowed
   account. No RLS, public data, auth restrictions, or existing records were
   changed for this candidate.
@@ -56,8 +55,9 @@ on its own HTTPS origin (for example, a dedicated Cloudflare Pages project). Do
 **not** point it at the online GitHub Pages domain or route it beneath the
 online PWA scope. After review/merge, tag the exact source revision (for example,
 `kg-v1.0.0`) to obtain matching online/offline CI artifacts from one commit.
-The workflow deliberately does not modify production. There is **no confirmed
-offline address or installation** yet.
+The workflow deliberately does not modify production. The separate offline
+Cloudflare Pages address is [kg-chart-offline.pages.dev](https://kg-chart-offline.pages.dev/);
+this recovery fix is not live until reviewed, merged and built by Cloudflare.
 
 Before inviting a user to install:
 
@@ -76,10 +76,12 @@ Before inviting a user to install:
 1. Go online, sign into the offline origin using an account the server allows
    through `kg_chart_is_allowed`. Existing online-app storage stays untouched.
 2. In **KG Chart Offline → Language pack**, choose a language and select
-   **Download pack**. Wait for all required images and recorded audio to pass
-   validation. Progress shows files checked, bytes, failures and known size
-   remaining. If interrupted, run the same download again; completed staging
-   items are reused.
+   **Download pack**. Wait for data, media and shell verification. A confirmed
+   missing public picture is replaced by a marked offline placeholder, with a
+   warning and count; an audio, authorization or network failure still blocks
+   the pack. Progress shows files checked, bytes, failures, placeholder count,
+   and known size remaining. If interrupted, run the download again; completed
+   staging items are reused.
 3. Wait for **App shell verified** as well as the downloaded pack. **Ready
    offline** requires confirmation that the service worker installed its
    complete, hashed app shell. Reopen while connected once after installation,
@@ -194,19 +196,28 @@ Automated checks completed in this branch:
 - Simulated service-worker cold navigation succeeds with the network stalled;
   shell hash mismatch and storage-full installation failures preserve the
   earlier working shell.
+- Confirmed missing public-image responses (including Storage's HTTP 400 with a
+  `not_found` response) create hashed placeholders without aborting the pack.
+  Interrupted downloads reuse verified files, and refreshed downloads replace
+  a placeholder if the published picture is later restored.
+- Unrelated HTTP 400, HTTP 403, missing recorded audio, and network failures
+  remain blocking. The worker serves cached placeholder images only to the
+  registered owning client; logout closes that access.
 
 **Not yet proven on a device / real production storage:**
 
 - Airplane-mode cold start *after* a successful live pack download and
   install, including a saturated competing download and stalled requests.
 - Real Supabase pack downloads (all languages) and actual MP3/image decoding.
-- Quota exhaustion, partial cache update failure, invalid/missing real media,
+- Quota exhaustion, partial cache update failure, invalid/missing real media
+  observed against the live Storage project,
   and resumed download across browser restarts.
 - Installed-app Google OAuth redirects, expired refresh tokens, two browser
   tabs/devices, and genuine server-side simultaneous writes.
 - Browser/background differences across Android/iOS/desktop; service worker
   and storage eviction rules vary.
-- Distinct offline origin and install entry point; **none has been deployed or
-  verified**. Do not claim public offline readiness before these checks pass.
+- A separate offline origin has been reported as deployed, but **this fix has not
+  been merged, deployed or device-tested**. Do not claim public offline readiness
+  before the Android acceptance checks pass.
 
 The online app's live source has not been deployed or modified by this branch.

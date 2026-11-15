@@ -84,7 +84,8 @@ test('offline session + answers commit to an account-scoped outbox before acknow
       return {data:true,error:null};
     },
     from:table=>new RemoteQuery(table,remote.rows,remote),
-    functions:{invoke:async()=>({error:{message:'network'}})},storage:{},
+    functions:{invoke:async()=>({error:{message:'network'}})},
+    storage:{from:()=>({getPublicUrl:name=>({data:{publicUrl:`https://example.supabase.co/storage/v1/object/public/vocabulary-assets/${name}`}})})},
   };
   const nav={onLine:false,serviceWorker:{controller:{postMessage(){}},addEventListener(type,handler){if(type==='message')this.onMessage=handler;}},connection:{addEventListener(){}}};
   const context={window:{},document:{getElementById:()=>null,addEventListener(){},hidden:false},
