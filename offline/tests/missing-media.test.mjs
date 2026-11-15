@@ -33,9 +33,10 @@ class Query {
   then(resolve,reject){return Promise.resolve({data:this.rows.slice(this.first,this.last+1),error:null}).then(resolve,reject);}
 }
 
-async function fixture({imageMode='missing',audioMissing=false,failPawOnce=false}={}) {
-  const indexedDB=new IDBFactory();
-  const caches=new Map();
+async function fixture({imageMode='missing',audioMissing=false,failPawOnce=false,shared=null}={}) {
+  // Reuse a browser's CacheStorage and IndexedDB after a simulated tab close.
+  const indexedDB=shared?.indexedDB||new IDBFactory();
+  const caches=shared?.caches||new Map();
   class Cache {
     items=new Map();
     async put(url,response){this.items.set(String(url),response.clone());}
@@ -106,7 +107,7 @@ async function fixture({imageMode='missing',audioMissing=false,failPawOnce=false
     const pack=pointer?await get(`pack:${pointer}`):null;
     db.close();return pack;
   }
-  return {api:context.window.KGOffline,state,calls,messages,caches,activePack,nav};
+  return {api:context.window.KGOffline,state,calls,messages,caches,activePack,nav,shared:{indexedDB,caches}};
 }
 
 test('confirmed HTTP 400 missing picture becomes a hashed, account-scoped offline placeholder',async()=>{
@@ -143,6 +144,24 @@ test('interrupted download reuses verified files; later refresh replaces a resto
     `Restored image updates the content-addressed revision (${JSON.stringify({calls:x.calls,first:first.assets,refreshed:refreshed.assets})})`);
   assert.equal(refreshed.assets.find(a=>a.url.endsWith('/claw.jpg')).missingImage,false);
   assert(x.caches.has(first.cacheName),'Previous valid pack remains available for rollback');
+});
+
+test('closing and reopening the app during a download preserves staging and allows a clean resume',async()=>{
+  const first=await fixture({imageMode:'missing-404',failPawOnce:true});
+  await assert.rejects(first.api.downloadPack('my'),/interrupted download/i);
+  const staged=[...first.caches.keys()].filter(name=>name.startsWith('kg-offline-pack-'));
+  assert.equal(staged.length,1,'Interrupted media stays in a staging cache');
+  assert.equal(await first.activePack(),null,'Partial download is never an active pack');
+
+  // Starting an entirely new page runtime with the same browser storage must
+  // not inspect or erase staged media as part of its startup path.
+  const reopened=await fixture({imageMode:'missing-404',shared:first.shared});
+  assert.equal(reopened.api.status().readyLanguages.length,0);
+  assert(reopened.caches.has(staged[0]),'App restart does not delete partially saved media');
+  await reopened.api.downloadPack('my');
+  assert.equal(reopened.calls.claw,0,'Already downloaded picture was reused after a real restart');
+  assert.equal(reopened.calls.paw,1,'Only the missing picture was fetched');
+  assert(await reopened.activePack(),'Complete pack activates after interrupted-download recovery');
 });
 
 test('authentication, malformed HTTP 400 and network errors cannot turn into image placeholders',async()=>{
