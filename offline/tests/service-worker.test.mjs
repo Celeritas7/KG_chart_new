@@ -73,6 +73,55 @@ test('service worker hashes every generated shell file and opens a cached launch
   assert.equal(await response.text(),'<h1>KG Chart</h1>');
 });
 
+test('a cache failure after an interrupted media download never rejects app navigation',async()=>{
+  const w=worker('v-one');
+  await w.event('install');
+  const stage=await w.cacheStorage.open('kg-offline-pack-88888888-8888-4888-8888-888888888888-my-interrupted');
+  await stage.put('./partially-downloaded.jpg',new Response('saved bytes'));
+  const shell=w.caches.get('kg-offline-shell-v-one');
+  const originalMatch=shell.match;
+  shell.match=async()=>{throw Error('Simulated broken Chrome cache read');};
+
+  // Normal Chrome must fall back to the live Pages response if CacheStorage is
+  // temporarily unreadable instead of surfacing a browser-level ERR_FAILED.
+  const connected=await w.event('fetch',{request:{method:'GET',mode:'navigate',url:scope}});
+  assert.equal(connected.status,200);
+  assert.equal(await connected.text(),'<h1>KG Chart</h1>');
+
+  // A cache failure and no connection must still resolve respondWith with an
+  // actionable error, not throw, and must never delete the partial download.
+  const disconnected=worker('v-one',w.caches,{networkDown:true});
+  const offline=await disconnected.event('fetch',{request:{method:'GET',mode:'navigate',url:scope}});
+  assert.equal(offline.status,503);
+  assert.match(await offline.text(),/downloaded packs and progress have not been cleared/);
+  assert.equal(await (await stage.match('./partially-downloaded.jpg')).text(),'saved bytes');
+  assert(w.caches.has('kg-offline-shell-v-one'));
+
+  shell.match=originalMatch;
+  const cached=await disconnected.event('fetch',{request:{method:'GET',mode:'navigate',url:scope}});
+  assert.equal(cached.status,200,'Recovered shell can cold-start offline again');
+
+  // Even a failure opening the shell cache must fail open while connected.
+  const originalOpen=w.cacheStorage.open;
+  w.cacheStorage.open=async name=>{
+    if(name==='kg-offline-shell-v-one')throw Error('CacheStorage open rejected');
+    return originalOpen(name);
+  };
+  const opened=await w.event('fetch',{request:{method:'GET',mode:'navigate',url:scope}});
+  assert.equal(opened.status,200);
+  assert.equal(await opened.text(),'<h1>KG Chart</h1>');
+});
+
+test('failed network requests for scripts never receive an HTML shell',async()=>{
+  const w=worker('v-one');
+  await w.event('install');
+  const disconnected=worker('v-one',w.caches,{networkDown:true});
+  const response=await disconnected.event('fetch',{request:{method:'GET',mode:'same-origin',url:scope+'missing.js'}});
+  assert.equal(response.status,503);
+  assert.match(response.headers.get('Content-Type'),/^text\/plain/);
+  assert.doesNotMatch(await response.text(),/<h1>KG Chart<\/h1>/);
+});
+
 test('corrupt downloads and exhausted storage reject an update without losing the prior shell',async()=>{
   const caches=new Map();
   await worker('v-one',caches).event('install');
