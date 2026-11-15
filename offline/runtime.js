@@ -7,7 +7,15 @@
   const DB_VERSION = 1;
   const SCHEMA_VERSION = 1;
   const PREFIX = 'kg-offline-pack-';
-  const MEDIA_ROOT = 'https://ulgrfumbwjovbjzjiems.supabase.co/storage/v1/object/public/vocabulary-assets/';
+  const MEDIA_PATH = '/storage/v1/object/public/vocabulary-assets/';
+  const MISSING_IMAGE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="220" viewBox="0 0 300 220" role="img" aria-label="Image unavailable">
+    <rect width="300" height="220" rx="16" fill="#f1f5f9"/>
+    <rect x="78" y="28" width="144" height="114" rx="10" fill="none" stroke="#64748b" stroke-width="5"/>
+    <circle cx="116" cy="62" r="12" fill="#94a3b8"/>
+    <path d="m87 126 43-42 29 27 23-21 30 36" fill="none" stroke="#64748b" stroke-linecap="round" stroke-linejoin="round" stroke-width="6"/>
+    <text x="150" y="178" text-anchor="middle" font-family="sans-serif" font-size="18" fill="#334155">Image unavailable</text>
+    <text x="150" y="201" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#475569">Published picture is missing</text>
+  </svg>`;
   const TABLES = {
     languages: 'kg_chart_languages', topics: 'kg_chart_topics', topicTranslations: 'kg_chart_topic_translations',
     vocabulary: 'kg_chart_vocabulary', vocabularyTranslations: 'kg_chart_vocabulary_translations',
@@ -30,8 +38,8 @@
     [TABLES.prefs]: ['user_id'],
   };
   const listeners = new Set();
-  let db, live, owner = null, enrollment = null, busy = false, pauseRequested = false, updateCheckAt = 0;
-  let packs = new Map(), activeCaches = [], progress = { phase: 'opening', done: 0, total: 0, bytes: 0, remaining: null, failures: 0 };
+  let db, live, mediaRoot = '', owner = null, enrollment = null, busy = false, pauseRequested = false, updateCheckAt = 0;
+  let packs = new Map(), activeCaches = [], progress = { phase: 'opening', done: 0, total: 0, bytes: 0, remaining: null, failures: 0, missingImages: 0 };
   let syncing = false, syncError = '', lastSync = null, pendingCount = 0;
   let options = { autoUpdate: true, wifiOnly: true }, knownLanguages = [], selectedLang = 'my', quizBusy = false, panelOpen = false, shellReady = false;
   let appVersion = 'unknown';
@@ -44,8 +52,31 @@
   const matches = (row, filters) => filters.every(([op, key, value]) => op === 'eq' ? row[key] === value :
     op === 'in' ? value.includes(row[key]) : op === 'is' ? row[key] === value : false);
   const simplify = value => JSON.parse(JSON.stringify(value));
-  const digest = async value => [...new Uint8Array(await crypto.subtle.digest('SHA-256', value instanceof ArrayBuffer ? value : new TextEncoder().encode(value)))].map(n => n.toString(16).padStart(2, '0')).join('');
+  const digest = async value => {
+    // Blob/Response buffers can cross realms (e.g. iframe, test harness). Check
+    // the intrinsic tag so real file bytes, not "[object ArrayBuffer]", get hashed.
+    const bytes=Object.prototype.toString.call(value)==='[object ArrayBuffer]' || ArrayBuffer.isView(value)
+      ? value : new TextEncoder().encode(value);
+    return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(n=>n.toString(16).padStart(2,'0')).join('');
+  };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  function mediaBase() {
+    if (!mediaRoot) throw Error('Public image and audio source is not configured. Sign in again while online.');
+    return mediaRoot;
+  }
+
+  function publicMediaRoot(client) {
+    // Derive the public Storage URL from the configured SDK, never from a second
+    // hard-coded project reference. The sentinel never causes a network request.
+    const sentinel = '__kg_offline_media_root__';
+    const publicUrl = client.storage.from('vocabulary-assets').getPublicUrl(sentinel)?.data?.publicUrl;
+    const url = new URL(publicUrl);
+    if (url.protocol !== 'https:' || !url.hostname.endsWith('.supabase.co') ||
+        url.pathname !== MEDIA_PATH + sentinel || url.search || url.hash)
+      throw Error('Unexpected public media source. Pack download is unavailable.');
+    return publicUrl.slice(0, -sentinel.length);
+  }
 
   const openDB = () => new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -286,20 +317,21 @@
   }
 
   function requiredMedia(data,lang) {
+    const root = mediaBase();
     const urlSet=new Set();
     const vocabulary=data[TABLES.vocabulary]||[];
     const translated=new Set((data[TABLES.vocabularyTranslations]||[]).filter(x=>x.language_code===lang).map(x=>x.vocabulary_id));
     for(const v of vocabulary.filter(v=>translated.has(v.id))) {
       if(!v.image_filename || v.extra_data?.colorCode || v.image_filename.startsWith('emoji:')) continue;
-      const url=v.image_filename.startsWith('http') ? v.image_filename : `${MEDIA_ROOT}${v.topic_id}/${v.image_filename}`;
-      if(!url.startsWith(MEDIA_ROOT)) throw Error('External picture needs a verified offline source: '+url);
+      const url=v.image_filename.startsWith('http') ? v.image_filename : `${root}${v.topic_id}/${v.image_filename}`;
+      if(!url.startsWith(root)) throw Error('External picture needs a verified offline source: '+url);
       urlSet.add(url);
     }
     for(const c of data[TABLES.colours]||[]) {
       if(!c.picture || c.picture.startsWith('emoji:') || c.picture.startsWith('linear-gradient') || c.picture.startsWith('#')) continue;
       // Colour phrases use CSS/emoji in this revision; reject an unexpected remote URL rather than mark pack ready.
       if(c.picture.startsWith('https://')) {
-        if(!c.picture.startsWith(MEDIA_ROOT)) throw Error('External colour picture requires internet: '+c.picture);
+        if(!c.picture.startsWith(root)) throw Error('External colour picture requires internet: '+c.picture);
         urlSet.add(c.picture);
       }
     }
@@ -307,7 +339,7 @@
   }
 
   async function audioFiles(lang) {
-    const base=`${MEDIA_ROOT}audio/${lang}`;
+    const base=`${mediaBase()}audio/${lang}`;
     // The active worker serves the cached manifest by its canonical URL for
     // offline playback. Bust that cache during a connected update check.
     const res=await fetch(base+'/clips.json?kg_rev='+Date.now(),{cache:'no-store'}).catch(()=>null);
@@ -339,8 +371,10 @@
     const found=await cache.match(url);
     const matchesRevision=r=>info.revision && r?.headers.get('X-KG-Revision')===info.revision;
     // A staged response was already downloaded/hashed by this attempt. Resume it even
-    // when HEAD cannot supply a revision; never redownload a completed staged file.
-    if(found && found.headers.get('X-KG-SHA256')) return found;
+    // when HEAD cannot supply a revision. However, refresh placeholder images so
+    // that a newly restored picture can replace the temporary fallback.
+    if(found && found.headers.get('X-KG-SHA256') &&
+       !(forceRefresh && found.headers.get('X-KG-Missing-Image')==='1')) return found;
     if(!forceRefresh) {
       // Reuse older, activated copies ONLY if the publisher has a reliable revision.
       for(const name of priorCaches){
@@ -351,6 +385,38 @@
     return null;
   }
 
+  async function isConfirmedMissingPicture(response,url) {
+    if (![400,404].includes(response.status) || !url.startsWith(mediaBase()) ||
+        !/\.(png|jpg|jpeg|webp|gif|avif|svg)$/i.test(new URL(url).pathname)) return false;
+    // Storage can report a missing public object as HTTP 400 with a JSON
+    // "not_found" error. Do NOT treat arbitrary 400s, auth errors, or timeouts
+    // as missing pictures: those failures must stop a pack download.
+    let body;
+    try { body=(await response.clone().text()).slice(0,2048); }
+    catch (_) { return false; }
+    let error;
+    try { error=JSON.parse(body); } catch (_) { error=null; }
+    if (!error || typeof error !== 'object')
+      return response.status===404 && (!body.trim() || /^(not found|object not found)$/i.test(body.trim()));
+    const code=String(error.statusCode||error.status||'');
+    const kind=String(error.error||error.code||'').toLowerCase();
+    const message=String(error.message||'').toLowerCase();
+    return kind==='not_found' || kind==='nosuchkey' ||
+      ((code==='404' || response.status===404) &&
+       /(?:resource|object|file|key) (?:was |is )?not found|no such (?:key|object|file)/.test(message));
+  }
+
+  async function cacheAsset(url,info,cache,blob,{missingImage=false}={}) {
+    const isAudio=/\.mp3$/i.test(new URL(url).pathname);
+    const hash=await digest(await blob.arrayBuffer());
+    const headers=new Headers({'Content-Type':blob.type|| (isAudio?'audio/mpeg':'application/octet-stream'),
+      'X-KG-SHA256':hash,'X-KG-Revision':info.revision||'', 'X-KG-Bytes':String(blob.size)});
+    if (missingImage) headers.set('X-KG-Missing-Image','1');
+    const response=new Response(blob,{status:200,headers});
+    await cache.put(url,response.clone());
+    return {response,hash,bytes:blob.size,missingImage};
+  }
+
   async function saveAsset(url,info,cache) {
     const controller=new AbortController();
     const timer=setTimeout(()=>controller.abort(),45000);
@@ -359,7 +425,13 @@
       const originUrl=new URL(url);
       originUrl.searchParams.set('kg_rev',String(Date.now()));
       const r=await fetch(originUrl,{cache:'no-store',signal:controller.signal});
-      if(!r.ok) throw Error(`Asset HTTP ${r.status}: ${url}`);
+      if(!r.ok) {
+        if(await isConfirmedMissingPicture(r,url)) {
+          const placeholder=new Blob([MISSING_IMAGE_SVG],{type:'image/svg+xml'});
+          return cacheAsset(url,info,cache,placeholder,{missingImage:true});
+        }
+        throw Error(`Asset HTTP ${r.status}: ${url}`);
+      }
       const blob=await r.blob();
       if(!blob.size) throw Error(`Empty asset: ${url}`);
       const isImage=/\.(png|jpg|jpeg|webp|gif|avif|svg)$/i.test(new URL(url).pathname);
@@ -371,12 +443,7 @@
           const bitmap=await createImageBitmap(blob);bitmap.close();
         }
       } else if(isAudio && blob.size<64) throw Error(`Audio too short: ${url}`);
-      const hash=await digest(await blob.arrayBuffer());
-      const headers=new Headers({'Content-Type':blob.type|| (isAudio?'audio/mpeg':'application/octet-stream'),
-        'X-KG-SHA256':hash,'X-KG-Revision':info.revision||'', 'X-KG-Bytes':String(blob.size)});
-      const response=new Response(blob,{status:200,headers});
-      await cache.put(url,response.clone());
-      return {response,hash,bytes:blob.size};
+      return cacheAsset(url,info,cache,blob);
     } finally {clearTimeout(timer);}
   }
 
@@ -385,7 +452,7 @@
     if(!currentEnrollment()) throw Error('Sign in with an approved account online before downloading.');
     if(!navigator.onLine) throw Error('An internet connection is required to download or update packs.');
     busy=true;pauseRequested=false;
-    progress={phase:'Reading published lesson data…',done:0,total:0,bytes:0,remaining:null,failures:0};notify();
+    progress={phase:'Reading published lesson data…',done:0,total:0,bytes:0,remaining:null,failures:0,missingImages:0};notify();
     try {
       const data=await fetchContent(lang);
       const audio=await audioFiles(lang);
@@ -415,7 +482,7 @@
       const previous=activeCaches.filter(n=>n.startsWith(PREFIX+owner+'-'));
       const estimated=infos.reduce((sum,i)=>sum+(i.bytes||0),0);
       progress={phase:'Downloading lesson media…',done:0,total:infos.length,bytes:0,
-        remaining:estimated||null,failures:0};notify();
+        remaining:estimated||null,failures:0,missingImages:0};notify();
       const completed=[];
       let cursor=0;
       await Promise.all(Array.from({length:Math.min(3,infos.length)},async()=>{
@@ -423,12 +490,16 @@
           const info=infos[cursor++];
           try {
             let found=await stagedResponse(info.url,info,cache,previous,refresh);
-            let bytes=0,hash='';
-            if(found){bytes=Number(found.headers.get('X-KG-Bytes'))||((await found.blob()).size);hash=found.headers.get('X-KG-SHA256')||'';}
-            else ({bytes,hash}=await saveAsset(info.url,info,cache));
+            let bytes=0,hash='',missingImage=false;
+            if(found){
+              bytes=Number(found.headers.get('X-KG-Bytes'))||((await found.blob()).size);
+              hash=found.headers.get('X-KG-SHA256')||'';
+              missingImage=found.headers.get('X-KG-Missing-Image')==='1';
+            } else ({bytes,hash,missingImage}=await saveAsset(info.url,info,cache));
             if(!hash) throw Error('Missing cached content hash');
-            completed.push({url:info.url,revision:info.revision,bytes,sha256:hash});
+            completed.push({url:info.url,revision:info.revision,bytes,sha256:hash,missingImage});
             progress.bytes+=bytes;
+            if(missingImage) progress.missingImages++;
             if(progress.remaining!==null) progress.remaining=Math.max(0,progress.remaining-bytes);
           } catch(e) {
             progress.failures++;
@@ -684,6 +755,7 @@
 
   function wrapClient(client) {
     if(live) return window.KGOffline.client;
+    mediaRoot=publicMediaRoot(client);
     live=client;
     const proxyAuth=new Proxy(client.auth,{
       get(target,key){
@@ -715,6 +787,7 @@
       storage:client.storage,
     };
     window.KGOffline.client=facade;
+    tellWorker();
     if(currentEnrollment()) sync().catch(()=>{});
     return facade;
   }
@@ -765,7 +838,7 @@
 
   function tellWorker() {
     const worker=navigator.serviceWorker?.controller;
-    if(currentEnrollment()) worker?.postMessage({type:'KG_OFFLINE_OWNER',id:owner});
+    if(currentEnrollment() && mediaRoot) worker?.postMessage({type:'KG_OFFLINE_OWNER',id:owner,mediaRoot});
     worker?.postMessage({type:'KG_OFFLINE_CHECK_SHELL'});
   }
 
@@ -839,6 +912,7 @@
     const langs=knownLanguages.length ? knownLanguages : [...new Map([...packs.values()].flatMap(p=>p.data[TABLES.languages]||[]).map(l=>[l.code,l])).values()];
     const languageOptions=langs.length ? langs : [{code:'my',name_english:'Burmese'},{code:'ja',name_english:'Japanese'},{code:'ta',name_english:'Tamil'}];
     if(!languageOptions.some(x=>x.code===selectedLang)) selectedLang=languageOptions[0].code;
+    const missingImages=(packs.get(selectedLang)?.assets||[]).filter(a=>a.missingImage).length;
     const offline= !navigator.onLine;
     const status=currentEnrollment() ? `Account: ${esc(enrollment.email)} · ${ready.length} packs · ${sizeOf(bytes)} · App shell ${shellReady?'verified':'not yet verified'}` : 'First-time setup: sign in to KG Chart while online.';
     const waiting=progress.remaining===null ? 'Remaining size not supplied by server' : sizeOf(progress.remaining)+' remaining';
@@ -862,9 +936,10 @@
           </div>
           <label class="kg-offline-import">Restore unsent work from a backup: <input type="file" accept="application/json,.json" id="kg-import" ${!currentEnrollment()?'disabled':''}></label>
           <div class="kg-offline-meter"><progress max="${Math.max(progress.total,1)}" value="${progress.done}" aria-label="Pack download progress"></progress>
-            <span>${progress.done}/${progress.total} files · ${sizeOf(progress.bytes)} checked · ${waiting} · ${progress.failures} failures</span>
+            <span>${progress.done}/${progress.total} files · ${sizeOf(progress.bytes)} checked · ${waiting} · ${progress.failures} failures · ${progress.missingImages||0} image placeholders</span>
           </div>
           <p class="kg-offline-message">${esc(progress.phase)}${syncError?' · Sync error: '+esc(syncError):''}</p>
+          ${missingImages ? `<p class="kg-offline-message" role="status">⚠ ${missingImages} published image${missingImages===1?' is':'s are'} unavailable in the selected pack. Local placeholders keep downloads and offline lessons working; image-based questions may be less useful until those pictures are restored.</p>` : ''}
           <div class="kg-offline-grid kg-offline-options">
             <label><input type="checkbox" id="kg-auto" ${options.autoUpdate?'checked':''}> Check/update packs automatically while open</label>
             <label><input type="checkbox" id="kg-wifi" ${options.wifiOnly?'checked':''}> Wi-Fi only when the browser identifies it</label>
