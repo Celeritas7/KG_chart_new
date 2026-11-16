@@ -6,6 +6,7 @@ import { createHash, webcrypto } from 'node:crypto';
 import { IDBFactory } from 'fake-indexeddb';
 
 const scope='https://kg-offline.example/';
+const pictures=await fs.readFile(new URL('../pictures.js',import.meta.url),'utf8');
 const source=await fs.readFile(new URL('../sw.js',import.meta.url),'utf8');
 const sha=value=>createHash('sha256').update(value).digest('hex');
 
@@ -47,6 +48,7 @@ function worker(revision,existing=new Map(),{badFile=null,quotaFile=null,network
     AbortController,setTimeout,clearTimeout,MessageChannel,fetch:download,self:{registration:{scope},location:{origin:new URL(scope).origin},
       clients:{claim:async()=>{},get:async()=>clientPage},skipWaiting:async()=>{skipWaitingCalls++;},
       addEventListener(type,handler){listeners.set(type,handler);}}};
+  context.self.KGSharedPictures=null;context.Headers=Headers;context.importScripts=()=>vm.runInNewContext(pictures,context);
   vm.runInNewContext(source.replaceAll('APP_REVISION',revision),context,{filename:'offline/sw.js'});
   async function event(type,properties={}){
     let result;
@@ -54,7 +56,7 @@ function worker(revision,existing=new Map(),{badFile=null,quotaFile=null,network
     listeners.get(type)(input);
     return result;
   }
-  return {event,caches:existing,cacheStorage,indexedDB,manifest,get skipWaitingCalls(){return skipWaitingCalls;}};
+  return {pictures:context.self.KGSharedPictures,event,caches:existing,cacheStorage,indexedDB,manifest,get skipWaitingCalls(){return skipWaitingCalls;}};
 }
 
 test('service worker hashes every generated shell file and opens a cached launch with the network stalled',async()=>{
@@ -230,7 +232,7 @@ test('worker restart recovers only the requesting page owner before serving loca
   const original=worker('v-one');
   const db=await new Promise(resolve=>{const r=original.indexedDB.open('kg-chart-offline-v1',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>resolve(r.result);});
   await new Promise(resolve=>{const tx=db.transaction('kv','readwrite');tx.objectStore('kv').put([name],'active-caches:'+owner);tx.oncomplete=resolve;});db.close();
-  await (await original.cacheStorage.open(name)).put(url,new Response('local picture'));
+  await (await original.pictures.open(name,owner)).put(url,new Response('local picture',{headers:{'Content-Type':'image/jpeg','X-KG-SHA256':sha('local picture')}}));
   const restarted=worker('v-one',original.caches,{indexedDB:original.indexedDB,networkDown:true,clientPage:{url:scope,postMessage(message,ports){ports[0].postMessage({id:owner,mediaRoot:root});}}});
   const response=await restarted.event('fetch',{request:{method:'GET',url},clientId:'same-page'});
   assert.equal(await response.text(),'local picture');

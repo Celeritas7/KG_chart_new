@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 import {IDBFactory} from 'fake-indexeddb';
-const source=await fs.readFile(new URL('../runtime.js',import.meta.url),'utf8');
+const source=(await fs.readFile(new URL('../pictures.js',import.meta.url),'utf8'))+'\n'+(await fs.readFile(new URL('../runtime.js',import.meta.url),'utf8'));
 const owner='88888888-8888-4888-8888-888888888888';
 async function context({blocked=false}={}) {
  const idb=new IDBFactory();

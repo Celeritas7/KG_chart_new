@@ -88,13 +88,14 @@ test('offline session + answers commit to an account-scoped outbox before acknow
     storage:{from:()=>({getPublicUrl:name=>({data:{publicUrl:`https://example.supabase.co/storage/v1/object/public/vocabulary-assets/${name}`}})})},
   };
   const nav={onLine:false,serviceWorker:{controller:{postMessage(){}},addEventListener(type,handler){if(type==='message')this.onMessage=handler;}},connection:{addEventListener(){}}};
+  const events={};
   const context={window:{},document:{getElementById:()=>null,addEventListener(){},hidden:false},
-    navigator:nav,location:{href:'http://localhost/',hash:''},addEventListener(){},
+    navigator:nav,location:{href:'http://localhost/',hash:''},addEventListener(type,handler){events[type]=handler;},
     BroadcastChannel:class{addEventListener(){}postMessage(){}},indexedDB,
     URL,Response,Headers,TextEncoder,Blob,AbortController,crypto:webcrypto,
     setTimeout:(fn,ms)=>{const t=setTimeout(fn,ms);t.unref?.();return t;},clearTimeout,
     fetch:async()=>({ok:false}),console};
-  vm.runInNewContext(await fs.readFile(FILE,'utf8'),context,{filename:'offline/runtime.js'});
+  vm.runInNewContext((await fs.readFile(new URL('../pictures.js',import.meta.url),'utf8'))+'\n'+await fs.readFile(FILE,'utf8'),context,{filename:'offline/runtime.js'});
   await context.window.KGOffline.ready;
   const facade=context.window.KGOffline.wrapClient(live);
   assert.equal([...context.window.KGOffline.status().readyLanguages].join(','),'my');
@@ -144,6 +145,20 @@ test('offline session + answers commit to an account-scoped outbox before acknow
   assert.match(cross.error.message,/Account mismatch/);
   assert.equal(context.window.KGOffline.status().pending,1,'Cross-account write rejected');
 
+  const getUser=live.auth.getUser;
+  let reconnectChecks=0;
+  live.auth.getUser=async()=>{reconnectChecks++;return {data:{user:null},error:{message:'Expired'}};};
+  nav.connection.type='cellular';
+  events.online();
+  // Synchronization runs immediately even though pack updates default to Wi-Fi only.
+  await new Promise(resolve=>setImmediate(resolve));
+  assert(reconnectChecks>0,'Reconnect tries progress sync on mobile data');
+  assert.equal(context.window.KGOffline.status().pending,1,'Expired login preserves queued change');
+  assert.match(context.window.KGOffline.status().syncError,/Session expired/);
+  live.auth.getUser=async()=>{await facade.auth.signOut();return getUser();};
+  await context.window.KGOffline.sync();
+  assert.match(context.window.KGOffline.status().syncError,/Session expired|Account changed/);
+  live.auth.getUser=getUser;
   await facade.auth.signOut();
   assert.equal(context.window.KGOffline.status().ownerId,null,'Logout locks cached account');
   const afterLogout=await open();
