@@ -237,3 +237,15 @@ test('worker restart recovers only the requesting page owner before serving loca
   const response=await restarted.event('fetch',{request:{method:'GET',url},clientId:'same-page'});
   assert.equal(await response.text(),'local picture');
 });
+
+
+test('read-only shell audit detects corruption without repairing or deleting saved bytes',async()=>{
+  const w=worker('v-one');await w.event('install');
+  const cache=w.caches.get('kg-offline-shell-v-one');
+  let reply;
+  const audit=()=>w.event('message',{data:{type:'KG_OFFLINE_AUDIT_SHELL'},source:{id:'tab'},ports:[{postMessage:v=>reply=v}]});
+  await audit();assert.equal(reply.ok,true);
+  await cache.put('./assets/app.js',new Response('corrupted'));
+  await audit();assert.equal(reply.ok,false);
+  assert.equal(await (await cache.match('./assets/app.js')).text(),'corrupted');
+});

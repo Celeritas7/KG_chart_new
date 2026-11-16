@@ -47,7 +47,7 @@ async function fixture({imageMode='missing',audioMissing=false,failPawOnce=false
     delete:async name=>caches.delete(name),
   };
   const nav={onLine:true,storage:{persist:async()=>true},
-    serviceWorker:{controller:{postMessage(message){messages.push(message);if(message.type==='KG_OFFLINE_CHECK_SHELL')queueMicrotask(()=>nav.serviceWorker.onMessage?.({data:{type:'KG_OFFLINE_SHELL_READY',sharedPictures:1}}));}},addEventListener(type,handler){if(type==='message')this.onMessage=handler;}},
+    serviceWorker:{controller:{postMessage(message,ports){messages.push(message);if(message.type==='KG_OFFLINE_AUDIT_SHELL')ports[0].postMessage({ok:true,revision:'test'});if(message.type==='KG_OFFLINE_CHECK_SHELL')queueMicrotask(()=>nav.serviceWorker.onMessage?.({data:{type:'KG_OFFLINE_SHELL_READY',sharedPictures:1}}));}},addEventListener(type,handler){if(type==='message')this.onMessage=handler;}},
     connection:{addEventListener(){}}};
   const messages=[];
   const calls={claw:0,paw:0,audio:0};
@@ -92,7 +92,7 @@ async function fixture({imageMode='missing',audioMissing=false,failPawOnce=false
     navigator:nav,location:{href:'https://kg-offline.example/'},addEventListener(){},
     document:{getElementById:()=>null,addEventListener(){},hidden:false},
     BroadcastChannel:class{addEventListener(){}postMessage(){}},
-    URL,Response,Headers,TextEncoder,Blob,AbortController,crypto:webcrypto,
+    URL,Response,Headers,TextEncoder,Blob,AbortController,MessageChannel,crypto:webcrypto,
     setTimeout:(fn,ms)=>{const timer=setTimeout(fn,ms);timer.unref?.();return timer;},clearTimeout,console};
   vm.runInNewContext(source,context,{filename:'offline/runtime.js'});
   await context.window.KGOffline.ready;
@@ -190,4 +190,24 @@ test('unchanged published revisions are reused during refresh without downloadin
   const pack=await x.activePack();const raw=await x.caches.get(pack.cacheName).match(ROOT+'body/claw.jpg');
   assert(raw.headers.get('X-KG-Picture-Hash'));assert.equal((await raw.blob()).size,0);
   assert.equal((await (await x.api.readMedia(ROOT+'body/claw.jpg')).blob()).size,5);
+});
+
+
+test('readiness audits saved bytes without deleting packs or exposing account identifiers',async()=>{
+  const x=await fixture();
+  await x.api.downloadPack('my');
+  x.nav.onLine=false;
+  await new Promise(resolve=>setTimeout(resolve,20));
+  const report=await x.api.verifyOffline();
+  assert.equal(report.ready,true);
+  assert.equal(report.packs[0].missingPictures,1);
+  assert(!JSON.stringify(report).includes(OWNER));
+  assert(!JSON.stringify(report).includes('student@example.org'));
+  const original=await x.activePack();
+  const shared=[...x.caches.entries()].find(([name])=>name.startsWith('kg-offline-pictures-v1-'))[1];
+  shared.items.clear();
+  const damaged=await x.api.verifyOffline();
+  assert.equal(damaged.ready,false);
+  assert(damaged.packs[0].failures.length>0);
+  assert.equal((await x.activePack()).cacheName,original.cacheName);
 });

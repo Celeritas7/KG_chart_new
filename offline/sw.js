@@ -56,7 +56,7 @@ self.addEventListener('activate', event => event.waitUntil((async () => {
   // Commit hashes have no chronological ordering; never guess which is previous.
 })()));
 
-async function verifyShell(repair = false) {
+async function verifyShell(repair = false, checkHashes = false) {
   const cache=await caches.open(CURRENT_SHELL);
   let response=await cache.match('./shell-manifest.json');
   if(!response && repair) response=await fetch('./shell-manifest.json',{cache:'no-store'});
@@ -68,7 +68,7 @@ async function verifyShell(repair = false) {
     const url=new URL(file.path,self.registration.scope);
     if(url.origin!==self.location.origin || !url.href.startsWith(self.registration.scope) || !/^[a-f0-9]{64}$/.test(file.sha256)) throw Error('Invalid app manifest');
     let saved=await cache.match(url.href);
-    if(saved && repair) {
+    if(saved && (repair || checkHashes)) {
       const hash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',await saved.clone().arrayBuffer()))].map(b=>b.toString(16).padStart(2,'0')).join('');
       if(hash!==file.sha256) saved=null;
     }
@@ -140,6 +140,12 @@ self.addEventListener('message', event => {
     event.waitUntil(verifyShell().then(
       ()=>event.source?.postMessage({type:'KG_OFFLINE_SHELL_READY',revision:'APP_REVISION',sharedPictures:1}),
       error=>event.source?.postMessage({type:'KG_OFFLINE_SHELL_INCOMPLETE',message:error.message})
+    ));
+  }
+  if(event.data?.type==='KG_OFFLINE_AUDIT_SHELL' && event.source?.id) {
+    event.waitUntil(verifyShell(false,true).then(
+      ()=>event.ports?.[0]?.postMessage({ok:true,revision:'APP_REVISION'}),
+      error=>event.ports?.[0]?.postMessage({ok:false,error:error.message})
     ));
   }
   if(event.data?.type==='KG_OFFLINE_REPAIR_SHELL' && event.source?.id) {
