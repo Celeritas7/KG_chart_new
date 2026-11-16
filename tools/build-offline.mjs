@@ -88,6 +88,12 @@ for (const [from, to] of [
   ['icons/kg-brand.svg', 'icons/kg-brand.svg'],
   ['icons/icon-192.png', 'icons/icon-192.png'], ['icons/apple-touch-icon.png', 'icons/apple-touch-icon.png'],
 ]) await write(to, await fs.readFile(path.join(root, from)));
+// Keep online player source untouched; share playback and replace only catalog loading.
+const player = await read('js/kg-audio.js');
+const start = player.indexOf('  function loadManifest(lang) {');
+const end = player.indexOf('  // Which clip to play:', start);
+if(start < 0 || end < 0) throw Error('Shared audio player changed; review offline adapter');
+await write('js/kg-audio.js', player.slice(0,start) + await read('offline/audio-manifest.js') + '\n' + player.slice(end));
 await write('sw.js', (await read('offline/sw.js')).replaceAll('APP_REVISION', rev));
 
 // Install the converter source locally as an explicit build input, not a runtime fetch.

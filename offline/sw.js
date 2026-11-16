@@ -177,6 +177,23 @@ async function localMedia(request, owner) {
   }
   return null;
 }
+async function audioRange(response, request) {
+  const range=request.headers?.get?.('range');
+  if(!range || !/\.mp3(?:\?|$)/i.test(request.url)) return response;
+  const match=/^bytes=(\d*)-(\d*)$/.exec(range);
+  if(!match || (!match[1] && !match[2])) return response;
+  const bytes=await response.arrayBuffer(), size=bytes.byteLength;
+  const start=match[1] ? Number(match[1]) : Math.max(0,size-Number(match[2]));
+  const end=match[1] ? (match[2] ? Math.min(Number(match[2]),size-1) : size-1) : size-1;
+  if(!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start>end || start>=size)
+    return new Response(null,{status:416,headers:{'Content-Range':`bytes */${size}`}});
+  const headers=new Headers(response.headers);
+  headers.set('Content-Range',`bytes ${start}-${end}/${size}`);
+  headers.set('Content-Length',String(end-start+1));headers.set('Accept-Ranges','bytes');
+  headers.delete('Content-Encoding');
+  return new Response(bytes.slice(start,end+1),{status:206,headers});
+}
+
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
@@ -189,7 +206,7 @@ self.addEventListener('fetch', event => {
       try {
         const resolved=client || await ownerFor(event.clientId);
         const cached = resolved && url.href.startsWith(resolved.mediaRoot) ? await localMedia(event.request, resolved.owner) : null;
-        if (cached) return cached;
+        if (cached) return audioRange(cached,event.request);
       } catch (_) {
         // A temporarily inaccessible local pack must not block a valid
         // published media request when the device is back online.
