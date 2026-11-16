@@ -44,6 +44,12 @@
   let options = { autoUpdate: true, wifiOnly: true }, knownLanguages = [], selectedLang = 'my', quizBusy = false, panelOpen = false, shellReady = false;
   let pendingShellUpdate = null, applyingShellUpdate = false, shellUpdateError = '';
   let appVersion = 'unknown';
+  const unified = window.KG_UNIFIED === true;
+  let studyLanguage = 'my';
+  const bounded = (promise, label, ms = 12000) => new Promise((resolve,reject) => {
+    const timer=setTimeout(()=>reject(Error(label+' timed out. Close other KG Chart tabs and retry; saved data has not been cleared.')),ms);
+    Promise.resolve(promise).then(v=>{clearTimeout(timer);resolve(v);},e=>{clearTimeout(timer);reject(e);});
+  });
   const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('kg-offline-account-events') : null;
   const notify = () => { listeners.forEach(fn => fn()); renderPanel(); };
   const problem = (message, code = 'KG_OFFLINE') => ({ message, code });
@@ -86,7 +92,8 @@
       if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
       if (!d.objectStoreNames.contains('outbox')) d.createObjectStore('outbox', { keyPath: 'id' });
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onblocked = () => reject(Error('Local storage is blocked by another KG Chart tab. Close that tab and retry.'));
+    req.onsuccess = () => { req.result.onversionchange=()=>req.result.close(); resolve(req.result); };
     req.onerror = () => reject(req.error);
   });
   const request = req => new Promise((resolve, reject) => {
@@ -168,7 +175,10 @@
     delete() { this.mutation=['delete',null];this.remote=this.remote.delete();return this; }
     then(yes,no) { return this.execute().then(yes,no); }
     async execute() {
-      if (!canUseLocal(this.table)) {
+      const requestedLanguage = this.filters.find(([op,key])=>op==='eq' && key==='language_code')?.[2] || studyLanguage;
+      const needsRemoteContent = unified && CONTENT_TABLES.has(this.table) && !packs.has(requestedLanguage);
+      const onlineOnlyWrite = unified && this.mutation && !WRITABLE_TABLES.has(this.table);
+      if (!canUseLocal(this.table) || needsRemoteContent || onlineOnlyWrite) {
         if(!navigator.onLine) return {data:null,error:offlineError('This feature')};
         return this.remote.then(x=>x);
       }
@@ -931,9 +941,9 @@
           ${shellUpdateError ? `<span class="kg-offline-update-error">${esc(shellUpdateError)}</span>` : ''}</span>
         <button id="kg-shell-update" ${updateBlocked || applyingShellUpdate?'disabled':''}>${applyingShellUpdate?'Updating…':'Update app now'}</button>
       </div>` : ''}
-      <details ${panelOpen || (!ready.length && currentEnrollment()) ? 'open' : ''}>
-        <summary><strong>⬇ KG Chart Offline</strong> <span class="kg-offline-pill">${offline?'Offline':'Connected'}</span>
-        <span class="kg-offline-pill">${pendingCount?pendingCount+' pending':'Saved on this device'}</span></summary>
+      <details ${panelOpen ? 'open' : ''}>
+        <summary><strong>Study offline</strong> <span class="kg-offline-pill">${offline?'Offline':'Connected'}</span>
+        <span class="kg-offline-pill">${pendingCount?pendingCount+' pending':ready.length+' packs saved'}</span><span class="kg-offline-pill">${shellReady?'App ready offline':'App not verified offline'}</span></summary>
         <div class="kg-offline-body">
           <div class="kg-offline-description">${status}. ${complete}</div>
           <div class="kg-offline-grid">
@@ -942,6 +952,7 @@
               <button id="kg-download" ${!currentEnrollment()||busy?'disabled':''}>${packs.has(selectedLang)?'Check / update pack':'Download pack'}</button>
               <button id="kg-pause" ${busy?'':'disabled'}>Pause</button>
               <button id="kg-sync" ${!currentEnrollment()||syncing||offline?'disabled':''}>${syncing?'Syncing…':'Sync now'}</button>
+              <button id="kg-repair">Repair app files</button>
               <button id="kg-export" ${!currentEnrollment()?'disabled':''}>Export recovery</button>
             </div>
           </div>
@@ -973,6 +984,7 @@
       .catch(e=>{progress.phase=humanError(e);notify();}));
     node.querySelector('#kg-pause')?.addEventListener('click',()=>{pauseRequested=true;progress.phase='Pausing after current files…';notify();});
     node.querySelector('#kg-sync')?.addEventListener('click',()=>sync());
+    node.querySelector('#kg-repair')?.addEventListener('click',()=>window.KGRepairShell?.().catch(e=>{progress.phase=e.message;notify();}));
     node.querySelector('#kg-export')?.addEventListener('click',()=>exportRecovery().catch(e=>{syncError=humanError(e);notify();}));
     node.querySelector('#kg-import')?.addEventListener('change',e=>importRecovery(e.target.files?.[0]).catch(err=>{syncError=humanError(err);notify();}));
     node.querySelector('#kg-auto')?.addEventListener('change',e=>{options.autoUpdate=e.target.checked;saveOptions();});
@@ -998,7 +1010,7 @@
   }
 
   async function init() {
-    db=await openDB();
+    db=await bounded(openDB(), 'Opening local storage');
     const previous=await get('active-owner');
     if(previous){
       const record=await get('enroll:'+previous);
@@ -1010,7 +1022,7 @@
       knownLanguages=(await get('languages:'+owner))||[];
       pendingCount=(await outbox()).length;
     }
-    const build=await fetch('./offline-build.json',{cache:'only-if-cached',mode:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null);
+    const build=await bounded(fetch('./offline-build.json',{cache:'only-if-cached',mode:'same-origin'}).then(r=>r.ok?r.json():null), 'Reading app version', 1500).catch(()=>null);
     appVersion=build?.appVersion||'unknown';
     progress.phase=currentEnrollment() ? 'Saved packs are ready.' : 'Sign in online to authorize this device and download lessons.';
     notify();
@@ -1018,6 +1030,12 @@
       shellReady=false;pendingShellUpdate=null;applyingShellUpdate=false;tellWorker();notify();
     });
     navigator.serviceWorker?.addEventListener('message',event=>{
+      if(event.data?.type==='KG_OFFLINE_REQUEST_OWNER') {
+        event.ports?.[0]?.postMessage(currentEnrollment() && mediaRoot ? {id:owner,mediaRoot} : null);
+      }
+      if(event.data?.type==='KG_OFFLINE_SHELL_INCOMPLETE') {
+        shellReady=false;progress.phase='App files need repair. Reconnect and use Repair app files. Packs and progress are kept.';notify();
+      }
       if(event.data?.type==='KG_OFFLINE_SHELL_READY') {
         shellReady=true;
         if(packs.size && progress.phase.startsWith('Pack saved'))
@@ -1048,7 +1066,8 @@
   }
 
   window.KGOffline={
-    ready:init().catch(e=>{fatal(e);throw e;}), wrapClient,afterVerified,downloadPack,
+    ready:bounded(init(), 'Opening saved lessons', 20000).catch(e=>{fatal(e);throw e;}), wrapClient,afterVerified,downloadPack,
+    setLanguage:value=>{studyLanguage=value;},
     pause:()=>{pauseRequested=true;},sync,exportRecovery,importRecovery,
     setQuizBusy:value=>{if(quizBusy!==!!value){quizBusy=!!value;notify();}},
     canApplyShellUpdate:()=>!quizBusy && !busy && !syncing,

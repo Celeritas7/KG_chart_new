@@ -6,7 +6,9 @@
     "build:both": "npm run build:online && npm run build:offline",
     "test:offline": "node --test offline/tests/*.test.mjs",
     "check:offline": "npm run build:offline && npm run test:offline",
-    "check:both": "npm run build:both && npm run test:offline"
+    "check:both": "npm run build:both && npm run test:offline",
+    "build:unified": "node tools/build-offline.mjs --unified",
+    "check:unified": "npm run check:both && npm run build:unified"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.99.3",
