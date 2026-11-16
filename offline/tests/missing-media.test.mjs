@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import {webcrypto} from 'node:crypto';
 import {IDBFactory} from 'fake-indexeddb';
 
-const source=await fs.readFile(new URL('../runtime.js',import.meta.url),'utf8');
+const source=(await fs.readFile(new URL('../pictures.js',import.meta.url),'utf8'))+'\n'+(await fs.readFile(new URL('../runtime.js',import.meta.url),'utf8'));
 const OWNER='88888888-8888-4888-8888-888888888888';
 const ROOT='https://example.supabase.co/storage/v1/object/public/vocabulary-assets/';
 const content={
@@ -47,7 +47,7 @@ async function fixture({imageMode='missing',audioMissing=false,failPawOnce=false
     delete:async name=>caches.delete(name),
   };
   const nav={onLine:true,storage:{persist:async()=>true},
-    serviceWorker:{controller:{postMessage(message){messages.push(message);}},addEventListener(){}},
+    serviceWorker:{controller:{postMessage(message){messages.push(message);if(message.type==='KG_OFFLINE_CHECK_SHELL')queueMicrotask(()=>nav.serviceWorker.onMessage?.({data:{type:'KG_OFFLINE_SHELL_READY',sharedPictures:1}}));}},addEventListener(type,handler){if(type==='message')this.onMessage=handler;}},
     connection:{addEventListener(){}}};
   const messages=[];
   const calls={claw:0,paw:0,audio:0};
@@ -121,7 +121,7 @@ test('confirmed HTTP 400 missing picture becomes a hashed, account-scoped offlin
   assert.match(missing.sha256,/^[a-f0-9]{64}$/);
   assert.equal(x.api.status().progress.failures,0);
   assert.equal(x.api.status().progress.missingImages,1);
-  const placeholder=await x.caches.get(pack.cacheName).match(missing.url);
+  const placeholder=await x.api.readMedia(missing.url);
   assert.equal(placeholder.headers.get('X-KG-Missing-Image'),'1');
   assert.equal(placeholder.headers.get('Content-Type'),'image/svg+xml');
   assert.match(await placeholder.text(),/Image unavailable/);
@@ -181,4 +181,13 @@ test('missing audio recording remains a blocking error, never a placeholder',asy
   assert(x.calls.audio>0);
   assert.equal(x.api.status().progress.missingImages,1,'Only genuinely missing picture is counted');
   assert.equal(x.api.status().progress.failures,1);
+});
+
+test('unchanged published revisions are reused during refresh without downloading completed images',async()=>{
+  const x=await fixture({imageMode:'restored'});await x.api.downloadPack('my');
+  const before={...x.calls};await x.api.downloadPack('my',{refresh:true});
+  assert.equal(x.calls.claw,before.claw);assert.equal(x.calls.paw,before.paw);
+  const pack=await x.activePack();const raw=await x.caches.get(pack.cacheName).match(ROOT+'body/claw.jpg');
+  assert(raw.headers.get('X-KG-Picture-Hash'));assert.equal((await raw.blob()).size,0);
+  assert.equal((await (await x.api.readMedia(ROOT+'body/claw.jpg')).blob()).size,5);
 });

@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import { IDBFactory } from 'fake-indexeddb';
 
 const installSource=await fs.readFile(new URL('../install.js',import.meta.url),'utf8');
-const runtimeSource=await fs.readFile(new URL('../runtime.js',import.meta.url),'utf8');
+const runtimeSource=(await fs.readFile(new URL('../pictures.js',import.meta.url),'utf8'))+'\n'+(await fs.readFile(new URL('../runtime.js',import.meta.url),'utf8'));
 
 async function installation({hasWaiting=true}={}) {
   const events=new Map();

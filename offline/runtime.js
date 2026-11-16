@@ -7,6 +7,8 @@
   const DB_VERSION = 1;
   const SCHEMA_VERSION = 1;
   const PREFIX = 'kg-offline-pack-';
+  let sharedPicturesReady=false;
+  const packCache = name => window.KGSharedPictures.open(name,owner,sharedPicturesReady);
   const MEDIA_PATH = '/storage/v1/object/public/vocabulary-assets/';
   const MISSING_IMAGE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="220" viewBox="0 0 300 220" role="img" aria-label="Image unavailable">
     <rect width="300" height="220" rx="16" fill="#f1f5f9"/>
@@ -43,6 +45,8 @@
   let syncing = false, syncError = '', lastSync = null, pendingCount = 0;
   let options = { autoUpdate: true, wifiOnly: true }, knownLanguages = [], selectedLang = 'my', quizBusy = false, panelOpen = false, shellReady = false;
   let pendingShellUpdate = null, applyingShellUpdate = false, shellUpdateError = '';
+  let accountEpoch=0;
+  const accountGuard=()=>{const id=owner,epoch=accountEpoch;return()=>{if(owner!==id || accountEpoch!==epoch || !currentEnrollment()) throw Error('Account changed during this operation. Unsent work is retained.');};};
   let appVersion = 'unknown';
   const unified = window.KG_UNIFIED === true;
   let studyLanguage = 'my';
@@ -385,12 +389,13 @@
     // when HEAD cannot supply a revision. However, refresh placeholder images so
     // that a newly restored picture can replace the temporary fallback.
     if(found && found.headers.get('X-KG-SHA256') &&
-       !(forceRefresh && found.headers.get('X-KG-Missing-Image')==='1')) return found;
-    if(!forceRefresh) {
-      // Reuse older, activated copies ONLY if the publisher has a reliable revision.
+       !(forceRefresh && found.headers.get('X-KG-Missing-Image')==='1')) { await cache.put(url,found.clone()); return found; }
+    {
+      // Reuse unchanged revisions even during refresh. Missing-image placeholders
+      // must be fetched again so restored published pictures can replace them.
       for(const name of priorCaches){
-        const previous=await (await caches.open(name)).match(url);
-        if(matchesRevision(previous)) { await cache.put(url,previous.clone()); return previous; }
+        const previous=await (await packCache(name)).match(url);
+        if(matchesRevision(previous) && previous.headers.get('X-KG-Missing-Image')!=='1') { await cache.put(url,previous.clone()); return previous; }
       }
     }
     return null;
@@ -462,42 +467,41 @@
     if(busy) return;
     if(!currentEnrollment()) throw Error('Sign in with an approved account online before downloading.');
     if(!navigator.onLine) throw Error('An internet connection is required to download or update packs.');
+    const guard=accountGuard();
     busy=true;pauseRequested=false;
     progress={phase:'Reading published lesson data…',done:0,total:0,bytes:0,remaining:null,failures:0,missingImages:0};notify();
     try {
-      const data=await fetchContent(lang);
-      const audio=await audioFiles(lang);
+      const data=await fetchContent(lang);guard();
+      const audio=await audioFiles(lang);guard();
       const fileUrls=[...new Set([...requiredMedia(data,lang),...audio.urls])];
       const infos=[];
       for(let i=0;i<fileUrls.length;i+=12) infos.push(...await Promise.all(fileUrls.slice(i,i+12).map(fileInfo)));
+      guard();
       // Content and media revisions form a deterministic, versioned manifest; replacement at
       // an unchanged URL invalidates it if the storage provider exposes ETag/Last-Modified.
       const contentHash=await digest(JSON.stringify(data));
       const candidateRevision=await digest(JSON.stringify({contentHash,files:infos.map(f=>[f.url,f.revision,f.bytes]),audio:audio.json}));
       const stageId=`${owner}:${lang}:${candidateRevision}`;
-      const interrupted=await get('staging:'+stageId);
+      const interrupted=await get('staging:'+stageId);guard();
       const stageCache=interrupted?.stageCache || `${PREFIX}${owner}-${lang}-${crypto.randomUUID()}`;
-      const cache=await caches.open(stageCache);
+      const cache=await packCache(stageCache);guard();
       const oldPack=packs.get(lang);
-      if(oldPack && oldPack.candidateRevision===candidateRevision && !refresh && !interrupted) {
-        progress={...progress,phase:'This pack is already ready offline.',done:fileUrls.length,total:fileUrls.length};notify();
-        return oldPack;
-      }
       if(audio.json) {
         // KGAudio.loadManifest() uses this exact public URL during offline playback.
         const body=JSON.stringify(audio.json);
         await cache.put(audio.manifestUrl,new Response(body,{headers:{'Content-Type':'application/json','X-KG-SHA256':await digest(body)}}));
       }
-      await put('staging:'+stageId,{lang,candidateRevision,contentHash,stageCache,startedAt:now(),schemaVersion:SCHEMA_VERSION});
+      guard();await put('staging:'+stageId,{lang,candidateRevision,contentHash,stageCache,startedAt:now(),schemaVersion:SCHEMA_VERSION});
       await navigator.storage?.persist?.().catch(()=>false);
       const previous=activeCaches.filter(n=>n.startsWith(PREFIX+owner+'-'));
       const estimated=infos.reduce((sum,i)=>sum+(i.bytes||0),0);
       progress={phase:'Downloading lesson media…',done:0,total:infos.length,bytes:0,
-        remaining:estimated||null,failures:0,missingImages:0};notify();
+        remaining:infos.every(i=>i.bytes!==null)?estimated:null,failures:0,missingImages:0};notify();
       const completed=[];
       let cursor=0;
       await Promise.all(Array.from({length:Math.min(3,infos.length)},async()=>{
         while(cursor<infos.length && !pauseRequested){
+          guard();
           const info=infos[cursor++];
           try {
             let found=await stagedResponse(info.url,info,cache,previous,refresh);
@@ -507,7 +511,7 @@
               hash=found.headers.get('X-KG-SHA256')||'';
               missingImage=found.headers.get('X-KG-Missing-Image')==='1';
             } else ({bytes,hash,missingImage}=await saveAsset(info.url,info,cache));
-            if(!hash) throw Error('Missing cached content hash');
+            guard();if(!hash) throw Error('Missing cached content hash');
             completed.push({url:info.url,revision:info.revision,bytes,sha256:hash,missingImage});
             progress.bytes+=bytes;
             if(missingImage) progress.missingImages++;
@@ -526,18 +530,20 @@
         const response=await cache.match(file.url);
         if(!response || await digest(await response.arrayBuffer())!==file.sha256) throw Error('Verification failed: '+file.url);
       }
+      guard();
       // Content-addressed FINAL revision incorporates real media SHA256, even when an
       // intermediate cache cannot supply an ETag for a replaced image at the same URL.
       const manifestRevision=await digest(JSON.stringify({contentHash,audio:audio.json,
         files:completed.slice().sort((a,b)=>a.url.localeCompare(b.url)).map(a=>[a.url,a.sha256])}));
+      guard();
       const packageId=`${owner}:${lang}:${manifestRevision}`;
-      if(oldPack && oldPack.manifestRevision===manifestRevision) {
+      if(oldPack && oldPack.manifestRevision===manifestRevision && oldPack.storageLayout===2) {
         await transact(['kv'],tx=>tx.objectStore('kv').delete('staging:'+stageId));
         await caches.delete(stageCache);
         progress={...progress,phase:'Checked: your existing pack is already current.',remaining:0};notify();
         return oldPack;
       }
-      const pack={lang,ownerId:owner,createdAt:now(),schemaVersion:SCHEMA_VERSION,appVersion,
+      const pack={lang,storageLayout:cache.sharedWrites?2:1,ownerId:owner,createdAt:now(),schemaVersion:SCHEMA_VERSION,appVersion,
         candidateRevision,manifestRevision,contentHash,cacheName:stageCache,assets:completed,data};
       await transact(['kv'],tx=>{
         const kv=tx.objectStore('kv');
@@ -550,7 +556,7 @@
         kv.put(names,'active-caches:'+owner);
         kv.delete('staging:'+stageId);
       });
-      packs.set(lang,pack);
+      guard();packs.set(lang,pack);
       activeCaches=[stageCache,...activeCaches.filter(n=>n!==stageCache)];
       tellWorker();
       if(typeof CustomEvent==='function') window.dispatchEvent?.(new CustomEvent('kg-pack-ready',{detail:{lang}}));
@@ -561,7 +567,7 @@
     } catch(e){
       progress.phase=e.message || 'Pack download failed. Retry; completed downloads remain saved.';
       notify();throw e;
-    } finally {busy=false;notify();}
+    } finally {busy=false;notify();if(navigator.onLine)setTimeout(()=>sync().catch(()=>{}),0);}
   }
 
   const fetchOwner = async () => {
@@ -575,7 +581,8 @@
 
   async function pullRemote() {
     if(!currentEnrollment() || !navigator.onLine) throw Error('Reconnect to pull account progress');
-    await fetchOwner();
+    const guard=accountGuard();
+    await fetchOwner();guard();
     const email=enrollment.email.toLowerCase();
     const tables=[
       [TABLES.ratings, q=>q.eq('user_id',owner)],
@@ -595,7 +602,7 @@
       const set=sessionIds.slice(i,i+80);
       incoming[TABLES.answers].push(...await readPaged(TABLES.answers,q=>q.in('session_id',set)));
     }
-    const pending=await outbox();
+    const pending=await outbox();guard();
     // Pull server changes, then replay ONLY this account's unsent edits in memory before
     // atomically replacing local views. Remote account changes are never discarded silently.
     await transact(['kv'],tx=>{
@@ -615,6 +622,7 @@
 
   async function syncEvent(event) {
     if(event.ownerId!==owner) throw Error('Outbox account isolation error');
+    const guard=accountGuard();
     const table=event.table;
     const row={...event.row};
     if(table===TABLES.sessions) delete row.quiz_level; // not present in current deployed schema
@@ -622,7 +630,7 @@
       const keys=PRIMARY[table];
       let check=live.from(table).select('*');
       for(const key of keys) check=check.eq(key,row[key]);
-      const {data:remote,error}=await check.maybeSingle();
+      const {data:remote,error}=await check.maybeSingle();guard();
       if(error) throw Error(error.message);
       if(table===TABLES.ratings) {
         const remoteStamp=remote?.updated_at||remote?.last_reviewed_at||null;
@@ -651,6 +659,7 @@
       }
       if(table===TABLES.completions && remote && remote.completed_at>=row.completed_at) return;
     }
+    guard();
     let result;
     if(event.kind==='delete') {
       let q=live.from(table).delete();
@@ -672,12 +681,13 @@
       for(const [op,k,v] of event.filters) if(op==='eq') q=q.eq(k,v);
       result=await q;
     }
+    guard();
     if(result.error) throw Error(`${table}: ${result.error.message}`);
     // 204/empty responses alone do not prove a user row changed (RLS may affect 0 rows).
     if(PRIMARY[table]?.length) {
       let q=live.from(table).select('*');
       for(const key of PRIMARY[table]) q=q.eq(key,row[key]);
-      const {data:ack,error}=await q.maybeSingle();
+      const {data:ack,error}=await q.maybeSingle();guard();
       if(error) throw Error('Could not confirm server acknowledgment: '+error.message);
       if(event.kind==='delete') {
         if(ack) throw Error('Delete not acknowledged by server; local tombstone stays queued.');
@@ -695,11 +705,12 @@
 
   async function doSync() {
     if(syncing || busy || !currentEnrollment() || !navigator.onLine) return;
+    const guard=accountGuard();
     syncing=true;syncError='';notify();
     try {
-      await fetchOwner();
+      await fetchOwner();guard();
       for(const event of await outbox()) {
-        await syncEvent(event);
+        guard();await syncEvent(event);guard();
         await transact(['outbox'],tx=>tx.objectStore('outbox').delete(event.id));
         pendingCount--;notify();
       }
@@ -710,7 +721,7 @@
       const levelChecks=await get(checkKey)||{};
       for(const [lang,sequence] of Object.entries(levelChecks)){
         if((await outbox()).some(e=>e.table===TABLES.sessions && e.row.language_code===lang)) continue;
-        const result=await live.rpc('kg_chart_check_level_up',{p_lang:lang});
+        guard();const result=await live.rpc('kg_chart_check_level_up',{p_lang:lang});guard();
         if(result.error) throw Error('Server level check for '+lang+': '+result.error.message);
         await transact(['kv'],tx=>{
           const kv=tx.objectStore('kv'),req=kv.get(checkKey);
@@ -720,7 +731,7 @@
           };
         });
       }
-      await pullRemote(); // pulls remote edits even if nothing was queued
+      guard();await pullRemote();guard(); // pulls remote edits even if nothing was queued
     } catch(e) {syncError=e.message||String(e);}
     finally {syncing=false;await updatePending();}
   }
@@ -812,6 +823,7 @@
     const allowed=await live.rpc('kg_chart_is_allowed');
     if(allowed.error || allowed.data!==true) throw Error('This account is not approved for KG Chart.');
     const adm=await live.rpc('kg_chart_is_admin');
+    accountEpoch++;
     enrollment={id:user.id,email:user.email.toLowerCase(),admin:adm.data===true,unlocked:true,verifiedAt:now()};
     owner=user.id;
     await transact(['kv'],tx=>{
@@ -827,6 +839,7 @@
 
   async function lockAccount() {
     // Sign-out never deletes outbox or existing content. It just revokes local presentation.
+    accountEpoch++;
     const prev=owner;
     if(typeof Event==='function') window.dispatchEvent?.(new Event('kg-account-locked'));
     if(enrollment){enrollment={...enrollment,unlocked:false};await put('enroll:'+owner,enrollment);}
@@ -855,7 +868,7 @@
     const expectedOwner=owner;
     try {
       for(const name of activeCaches.filter(n=>n.startsWith(PREFIX+expectedOwner+'-'))) {
-        const response=await bounded(caches.open(name).then(cache=>cache.match(url)), 'Reading saved audio', 1500);
+        const response=await bounded(packCache(name).then(cache=>cache.match(url)), 'Reading saved audio', 1500);
         if(owner!==expectedOwner || !currentEnrollment()) return null;
         if(response) return response;
       }
@@ -935,7 +948,9 @@
     const node=document.getElementById('kg-offline-panel');
     if(!node) return;
     const ready=[...packs.keys()];
-    const bytes=(Array.from(packs.values()).flatMap(p=>p.assets||[]).reduce((s,a)=>s+a.bytes,0));
+    const assets=Array.from(packs.values()).flatMap(p=>p.assets||[]);
+    const bytes=assets.reduce((s,a)=>s+a.bytes,0);
+    const pictureBytes=[...new Map(assets.filter(a=>/\.(png|jpg|jpeg|webp|gif|avif|svg)$/i.test(new URL(a.url).pathname)).map(a=>[a.sha256,a])).values()].reduce((s,a)=>s+a.bytes,0);
     const langs=knownLanguages.length ? knownLanguages : [...new Map([...packs.values()].flatMap(p=>p.data[TABLES.languages]||[]).map(l=>[l.code,l])).values()];
     const languageOptions=langs.length ? langs : [{code:'my',name_english:'Burmese'},{code:'ja',name_english:'Japanese'},{code:'ta',name_english:'Tamil'}];
     if(!languageOptions.some(x=>x.code===selectedLang)) selectedLang=languageOptions[0].code;
@@ -961,7 +976,7 @@
         <summary><strong>Study offline</strong> <span class="kg-offline-pill">${offline?'Offline':'Connected'}</span>
         <span class="kg-offline-pill">${pendingCount?pendingCount+' pending':ready.length+' packs saved'}</span><span class="kg-offline-pill">${shellReady?'App ready offline':'App not verified offline'}</span></summary>
         <div class="kg-offline-body">
-          <div class="kg-offline-description">${status}. ${complete}</div>
+          <div class="kg-offline-description">${status}. ${complete} Shared picture content: ${sizeOf(pictureBytes)}. Older pack copies are retained for recovery.</div>
           <div class="kg-offline-grid">
             <label>Language pack<select id="kg-pack-lang" ${!currentEnrollment()?'disabled':''}>${languageOptions.map(l=>`<option value="${esc(l.code)}" ${l.code===selectedLang?'selected':''}>${esc(l.flag_emoji||'')} ${esc(l.name_english||l.code)} ${ready.includes(l.code)?shellReady?'✓ ready offline':'✓ pack saved':''}</option>`).join('')}</select></label>
             <div class="kg-offline-actions">
@@ -1043,7 +1058,7 @@
     progress.phase=currentEnrollment() ? 'Saved packs are ready.' : 'Sign in online to authorize this device and download lessons.';
     notify();
     navigator.serviceWorker?.addEventListener('controllerchange',()=>{
-      shellReady=false;pendingShellUpdate=null;applyingShellUpdate=false;tellWorker();notify();
+      shellReady=false;sharedPicturesReady=false;pendingShellUpdate=null;applyingShellUpdate=false;tellWorker();notify();
     });
     navigator.serviceWorker?.addEventListener('message',event=>{
       if(event.data?.type==='KG_OFFLINE_REQUEST_OWNER') {
@@ -1053,13 +1068,14 @@
         shellReady=false;progress.phase='App files need repair. Reconnect and use Repair app files. Packs and progress are kept.';notify();
       }
       if(event.data?.type==='KG_OFFLINE_SHELL_READY') {
+        sharedPicturesReady=event.data.sharedPictures===1;
         shellReady=true;
         if(packs.size && progress.phase.startsWith('Pack saved'))
           progress.phase='Ready offline · '+[...packs.keys()].join(', ');
         notify();
       }
     });
-    addEventListener('online',()=>{notify();setTimeout(automaticChecks,0);});
+    addEventListener('online',()=>{notify();sync().catch(()=>{});setTimeout(automaticChecks,0);});
     addEventListener('offline',notify);
     addEventListener('focus',()=>{notify();setTimeout(automaticChecks,0);});
     document.addEventListener('visibilitychange',()=>{if(!document.hidden)automaticChecks();});

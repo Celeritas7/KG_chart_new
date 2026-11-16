@@ -1,3 +1,4 @@
+importScripts('./js/offline-pictures.js');
 /* KG Chart Offline: isolated origin, cache-first navigation, no online-startup dependency. */
 const SHELL_CACHE_PREFIX = 'kg-offline-shell-';
 const MEDIA_PREFIX = 'kg-offline-pack-';
@@ -137,7 +138,7 @@ self.addEventListener('message', event => {
   if (event.data?.type === 'KG_OFFLINE_LOCK') CLIENT_OWNERS.delete(event.source.id);
   if (event.data?.type === 'KG_OFFLINE_CHECK_SHELL') {
     event.waitUntil(verifyShell().then(
-      ()=>event.source?.postMessage({type:'KG_OFFLINE_SHELL_READY',revision:'APP_REVISION'}),
+      ()=>event.source?.postMessage({type:'KG_OFFLINE_SHELL_READY',revision:'APP_REVISION',sharedPictures:1}),
       error=>event.source?.postMessage({type:'KG_OFFLINE_SHELL_INCOMPLETE',message:error.message})
     ));
   }
@@ -172,7 +173,7 @@ async function activeCaches(owner) {
 async function localMedia(request, owner) {
   if (!owner) return null;
   for (const cacheName of await activeCaches(owner)) {
-    const match = await (await caches.open(cacheName)).match(request.url);
+    const match = await (await self.KGSharedPictures.open(cacheName,owner)).match(request.url);
     if (match) return match;
   }
   return null;
