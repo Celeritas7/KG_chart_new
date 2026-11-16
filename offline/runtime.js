@@ -45,6 +45,7 @@
   let syncing = false, syncError = '', lastSync = null, pendingCount = 0;
   let options = { autoUpdate: true, wifiOnly: true }, knownLanguages = [], selectedLang = 'my', quizBusy = false, panelOpen = false, shellReady = false;
   let pendingShellUpdate = null, applyingShellUpdate = false, shellUpdateError = '';
+  let readinessReport=null,checkingReadiness=false;
   let accountEpoch=0;
   const accountGuard=()=>{const id=owner,epoch=accountEpoch;return()=>{if(owner!==id || accountEpoch!==epoch || !currentEnrollment()) throw Error('Account changed during this operation. Unsent work is retained.');};};
   let appVersion = 'unknown';
@@ -528,7 +529,7 @@
       progress.phase='Verifying complete pack…';notify();
       for(const file of completed){
         const response=await cache.match(file.url);
-        if(!response || await digest(await response.arrayBuffer())!==file.sha256) throw Error('Verification failed: '+file.url);
+        if(!response || await digest(await bounded(response.arrayBuffer(),'Reading saved bytes',3000))!==file.sha256) throw Error('Verification failed: '+file.url);
       }
       guard();
       // Content-addressed FINAL revision incorporates real media SHA256, even when an
@@ -839,7 +840,7 @@
 
   async function lockAccount() {
     // Sign-out never deletes outbox or existing content. It just revokes local presentation.
-    accountEpoch++;
+    accountEpoch++;readinessReport=null;
     const prev=owner;
     if(typeof Event==='function') window.dispatchEvent?.(new Event('kg-account-locked'));
     if(enrollment){enrollment={...enrollment,unlocked:false};await put('enroll:'+owner,enrollment);}
@@ -874,6 +875,61 @@
       }
     } catch (_) { /* The player may retry the published URL online. */ }
     return null;
+  }
+
+  async function verifyOffline() {
+    if(checkingReadiness || busy || syncing || quizBusy) throw Error('Finish the quiz, download or sync before checking saved files.');
+    if(!currentEnrollment()) throw Error('Sign in before checking this account’s saved packs.');
+    const guard=accountGuard();checkingReadiness=true;readinessReport=null;notify();
+    const report={format:'kg-offline-readiness',version:1,checkedAt:now(),origin:new URL(location.href).origin,
+      edition:unified?'unified':'separate-offline',appVersion,shell:{ok:false},packs:[],pendingChanges:0,ready:false};
+    try {
+      try {
+        const worker=navigator.serviceWorker?.controller;
+        if(!worker) throw Error('No controlling service worker. Reopen after installation.');
+        report.shell=await new Promise((resolve,reject)=>{
+          const channel=new MessageChannel();
+          const timer=setTimeout(()=>{channel.port1.close();reject(Error('App-file verification timed out.'));},30000);
+          channel.port1.onmessage=e=>{clearTimeout(timer);channel.port1.close();resolve(e.data);};
+          worker.postMessage({type:'KG_OFFLINE_AUDIT_SHELL'},[channel.port2]);
+        });
+      } catch(e) {report.shell={ok:false,error:e.message};}
+      guard();
+      for(const [lang,pack] of [...packs]) {
+        const row={language:lang,files:pack.assets?.length||0,audioFiles:0,missingPictures:0,failures:[],ok:false};
+        try {
+          const cache=await packCache(pack.cacheName);
+          if(!pack.assets?.length)row.failures.push('Pack has no saved files');
+          for(const file of pack.assets||[]) {
+            guard();const response=await bounded(cache.match(file.url),'Reading saved file',3000);
+            if(!response || await digest(await bounded(response.arrayBuffer(),'Reading saved bytes',3000))!==file.sha256)row.failures.push(new URL(file.url).pathname.split('/').pop());
+            if(/\.mp3$/i.test(new URL(file.url).pathname)) row.audioFiles++;
+            if(file.missingImage) row.missingPictures++;
+          }
+          if(row.audioFiles) {
+            const catalog=await bounded(cache.match(mediaBase()+'audio/'+lang+'/clips.json'),'Reading saved catalog',3000);
+            if(!catalog) row.failures.push('clips.json');
+            else {
+              const bytes=await catalog.clone().arrayBuffer();
+              if(await digest(bytes)!==catalog.headers.get('X-KG-SHA256'))row.failures.push('clips.json integrity');
+              const json=await catalog.json();if(!Array.isArray(json.m)||!Array.isArray(json.f))row.failures.push('clips.json format');
+            }
+          }
+          if(packs.get(lang)!==pack)row.failures.push('Pack changed during check; retry');
+          row.ok=row.failures.length===0;
+        } catch(e){row.failures.push(e.message);}
+        report.packs.push(row);
+      }
+      guard();report.pendingChanges=(await outbox()).length;guard();
+      report.ready=report.shell?.ok===true && report.packs.length>0 && report.packs.every(p=>p.ok);
+      readinessReport=report;return report;
+    } finally {checkingReadiness=false;notify();}
+  }
+  function exportReadiness() {
+    if(!readinessReport)return;
+    const url=URL.createObjectURL(new Blob([JSON.stringify(readinessReport,null,2)],{type:'application/json'}));
+    const a=document.createElement('a');a.href=url;a.download='kg-offline-readiness.json';a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),30000);
   }
 
   function tellWorker() {
@@ -983,6 +1039,8 @@
               <button id="kg-download" ${!currentEnrollment()||busy?'disabled':''}>${packs.has(selectedLang)?'Check / update pack':'Download pack'}</button>
               <button id="kg-pause" ${busy?'':'disabled'}>Pause</button>
               <button id="kg-sync" ${!currentEnrollment()||syncing||offline?'disabled':''}>${syncing?'Syncing…':'Sync now'}</button>
+              <button id="kg-verify" ${checkingReadiness||busy||syncing||quizBusy?'disabled':''}>${checkingReadiness?'Checking saved files…':'Check offline readiness'}</button>
+              <button id="kg-report" ${readinessReport?'':'disabled'}>Export check report</button>
               <button id="kg-repair">Repair app files</button>
               <button id="kg-export" ${!currentEnrollment()?'disabled':''}>Export recovery</button>
             </div>
@@ -997,6 +1055,7 @@
             <label><input type="checkbox" id="kg-auto" ${options.autoUpdate?'checked':''}> Check/update packs automatically while open</label>
             <label><input type="checkbox" id="kg-wifi" ${options.wifiOnly?'checked':''}> Wi-Fi only when the browser identifies it</label>
           </div>
+          ${readinessReport ? `<p class="kg-offline-message">File check: ${readinessReport.ready?'Passed':'Needs attention'} · ${readinessReport.edition} · ${esc(readinessReport.appVersion)} · ${readinessReport.pendingChanges} unsent changes · ${readinessReport.packs.reduce((sum,p)=>sum+p.missingPictures,0)} picture placeholders. Physical Airplane-mode testing is still required.</p>` : ''}
           <p class="kg-offline-foot">Last server-acknowledged sync: ${shortDate(lastSync)}. ${pendingCount} unsent changes.
             Account verification and audio assessment need internet. Expired sessions need reauthentication before sync.
             Browser background downloads are not guaranteed; checks resume when the app opens or reconnects.</p>
@@ -1015,6 +1074,8 @@
       .catch(e=>{progress.phase=humanError(e);notify();}));
     node.querySelector('#kg-pause')?.addEventListener('click',()=>{pauseRequested=true;progress.phase='Pausing after current files…';notify();});
     node.querySelector('#kg-sync')?.addEventListener('click',()=>sync());
+    node.querySelector('#kg-verify')?.addEventListener('click',()=>verifyOffline().catch(e=>{progress.phase=e.message;notify();}));
+    node.querySelector('#kg-report')?.addEventListener('click',exportReadiness);
     node.querySelector('#kg-repair')?.addEventListener('click',()=>window.KGRepairShell?.().catch(e=>{progress.phase=e.message;notify();}));
     node.querySelector('#kg-export')?.addEventListener('click',()=>exportRecovery().catch(e=>{syncError=humanError(e);notify();}));
     node.querySelector('#kg-import')?.addEventListener('change',e=>importRecovery(e.target.files?.[0]).catch(err=>{syncError=humanError(err);notify();}));
@@ -1104,7 +1165,7 @@
     setQuizBusy:value=>{if(quizBusy!==!!value){quizBusy=!!value;notify();}},
     canApplyShellUpdate:()=>!quizBusy && !busy && !syncing,
     offerShellUpdate:apply=>{pendingShellUpdate=typeof apply==='function'?apply:null;applyingShellUpdate=false;shellUpdateError='';notify();},
-    readMedia,tellWorker,notice:message=>{progress.phase=message;notify();},fatal,
+    verifyOffline,readMedia,tellWorker,notice:message=>{progress.phase=message;notify();},fatal,
     status:()=>({ownerId:owner,shellReady,readyLanguages:[...packs.keys()],pending:pendingCount,lastSync,progress:{...progress},syncError,quizBusy,updateAvailable:!!pendingShellUpdate}),
     subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},
   };
