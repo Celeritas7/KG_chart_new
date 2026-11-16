@@ -11,9 +11,11 @@ import postcss from 'postcss';
 import tailwindcss from 'tailwindcss';
 
 const root = process.cwd();
-const out = path.join(root, 'dist-offline');
+const unified = process.argv.includes('--unified');
+const out = path.join(root, unified ? 'dist-unified' : 'dist-offline');
+await fs.rm(out, { recursive: true, force: true });
 const assets = path.join(out, 'assets');
-const rev = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+const rev = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim() + (unified ? '-unified' : '');
 const read = file => fs.readFile(path.join(root, file), 'utf8');
 const write = async (file, data) => {
   const destination = path.join(out, file);
@@ -44,6 +46,9 @@ let app = appMatch[1]
   .replace('ReactDOM.createRoot(document.getElementById(\'root\')).render(<App />);',
     "window.KGOffline.ready.then(() => ReactDOM.createRoot(document.getElementById('root')).render(<App />)).catch(e => window.KGOffline.fatal(e));");
 if (!app.includes('KGOffline.ready.then') || !app.includes('kg-offline-legacy') || !app.includes('afterVerified(u)')) throw Error('Offline app patch did not match upstream; review changes');
+app = app.replace('function AppContent() {', 'function AppContent() { useEffect(() => window.KGStartupComplete?.(), []);');
+app = app.replace('function AuthGate({ children }) {', 'function AuthGate({ children }) { useEffect(() => window.KGStartupComplete?.(), []);');
+if (unified) app = app.replace("const [currentLanguage, setCurrentLanguage] = useState(() => loadFromStorage(STORAGE_KEYS.language, 'my'));", "const [currentLanguage, setCurrentLanguage] = useState(() => loadFromStorage(STORAGE_KEYS.language, 'my')); window.KGOffline.setLanguage(currentLanguage);");
 app = (await transform(app, { loader: 'jsx', jsx: 'transform', target: 'es2020', minify: false })).code;
 await write('assets/app.js', app);
 
@@ -66,6 +71,8 @@ let html = source
   .replace('<script src="./js/install.js"></script>', '<script src="./js/offline-install.js"></script>')
   .replace('<div id="root"></div>', '<div id="kg-offline-panel" aria-live="polite"></div><div id="root"><p class="kg-offline-start">Opening your saved KG Chart…</p></div>');
 if (/https:\/\/(unpkg\.com|cdn\.tailwindcss\.com|fonts\.googleapis\.com)/.test(html)) throw Error('Offline HTML still has a runtime CDN');
+html=html.replace('<head>', '<head><script>window.KG_UNIFIED='+JSON.stringify(unified)+';</script><script>'+(await read('offline/startup.js'))+'</script>');
+if (unified) html=html.replace('<title>KG Chart Offline</title>', '<title>KG Chart</title>');
 await write('index.html', html);
 
 // Supabase is bundled here to prevent the online global SDK dependency at offline startup.
@@ -76,7 +83,7 @@ for (const [from, to] of [
   ['node_modules/react-dom/umd/react-dom.production.min.js', 'assets/react-dom.production.min.js'],
   ['js/image-store.js', 'js/image-store.js'], ['js/kg-audio.js', 'js/kg-audio.js'],
   ['js/kg-shared.js', 'js/kg-shared.js'],
-  ['offline/runtime.js', 'js/offline-runtime.js'], ['offline/install.js', 'js/offline-install.js'],
+  ['offline/startup.js', 'js/startup.js'], ['offline/runtime.js', 'js/offline-runtime.js'], ['offline/install.js', 'js/offline-install.js'],
   ['offline/offline.css', 'assets/offline.css'],
   ['icons/kg-brand.svg', 'icons/kg-brand.svg'],
   ['icons/icon-192.png', 'icons/icon-192.png'], ['icons/apple-touch-icon.png', 'icons/apple-touch-icon.png'],
@@ -124,6 +131,7 @@ await write('assets/fonts.css', declarations.join('\n'));
 
 const manifest = JSON.parse(await read('offline/manifest.webmanifest'));
 manifest.version = rev;
+if(unified) { manifest.name='KG Chart'; manifest.short_name='KG Chart'; } // preserve installation ID for an eventual same-origin upgrade
 await write('manifest.webmanifest', JSON.stringify(manifest));
 const files = (await walk(out)).map(p => p.slice(out.length + 1)).sort();
 const shellFiles = files.filter(f => f !== 'shell-manifest.json' && f !== 'offline-build.json');

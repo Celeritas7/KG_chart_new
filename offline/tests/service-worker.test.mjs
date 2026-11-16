@@ -9,7 +9,7 @@ const scope='https://kg-offline.example/';
 const source=await fs.readFile(new URL('../sw.js',import.meta.url),'utf8');
 const sha=value=>createHash('sha256').update(value).digest('hex');
 
-function worker(revision,existing=new Map(),{badFile=null,quotaFile=null,networkDown=false,indexedDB=new IDBFactory()}={}) {
+function worker(revision,existing=new Map(),{badFile=null,quotaFile=null,networkDown=false,indexedDB=new IDBFactory(),clientPage=null}={}) {
   const responses={
     './':'<h1>KG Chart</h1>',
     './index.html':'<h1>KG Chart</h1>',
@@ -44,8 +44,8 @@ function worker(revision,existing=new Map(),{badFile=null,quotaFile=null,network
     return new Response(body);
   };
   const context={caches:cacheStorage,indexedDB,crypto:webcrypto,URL,Response,TextEncoder,Uint8Array,
-    fetch:download,self:{registration:{scope},location:{origin:new URL(scope).origin},
-      clients:{claim:async()=>{}},skipWaiting:async()=>{skipWaitingCalls++;},
+    AbortController,setTimeout,clearTimeout,MessageChannel,fetch:download,self:{registration:{scope},location:{origin:new URL(scope).origin},
+      clients:{claim:async()=>{},get:async()=>clientPage},skipWaiting:async()=>{skipWaitingCalls++;},
       addEventListener(type,handler){listeners.set(type,handler);}}};
   vm.runInNewContext(source.replaceAll('APP_REVISION',revision),context,{filename:'offline/sw.js'});
   async function event(type,properties={}){
@@ -201,11 +201,37 @@ test('public media placeholders are served only to their verified owning client'
 
   // A different account or unknown client must not discover this account's media.
   const request={method:'GET',mode:'no-cors',url:mediaUrl};
-  assert.equal(await w.event('fetch',{request,clientId:'client-1'}),undefined);
+  assert.equal((await w.event('fetch',{request,clientId:'client-1'})).status,404);
   await w.event('message',{data:{type:'KG_OFFLINE_OWNER',id:owner,mediaRoot:storageRoot},source:{id:'client-1'}});
   const saved=await w.event('fetch',{request,clientId:'client-1'});
   assert.equal(await saved.text(),'<svg>Image unavailable</svg>');
-  assert.equal(await w.event('fetch',{request,clientId:'client-2'}),undefined);
+  assert.equal((await w.event('fetch',{request,clientId:'client-2'})).status,404);
   await w.event('message',{data:{type:'KG_OFFLINE_LOCK'},source:{id:'client-1'}});
-  assert.equal(await w.event('fetch',{request,clientId:'client-1'}),undefined);
+  assert.equal((await w.event('fetch',{request,clientId:'client-1'})).status,404);
+});
+
+
+test('readiness rejects a missing dependency and repair restores only matching shell files',async()=>{
+  const w=worker('v-one');await w.event('install');
+  const shell=w.caches.get('kg-offline-shell-v-one');shell.items.delete(scope+'assets/app.js');
+  const pack=await w.cacheStorage.open('kg-offline-pack-preserve');await pack.put('./picture',new Response('keep'));
+  let status;
+  await w.event('message',{data:{type:'KG_OFFLINE_CHECK_SHELL'},source:{postMessage:v=>status=v}});
+  assert.equal(status.type,'KG_OFFLINE_SHELL_INCOMPLETE');
+  let reply;await w.event('message',{data:{type:'KG_OFFLINE_REPAIR_SHELL'},source:{id:'tab'},ports:[{postMessage:v=>reply=v}]});
+  assert.equal(reply.ok,true);assert(await shell.match('./assets/app.js'));
+  assert.equal(await (await pack.match('./picture')).text(),'keep');
+});
+
+test('worker restart recovers only the requesting page owner before serving local media',async()=>{
+  const owner='88888888-8888-4888-8888-888888888888';
+  const root='https://example.supabase.co/storage/v1/object/public/vocabulary-assets/';
+  const name='kg-offline-pack-'+owner+'-my-v1';const url=root+'body/claw.jpg';
+  const original=worker('v-one');
+  const db=await new Promise(resolve=>{const r=original.indexedDB.open('kg-chart-offline-v1',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>resolve(r.result);});
+  await new Promise(resolve=>{const tx=db.transaction('kv','readwrite');tx.objectStore('kv').put([name],'active-caches:'+owner);tx.oncomplete=resolve;});db.close();
+  await (await original.cacheStorage.open(name)).put(url,new Response('local picture'));
+  const restarted=worker('v-one',original.caches,{indexedDB:original.indexedDB,networkDown:true,clientPage:{url:scope,postMessage(message,ports){ports[0].postMessage({id:owner,mediaRoot:root});}}});
+  const response=await restarted.event('fetch',{request:{method:'GET',url},clientId:'same-page'});
+  assert.equal(await response.text(),'local picture');
 });

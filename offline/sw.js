@@ -3,6 +3,11 @@ const SHELL_CACHE_PREFIX = 'kg-offline-shell-';
 const MEDIA_PREFIX = 'kg-offline-pack-';
 const CLIENT_OWNERS = new Map();
 const CURRENT_SHELL = SHELL_CACHE_PREFIX + 'APP_REVISION';
+async function network(request) {
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),15000);
+  try { return await fetch(request,{signal:controller.signal}); } finally {clearTimeout(timer);}
+}
 // Older releases can leave users stranded behind cache-first HTML with no
 // "Apply update" button. Rescue those installations once, without reloading
 // their open tabs. Later releases require an explicit, safe user action.
@@ -46,15 +51,59 @@ self.addEventListener('install', event => event.waitUntil((async () => {
 
 self.addEventListener('activate', event => event.waitUntil((async () => {
   await self.clients.claim();
-  // Retain the previous shell for rollback; never touch another PWA's origin.
-  try {
-    const old = (await caches.keys()).filter(k => k.startsWith(SHELL_CACHE_PREFIX) && k !== CURRENT_SHELL).sort();
-    if (old.length > 1) await Promise.all(old.slice(0, -1).map(k => caches.delete(k)));
-  } catch (_) {
-    // Cache cleanup is optional. A transient storage failure must not strand
-    // the user behind an older worker or touch their downloaded media packs.
-  }
+  // Retain existing shells until an explicit version-aware cleanup is implemented.
+  // Commit hashes have no chronological ordering; never guess which is previous.
 })()));
+
+async function verifyShell(repair = false) {
+  const cache=await caches.open(CURRENT_SHELL);
+  let response=await cache.match('./shell-manifest.json');
+  if(!response && repair) response=await fetch('./shell-manifest.json',{cache:'no-store'});
+  if(!response?.ok) throw Error('App manifest is missing. Reconnect to install an update.');
+  const manifest=await response.clone().json();
+  if(manifest.version!=='APP_REVISION' || !Array.isArray(manifest.files) || !manifest.files.some(f=>f.path==='index.html'))
+    throw Error('A different release is available. Reopen online and apply the app update.');
+  for(const file of manifest.files) {
+    const url=new URL(file.path,self.registration.scope);
+    if(url.origin!==self.location.origin || !url.href.startsWith(self.registration.scope) || !/^[a-f0-9]{64}$/.test(file.sha256)) throw Error('Invalid app manifest');
+    let saved=await cache.match(url.href);
+    if(saved && repair) {
+      const hash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',await saved.clone().arrayBuffer()))].map(b=>b.toString(16).padStart(2,'0')).join('');
+      if(hash!==file.sha256) saved=null;
+    }
+    if(!saved) {
+      if(!repair) throw Error('App file missing: '+file.path);
+      const replacement=await fetch(url.href,{cache:'no-store'});
+      if(!replacement.ok) throw Error('Could not repair '+file.path);
+      const hash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',await replacement.clone().arrayBuffer()))].map(b=>b.toString(16).padStart(2,'0')).join('');
+      if(hash!==file.sha256) throw Error('A newer release is available. Apply its update before repair.');
+      await cache.put(url.href,replacement);
+    }
+  }
+  if(repair) await cache.put('./shell-manifest.json',response);
+}
+
+// A worker may be terminated without controllerchange. Recover ownership from
+// the requesting same-origin page, never by guessing an account from storage.
+async function ownerFor(clientId) {
+  if(CLIENT_OWNERS.has(clientId)) return CLIENT_OWNERS.get(clientId);
+  const client=await self.clients.get?.(clientId);
+  if(!client || !client.url?.startsWith(self.registration.scope)) return null;
+  return new Promise(resolve=>{
+    const channel=new MessageChannel();
+    const timer=setTimeout(()=>{channel.port1.close();resolve(null);},1500);
+    channel.port1.onmessage=e=>{
+      clearTimeout(timer);channel.port1.close();
+      const value=e.data;
+      try {
+        const root=new URL(value?.mediaRoot);
+        if(!/^[\da-f-]{36}$/i.test(value?.id||'') || root.protocol!=='https:' || !root.hostname.endsWith('.supabase.co') || root.pathname!=='/storage/v1/object/public/vocabulary-assets/' || root.search || root.hash) return resolve(null);
+        const owner={owner:value.id,mediaRoot:root.href};CLIENT_OWNERS.set(clientId,owner);resolve(owner);
+      } catch (_) {resolve(null);}
+    };
+    client.postMessage({type:'KG_OFFLINE_REQUEST_OWNER'},[channel.port2]);
+  });
+}
 
 self.addEventListener('message', event => {
   if (event.data?.type === 'KG_OFFLINE_APPLY_UPDATE' && event.source?.id) {
@@ -87,11 +136,16 @@ self.addEventListener('message', event => {
   }
   if (event.data?.type === 'KG_OFFLINE_LOCK') CLIENT_OWNERS.delete(event.source.id);
   if (event.data?.type === 'KG_OFFLINE_CHECK_SHELL') {
-    event.waitUntil((async () => {
-      const cache=await caches.open(CURRENT_SHELL);
-      if(await cache.match('./index.html'))
-        event.source?.postMessage({type:'KG_OFFLINE_SHELL_READY',revision:'APP_REVISION'});
-    })());
+    event.waitUntil(verifyShell().then(
+      ()=>event.source?.postMessage({type:'KG_OFFLINE_SHELL_READY',revision:'APP_REVISION'}),
+      error=>event.source?.postMessage({type:'KG_OFFLINE_SHELL_INCOMPLETE',message:error.message})
+    ));
+  }
+  if(event.data?.type==='KG_OFFLINE_REPAIR_SHELL' && event.source?.id) {
+    event.waitUntil(verifyShell(true).then(
+      ()=>event.ports?.[0]?.postMessage({ok:true}),
+      error=>event.ports?.[0]?.postMessage({ok:false,error:error.message})
+    ));
   }
 });
 
@@ -128,18 +182,19 @@ self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   const ownOrigin = url.origin === self.location.origin;
   const client=CLIENT_OWNERS.get(event.clientId);
-  const isMedia = client && url.href.startsWith(client.mediaRoot);
+  const isMedia = (client && url.href.startsWith(client.mediaRoot)) || (url.protocol==='https:' && url.hostname.endsWith('.supabase.co') && url.pathname.startsWith('/storage/v1/object/public/vocabulary-assets/'));
   if (isMedia) {
     event.respondWith((async () => {
       // Per-client owner; never search another account's packs or unvalidated staging caches.
       try {
-        const cached = await localMedia(event.request, client.owner);
+        const resolved=client || await ownerFor(event.clientId);
+        const cached = resolved && url.href.startsWith(resolved.mediaRoot) ? await localMedia(event.request, resolved.owner) : null;
         if (cached) return cached;
       } catch (_) {
         // A temporarily inaccessible local pack must not block a valid
         // published media request when the device is back online.
       }
-      return fetch(event.request);
+      return network(event.request);
     })());
     return;
   }
@@ -156,7 +211,7 @@ self.addEventListener('fetch', event => {
       // browser storage pressure. Never let that rejection become ERR_FAILED
       // for the app's navigation: a connected visit can still load from Pages.
     }
-    try { return await fetch(event.request); }
+    try { return await network(event.request); }
     catch (_) {
       if (navigation) {
         try {
