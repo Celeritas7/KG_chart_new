@@ -553,6 +553,7 @@
       packs.set(lang,pack);
       activeCaches=[stageCache,...activeCaches.filter(n=>n!==stageCache)];
       tellWorker();
+      if(typeof CustomEvent==='function') window.dispatchEvent?.(new CustomEvent('kg-pack-ready',{detail:{lang}}));
       progress={...progress,phase:shellReady?'Ready offline · '+lang:'Pack saved · waiting for app shell installation',done:infos.length,total:infos.length,remaining:0};
       await pullRemote().catch(e=>{syncError='Content ready, but progress download failed: '+e.message;});
       notify();
@@ -827,6 +828,7 @@
   async function lockAccount() {
     // Sign-out never deletes outbox or existing content. It just revokes local presentation.
     const prev=owner;
+    if(typeof Event==='function') window.dispatchEvent?.(new Event('kg-account-locked'));
     if(enrollment){enrollment={...enrollment,unlocked:false};await put('enroll:'+owner,enrollment);}
     owner=null;packs=new Map();activeCaches=[];pendingCount=0;lastSync=null;
     await put('active-owner',null);
@@ -845,6 +847,20 @@
     }
     activeCaches=(await get('active-caches:'+owner))||[];
     lastSync=(await get('last-sync:'+owner))||null;
+  }
+
+  async function readMedia(url) {
+    // Same account boundaries as the worker; never inspect staging/other owners.
+    if(!currentEnrollment() || !mediaRoot || !url.startsWith(mediaRoot)) return null;
+    const expectedOwner=owner;
+    try {
+      for(const name of activeCaches.filter(n=>n.startsWith(PREFIX+expectedOwner+'-'))) {
+        const response=await bounded(caches.open(name).then(cache=>cache.match(url)), 'Reading saved audio', 1500);
+        if(owner!==expectedOwner || !currentEnrollment()) return null;
+        if(response) return response;
+      }
+    } catch (_) { /* The player may retry the published URL online. */ }
+    return null;
   }
 
   function tellWorker() {
@@ -1072,7 +1088,7 @@
     setQuizBusy:value=>{if(quizBusy!==!!value){quizBusy=!!value;notify();}},
     canApplyShellUpdate:()=>!quizBusy && !busy && !syncing,
     offerShellUpdate:apply=>{pendingShellUpdate=typeof apply==='function'?apply:null;applyingShellUpdate=false;shellUpdateError='';notify();},
-    tellWorker,notice:message=>{progress.phase=message;notify();},fatal,
+    readMedia,tellWorker,notice:message=>{progress.phase=message;notify();},fatal,
     status:()=>({ownerId:owner,shellReady,readyLanguages:[...packs.keys()],pending:pendingCount,lastSync,progress:{...progress},syncError,quizBusy,updateAvailable:!!pendingShellUpdate}),
     subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},
   };
