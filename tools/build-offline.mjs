@@ -94,7 +94,9 @@ const start = player.indexOf('  function loadManifest(lang) {');
 const end = player.indexOf('  // Which clip to play:', start);
 if(start < 0 || end < 0) throw Error('Shared audio player changed; review offline adapter');
 await write('js/kg-audio.js', player.slice(0,start) + await read('offline/audio-manifest.js') + '\n' + player.slice(end));
-await write('sw.js', (await read('offline/sw.js')).replaceAll('APP_REVISION', rev));
+// Worker startup must not depend on another script fetch before handlers exist.
+const workerSource = (await read('offline/sw.js')).replace("importScripts('./js/offline-pictures.js');", await read('offline/pictures.js'));
+await write('sw.js', workerSource.replaceAll('APP_REVISION', rev));
 
 // Install the converter source locally as an explicit build input, not a runtime fetch.
 const converterDir = path.join(root, 'offline', 'language-utils');
