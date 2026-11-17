@@ -1,6 +1,6 @@
 # Phase 3 — Migration readiness and device acceptance
 
-Status: preparation implemented; production transition and physical acceptance pending.
+Status: preparation implemented; Android refresh/reopening/audio reported passing after PR #56. Remaining acceptance and unified transition pending.
 Base: main e0df9ce8ccf64e748236d1f4fa06d46861c9742f (PR #52).
 
 ## Current deployment and destination
@@ -58,8 +58,8 @@ permanent guarantee against browser storage eviction.
 | Scenario | Android Home Screen | iPad Home Screen |
 | --- | --- | --- |
 | Update without losing Burmese/Chinese packs or progress | Pending | Pending |
-| Airplane mode, Wi-Fi off: refresh and navigation | Pending | Pending |
-| Fully close app, reopen with no connection | Pending | Pending |
+| Airplane mode, Wi-Fi off: refresh and navigation | User-reported pass, 2026-11-18 | Pending |
+| Fully close app, reopen with no connection | User-reported pass, 2026-11-18 | Pending |
 | Burmese/Chinese pictures and recorded audio, normal/slow | Pending | Pending |
 | Quiz completion and local rating survive cold reopen | Pending | Pending |
 | Interrupted pack download resumes without restarting all files | Pending | Pending |
@@ -92,3 +92,24 @@ Tests use Node browser/storage mocks. Physical Android/iPad testing is pending;
 this environment has no working browser runner, so no browser pass is claimed.
 Original online index.html, js/kg-audio.js and sw.js are unchanged.
 No deployment, merge, production Supabase write or browser-data deletion was made.
+
+
+## Android follow-up — 2026-11-18 (Japan time)
+
+After PR #56, the user confirmed connected refresh, then the instructed Airplane
+mode/Wi-Fi-off refresh, full close/reopen and Burmese audio sequence worked.
+They reported only the KG Chart logo missing. This is user-reported physical-device
+evidence; Chinese/Malay audio coverage, slow playback, quizzes, sync and iPad
+acceptance have not been separately confirmed. The active worker revision was not
+captured in a new report, but the updated App files saved label was visible.
+
+The header logo and favicon inherited icons/kg-brand.svg?v=2 from the online
+source, while the offline shell manifest saved icons/kg-brand.svg without the
+query. The offline/unified build now uses that exact cached URL in both places;
+release-specific shell caches still handle updates. The original online source
+and icon artwork are unchanged. No storage deletion or pack re-download is needed.
+
+Validation for this small build fix: npm run check:unified passes all 39 existing
+tests and all builds. Both generated HTML/favicon and compiled header-logo URLs
+match the shell manifest, and the saved SVG hash matches. Visual logo confirmation
+on Android remains pending until the reviewed change is released and activated.
