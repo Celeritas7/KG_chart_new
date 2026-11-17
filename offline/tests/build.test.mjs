@@ -49,6 +49,21 @@ test('online source is not overwritten by offline build',async()=>{
   assert.notEqual(onlineManifest.id,offlineManifest.id);
 });
 
+test('offline controls are contained in Settings and the learner header opens them',async()=>{
+  const html=await fs.readFile(path.join(built,'index.html'),'utf8');
+  const dialog=html.match(/<dialog\b[^>]*id="kg-settings-dialog"[\s\S]*?<\/dialog>/)?.[0];
+  assert(dialog,'Settings dialog is in the saved app shell');
+  assert.match(dialog,/aria-labelledby="kg-settings-title"/);
+  assert.match(dialog,/<form method="dialog">[\s\S]*?>Close<\/button>/);
+  assert.match(dialog,/id="kg-offline-panel"/);
+  assert.doesNotMatch(html.replace(dialog,''),/id="kg-offline-panel"/,'No offline toolbar above the learning interface');
+  const app=await fs.readFile(path.join(built,'assets/app.js'),'utf8');
+  assert.match(app,/KGOffline\.openSettings\(\)/);
+  assert.match(app,/KGOffline\.subscribe\(refresh\)/);
+  assert.match(app,/React\.createElement\(OfflineSettingsButton/);
+  assert.match(app,/kg-auth-settings/,'Repair and update controls remain available before sign-in');
+});
+
 
 test('built worker cold-starts without imported scripts or network access',async()=>{
   const source=await fs.readFile(path.join(built,'sw.js'),'utf8');

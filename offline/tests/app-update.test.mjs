@@ -98,18 +98,25 @@ test('an update installed after registration is offered, and activation timeout 
   assert.equal(page.reloads,1,'The same visible update action can be retried');
 });
 
-test('offline toolbar shows a visible update button and disables it while a quiz is open',async()=>{
+test('Settings keeps update controls functional and disables activation while a quiz is open',async()=>{
   const panel={innerHTML:'',actions:new Map(),querySelector(selector){
     return {addEventListener:(name,handler)=>this.actions.set(selector+':'+name,handler)};
   }};
+  const dialog={open:false,shows:0,showModal(){this.open=true;this.shows++;}};
   const sw={controller:{postMessage(){}},addEventListener(){}};
-  const context={window:{},document:{getElementById:id=>id==='kg-offline-panel'?panel:null,addEventListener(){},hidden:false},
+  const context={window:{},document:{getElementById:id=>id==='kg-offline-panel'?panel:id==='kg-settings-dialog'?dialog:null,addEventListener(){},hidden:false},
     navigator:{onLine:false,serviceWorker:sw,connection:{addEventListener(){}}},
     location:{href:'https://kg-offline.example/'},addEventListener(){},indexedDB:new IDBFactory(),
     URL,Response,TextEncoder,fetch:async()=>({ok:false}),
     setTimeout:()=>0,clearTimeout,console};
   vm.runInNewContext(runtimeSource,context,{filename:'offline/runtime.js'});
   await context.window.KGOffline.ready;
+  assert.equal(dialog.open,false,'Settings never covers the learning screen on startup');
+  context.window.KGOffline.openSettings();
+  assert.equal(dialog.open,true);
+  assert.match(panel.innerHTML,/<details open>/,'Download controls are expanded inside Settings');
+  context.window.KGOffline.openSettings();
+  assert.equal(dialog.shows,1,'Repeated open requests do not reopen an active dialog');
   let approved=0;
   context.window.KGOffline.offerShellUpdate(async()=>{approved++;});
   assert.match(panel.innerHTML,/Check for app update/);
@@ -118,6 +125,7 @@ test('offline toolbar shows a visible update button and disables it while a quiz
   assert.equal(context.window.KGOffline.status().updateAvailable,true);
 
   context.window.KGOffline.setQuizBusy(true);
+  assert.equal(dialog.open,true,'Progress and state refreshes keep Settings open');
   assert.match(panel.innerHTML,/Open the Chart tab to enable the update/);
   assert.match(panel.innerHTML,/Switch to Chart to update/);
   assert.match(panel.innerHTML,/id="kg-shell-update" disabled/);
@@ -126,6 +134,10 @@ test('offline toolbar shows a visible update button and disables it while a quiz
   assert.match(panel.innerHTML,/Update app now/);
   await panel.actions.get('#kg-shell-update:click')();
   assert.equal(approved,1,'The user-visible button delegates to the installer');
+  dialog.open=false; // Native dialog close / Escape.
+  context.window.KGOffline.openSettings();
+  assert.equal(dialog.shows,2,'Settings can reopen without resetting runtime state');
+  assert.equal(context.window.KGOffline.status().updateAvailable,true);
 });
 
 

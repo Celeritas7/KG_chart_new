@@ -48,6 +48,29 @@ let app = appMatch[1]
   .replace('ReactDOM.createRoot(document.getElementById(\'root\')).render(<App />);',
     "window.KGOffline.ready.then(() => ReactDOM.createRoot(document.getElementById('root')).render(<App />)).catch(e => window.KGOffline.fatal(e));");
 if (!app.includes('KGOffline.ready.then') || !app.includes('kg-offline-legacy') || !app.includes('afterVerified(u)')) throw Error('Offline app patch did not match upstream; review changes');
+// Keep downloads, recovery and app updates out of the learner page. The dialog
+// lives outside React and the runtime's rerendered panel, so progress cannot close it.
+app = app.replace('    function Header(', `    function OfflineSettingsButton() {
+      const [updateReady, setUpdateReady] = useState(() => window.KGOffline.status().updateAvailable);
+      useEffect(() => {
+        const refresh = () => setUpdateReady(window.KGOffline.status().updateAvailable);
+        const unsubscribe = window.KGOffline.subscribe(refresh);
+        refresh();
+        return unsubscribe;
+      }, []);
+      return <button type="button" className="kg-settings-open" aria-haspopup="dialog" aria-controls="kg-settings-dialog"
+        aria-label={updateReady ? 'Settings — app update ready' : 'Settings'} onClick={() => window.KGOffline.openSettings()}>
+        <span aria-hidden="true">⚙️</span> Settings
+        {updateReady && <span className="kg-settings-dot" aria-hidden="true" />}
+      </button>;
+    }
+    function Header(`).replace('                ))}\n              </div>\n            </div>\n          </header>',
+    '                ))}\n                <OfflineSettingsButton />\n              </div>\n            </div>\n          </header>')
+  .replace('className="flex gap-2 mt-4 overflow-x-auto scrollbar-hide pb-1"',
+    'className="kg-learning-tabs flex gap-2 mt-4 overflow-x-auto scrollbar-hide pb-1"')
+  .replace('            {(error || authError) && (',
+    '            <div className="kg-auth-settings"><OfflineSettingsButton /></div>\n            {(error || authError) && (');
+if (!app.includes('<OfflineSettingsButton />')) throw Error('Settings navigation patch did not match upstream');
 app = app.replace('function AppContent() {', 'function AppContent() { useEffect(() => window.KGStartupComplete?.(), []);');
 app = app.replace('function AuthGate({ children }) {', 'function AuthGate({ children }) { useEffect(() => window.KGStartupComplete?.(), []);');
 if (unified) app = app.replace("const [currentLanguage, setCurrentLanguage] = useState(() => loadFromStorage(STORAGE_KEYS.language, 'my'));", "const [currentLanguage, setCurrentLanguage] = useState(() => loadFromStorage(STORAGE_KEYS.language, 'my')); window.KGOffline.setLanguage(currentLanguage);");
@@ -71,7 +94,12 @@ let html = source
   .replace(/\s*<script>\s*tailwind\.config = [\s\S]*?<\/script>/, '')
   .replace(appMatch[0], '<script src="./assets/app.js"></script>')
   .replace('<script src="./js/install.js"></script>', '<script src="./js/offline-install.js"></script>')
-  .replace('<div id="root"></div>', '<div id="kg-offline-panel" aria-live="polite"></div><div id="root"><p class="kg-offline-start">Opening your saved KG Chart…</p></div>');
+  .replace('<div id="root"></div>', `<dialog id="kg-settings-dialog" class="kg-settings-dialog" aria-labelledby="kg-settings-title">
+    <div class="kg-settings-heading"><h2 id="kg-settings-title">Settings</h2>
+      <form method="dialog"><button type="submit" class="kg-settings-close" autofocus>Close</button></form>
+    </div>
+    <div class="kg-settings-content"><div id="kg-offline-panel" aria-live="polite"></div></div>
+  </dialog><div id="root"><p class="kg-offline-start">Opening your saved KG Chart…</p></div>`);
 if (/https:\/\/(unpkg\.com|cdn\.tailwindcss\.com|fonts\.googleapis\.com)/.test(html)) throw Error('Offline HTML still has a runtime CDN');
 html=html.replace('<head>', '<head><script>window.KG_UNIFIED='+JSON.stringify(unified)+';</script><script>'+(await read('offline/startup.js'))+'</script>');
 if (unified) html=html.replace('<title>KG Chart Offline</title>', '<title>KG Chart</title>');
