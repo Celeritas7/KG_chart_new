@@ -303,3 +303,13 @@ test('retry fallback also normalizes old redirected navigation without deleting 
   assert.equal(await response.text(),'<h1>KG Chart</h1>');
   assert.equal(await (await pack.match('./picture.jpg')).text(),'saved picture');
 });
+
+
+test('waiting worker reports incomplete-shell activation failure to the requesting page',async()=>{
+  const w=worker('v-one');await w.event('install');
+  w.caches.get('kg-offline-shell-v-one').items.delete(new URL('./assets/app.js',scope).href);
+  let reply;
+  await w.event('message',{data:{type:'KG_OFFLINE_APPLY_UPDATE'},source:{id:'tab'},ports:[{postMessage:value=>reply=value}]});
+  assert.equal(reply.ok,false);assert.match(reply.error,/incomplete/);
+  assert.equal(w.skipWaitingCalls,0);
+});

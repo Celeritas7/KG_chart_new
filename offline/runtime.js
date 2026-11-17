@@ -48,7 +48,7 @@
   let readinessReport=null,checkingReadiness=false;
   let accountEpoch=0;
   const accountGuard=()=>{const id=owner,epoch=accountEpoch;return()=>{if(owner!==id || accountEpoch!==epoch || !currentEnrollment()) throw Error('Account changed during this operation. Unsent work is retained.');};};
-  let appVersion = 'unknown';
+  let appVersion = window.KG_APP_VERSION || 'unknown', activeWorkerVersion = null;
   const unified = window.KG_UNIFIED === true;
   let studyLanguage = 'my';
   const bounded = (promise, label, ms = 12000) => new Promise((resolve,reject) => {
@@ -1057,6 +1057,7 @@
             <label><input type="checkbox" id="kg-wifi" ${options.wifiOnly?'checked':''}> Wi-Fi only when the browser identifies it</label>
           </div>
           ${readinessReport ? `<p class="kg-offline-message">File check: ${readinessReport.ready?'Passed':'Needs attention'} · ${readinessReport.edition} · ${esc(readinessReport.appVersion)} · ${readinessReport.pendingChanges} unsent changes · ${readinessReport.packs.reduce((sum,p)=>sum+p.missingPictures,0)} picture placeholders. Physical Airplane-mode testing is still required.</p>` : ''}
+          <p class="kg-offline-foot">App version: ${esc(appVersion)} · Active worker: ${esc(activeWorkerVersion||'Checking…')}</p>
           <p class="kg-offline-foot">Last server-acknowledged sync: ${shortDate(lastSync)}. ${pendingCount} unsent changes.
             Account verification and audio assessment need internet. Expired sessions need reauthentication before sync.
             Browser background downloads are not guaranteed; checks resume when the app opens or reconnects.</p>
@@ -1120,13 +1121,16 @@
       pendingCount=(await outbox()).length;
     }
     const build=await bounded(fetch('./offline-build.json',{cache:'only-if-cached',mode:'same-origin'}).then(r=>r.ok?r.json():null), 'Reading app version', 1500).catch(()=>null);
-    appVersion=build?.appVersion||'unknown';
+    appVersion=window.KG_APP_VERSION||build?.appVersion||'unknown';
     progress.phase=currentEnrollment() ? 'Saved packs are ready.' : 'Sign in online to authorize this device and download lessons.';
     notify();
     navigator.serviceWorker?.addEventListener('controllerchange',()=>{
       shellReady=false;sharedPicturesReady=false;pendingShellUpdate=null;applyingShellUpdate=false;tellWorker();notify();
     });
     navigator.serviceWorker?.addEventListener('message',event=>{
+      if(event.data?.type==='KG_OFFLINE_VERSION' && event.source===navigator.serviceWorker.controller) {
+        activeWorkerVersion=event.data.revision;notify();
+      }
       if(event.data?.type==='KG_OFFLINE_REQUEST_OWNER') {
         event.ports?.[0]?.postMessage(currentEnrollment() && mediaRoot ? {id:owner,mediaRoot} : null);
       }
@@ -1134,6 +1138,7 @@
         shellReady=false;progress.phase='App files need repair. Reconnect and use Repair app files. Packs and progress are kept.';notify();
       }
       if(event.data?.type==='KG_OFFLINE_SHELL_READY') {
+        activeWorkerVersion=event.data.revision;
         sharedPicturesReady=event.data.sharedPictures===1;
         shellReady=true;
         if(packs.size && progress.phase.startsWith('Pack saved'))
@@ -1171,7 +1176,7 @@
     canApplyShellUpdate:()=>!quizBusy && !busy && !syncing,
     offerShellUpdate:apply=>{pendingShellUpdate=typeof apply==='function'?apply:null;applyingShellUpdate=false;shellUpdateError='';notify();},
     verifyOffline,readMedia,tellWorker,notice:message=>{progress.phase=message;notify();},fatal,
-    status:()=>({ownerId:owner,shellReady,readyLanguages:[...packs.keys()],pending:pendingCount,lastSync,progress:{...progress},syncError,quizBusy,updateAvailable:!!pendingShellUpdate}),
+    status:()=>({appVersion,activeWorkerVersion,ownerId:owner,shellReady,readyLanguages:[...packs.keys()],pending:pendingCount,lastSync,progress:{...progress},syncError,quizBusy,updateAvailable:!!pendingShellUpdate}),
     subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},
   };
 })();

@@ -16,25 +16,29 @@ async function installation({hasWaiting=true}={}) {
     if(!store.has(name)) store.set(name,new Set());
     store.get(name).add(handler);
   };
-  const waitingWorker={postMessage:value=>messages.push(value)};
+  const waitingWorker={postMessage:value=>{if(value.type==='KG_OFFLINE_APPLY_UPDATE')messages.push(value);}};
   const registration={waiting:hasWaiting?waitingWorker:null,installing:null,
     addEventListener:(name,fn)=>listen(events,'registration-'+name,fn),
     update:async()=>{checks++;}};
-  const sw={controller:{},register:async()=>registration,ready:Promise.resolve(),
+  const sw={controller:{postMessage(){}},register:async()=>registration,ready:Promise.resolve(),
     addEventListener:(name,fn)=>listen(events,name,fn),
     removeEventListener:(name,fn)=>events.get(name)?.delete(fn)};
   const page={
+    KG_APP_VERSION: 'page-v1',
     location:{reload(){reloads++;}},
     KGOffline:{offerShellUpdate:fn=>{offered=fn;},canApplyShellUpdate:()=>safe,
       tellWorker(){},notice:text=>notes.push(text)},
     addEventListener:(name,fn)=>listen(events,'window-'+name,fn),
   };
   const timers=new Map();let nextTimer=0;
-  const context={window:page,navigator:{onLine:true,serviceWorker:sw},
+  const context={MessageChannel,window:page,navigator:{onLine:true,serviceWorker:sw},
     setTimeout:fn=>{timers.set(++nextTimer,fn);return nextTimer;},clearTimeout:id=>timers.delete(id)};
   vm.runInNewContext(installSource,context,{filename:'offline/install.js'});
   for(const fn of events.get('window-load')||[]) await fn();
-  const emit=name=>{for(const fn of [...(events.get(name)||[])]) fn();};
+  const emit=(name,event)=>{
+    if(name==='controllerchange'){sw.controller=waitingWorker;registration.waiting=null;}
+    for(const fn of [...(events.get(name)||[])]) fn(event);
+  };
   return {check:()=>page.KGCheckAppUpdate(),navigator:context.navigator,registration,waitingWorker,messages,notes,get offered(){return offered;},get reloads(){return reloads;},get checks(){return checks;},
     get timeouts(){return timers.size;},set safe(value){safe=value;},emit,
     triggerTimeout(){for(const fn of [...timers.values()]) fn();}};
@@ -67,7 +71,10 @@ test('a busy quiz blocks activation; a quiz started during activation blocks rel
   page.emit('controllerchange');
   await update;
   assert.equal(page.reloads,0,'No reload interrupts a quiz');
-  assert.match(page.notes.at(-1),/reopen when ready/);
+  assert.match(page.notes.at(-1),/finish loading/);
+  await assert.rejects(page.offered(),/Finish the quiz/);
+  page.safe=true;await page.offered();
+  assert.equal(page.reloads,1,'Update can be completed after leaving the quiz');
 });
 
 test('an update installed after registration is offered, and activation timeout is retryable',async()=>{
@@ -125,7 +132,7 @@ test('offline toolbar shows a visible update button and disables it while a quiz
 test('manual check reports results and never activates or reloads automatically',async()=>{
   const page=await installation({hasWaiting:false});
   await page.check();assert.equal(page.checks,2);
-  assert.match(page.notes.at(-1),/No new app update/);
+  assert.match(page.notes.at(-1),/No new download/);
   page.registration.waiting=page.waitingWorker;
   await page.check();assert.match(page.notes.at(-1),/update is ready/);
   assert.equal(page.reloads,0);assert.equal(page.messages.length,0);
@@ -134,4 +141,36 @@ test('manual check reports results and never activates or reloads automatically'
   assert.equal(page.checks,count);assert.match(page.notes.at(-1),/Connect to the internet/);
   page.navigator.onLine=true;page.registration.update=async()=>{throw Error('Network failure');};
   await page.check();assert.match(page.notes.at(-1),/Could not check.*Network failure/);
+});
+
+
+test('worker activation failure is reported immediately and can be retried',async()=>{
+  const page=await installation();
+  const original=page.waitingWorker.postMessage;
+  page.waitingWorker.postMessage=(message,ports)=>{
+    if(message.type==='KG_OFFLINE_APPLY_UPDATE')ports[0].postMessage({ok:false,error:'New app shell is incomplete'});
+  };
+  await assert.rejects(page.offered(),/New app shell is incomplete/);
+  assert.equal(page.timeouts,0);assert.equal(page.reloads,0);
+  page.waitingWorker.postMessage=original;
+  const retry=page.offered();page.emit('controllerchange');await retry;
+  assert.equal(page.reloads,1);
+});
+
+test('a newer active worker offers reload even when there is no waiting download',async()=>{
+  const page=await installation({hasWaiting:false});
+  page.emit('message',{source:page.navigator.serviceWorker.controller,data:{type:'KG_OFFLINE_VERSION',revision:'page-v2'}});
+  assert.equal(typeof page.offered,'function');
+  await page.check();assert.match(page.notes.at(-1),/finish loading/);
+  await page.offered();assert.equal(page.reloads,1);
+  assert.equal(page.messages.length,0);
+});
+
+test('matching page and controller versions confirm completion; unrelated workers cannot claim it',async()=>{
+  const page=await installation({hasWaiting:false});
+  page.emit('message',{source:{},data:{type:'KG_OFFLINE_VERSION',revision:'page-v2'}});
+  assert.equal(page.offered,undefined);
+  page.emit('message',{source:page.navigator.serviceWorker.controller,data:{type:'KG_OFFLINE_VERSION',revision:'page-v1'}});
+  assert.match(page.notes.at(-1),/App update applied.*page-v1/);
+  assert.equal(page.offered,undefined);
 });
