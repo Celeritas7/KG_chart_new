@@ -25,7 +25,9 @@ const write = async (file, data) => {
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 
 await fs.mkdir(assets, { recursive: true });
-const source = await read('index.html');
+// The shell cache is already revisioned. Match the cached logo URL exactly
+// instead of inheriting the online-only cache-busting query in JSX and favicon.
+const source = (await read('index.html')).replace(/(icons\/kg-brand\.svg)\?v=[^\"'\s<>]+/g, '$1');
 const appMatch = source.match(/<script type="text\/babel">([\s\S]*?)<\/script>/);
 if (!appMatch || !appMatch[1].includes('ReactDOM.createRoot')) throw Error('Canonical learner app JSX not found');
 
