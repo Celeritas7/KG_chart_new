@@ -9,6 +9,21 @@ async function network(request) {
   const timer=setTimeout(()=>controller.abort(),15000);
   try { return await fetch(request,{signal:controller.signal}); } finally {clearTimeout(timer);}
 }
+// Pages redirects /index.html to /. A followed response retains its URL list
+// in CacheStorage, and Fetch rejects it for navigation redirect=manual. Hashes
+// cannot detect this. Reconstruct only readable followed navigation responses;
+// retain security/content headers and stream the already-decoded body.
+function navigationResponse(response) {
+  if (!response.redirected) return response;
+  const headers = new Headers(response.headers);
+  headers.delete('Content-Encoding');
+  headers.delete('Content-Length');
+  return new Response(response.body, {
+    status: response.status, statusText: response.statusText, headers,
+  });
+}
+const shellFetchPath = path => path === './index.html' ? './' : path;
+
 // Older releases can leave users stranded behind cache-first HTML with no
 // "Apply update" button. Rescue those installations once, without reloading
 // their open tabs. Later releases require an explicit, safe user action.
@@ -26,7 +41,7 @@ self.addEventListener('install', event => event.waitUntil((async () => {
   try {
     // Streaming one file at a time avoids the all-or-nothing memory spike of cache.addAll.
     for (const path of urls) {
-      const response = await fetch(path, { cache: 'no-store' });
+      const response = await fetch(shellFetchPath(path), { cache: 'no-store' });
       if (!response.ok) throw Error(`Missing shell dependency: ${path}`);
       const expected=hashes.get(new URL(path,self.registration.scope).href);
       if(expected){
@@ -34,7 +49,7 @@ self.addEventListener('install', event => event.waitUntil((async () => {
         const value=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(b=>b.toString(16).padStart(2,'0')).join('');
         if(value!==expected) throw Error(`Shell hash mismatch: ${path}`);
       }
-      await cache.put(path, response);
+      await cache.put(path, path === './index.html' || path === './' ? navigationResponse(response) : response);
     }
     const installed = await caches.keys();
     if (installed.some(name => name.startsWith(SHELL_CACHE_PREFIX) && name !== CURRENT_SHELL) &&
@@ -74,11 +89,11 @@ async function verifyShell(repair = false, checkHashes = false) {
     }
     if(!saved) {
       if(!repair) throw Error('App file missing: '+file.path);
-      const replacement=await fetch(url.href,{cache:'no-store'});
+      const replacement=await fetch(file.path==='index.html' ? self.registration.scope : url.href,{cache:'no-store'});
       if(!replacement.ok) throw Error('Could not repair '+file.path);
       const hash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',await replacement.clone().arrayBuffer()))].map(b=>b.toString(16).padStart(2,'0')).join('');
       if(hash!==file.sha256) throw Error('A newer release is available. Apply its update before repair.');
-      await cache.put(url.href,replacement);
+      await cache.put(url.href,file.path==='index.html' ? navigationResponse(replacement) : replacement);
     }
   }
   if(repair) await cache.put('./shell-manifest.json',response);
@@ -229,19 +244,22 @@ self.addEventListener('fetch', event => {
     try {
       const cache = await caches.open(CURRENT_SHELL);
       const hit = await cache.match(key, { ignoreSearch: navigation });
-      if (hit) return hit;
+      if (hit) return navigation ? navigationResponse(hit) : hit;
     } catch (_) {
       // CacheStorage can reject after an interrupted media download or under
       // browser storage pressure. Never let that rejection become ERR_FAILED
       // for the app's navigation: a connected visit can still load from Pages.
     }
-    try { return await network(event.request); }
+    try {
+      const response = await network(event.request);
+      return navigation ? navigationResponse(response) : response;
+    }
     catch (_) {
       if (navigation) {
         try {
           const cache = await caches.open(CURRENT_SHELL);
           const fallback = await cache.match('./index.html');
-          if (fallback) return fallback;
+          if (fallback) return navigationResponse(fallback);
         } catch (_) { /* Local shell is temporarily unavailable. */ }
       }
       // Never return HTML as a missing JS/CSS/font response. More importantly,

@@ -1014,7 +1014,7 @@
     const offline= !navigator.onLine;
     const status=currentEnrollment() ? `Account: ${esc(enrollment.email)} · ${ready.length} packs · ${sizeOf(bytes)} · App shell ${shellReady?'verified':'not yet verified'}` : 'First-time setup: sign in to KG Chart while online.';
     const waiting=progress.remaining===null ? 'Remaining size not supplied by server' : sizeOf(progress.remaining)+' remaining';
-    const complete=ready.length && shellReady ? 'All required app files and saved lessons can open without a network request.' :
+    const complete=ready.length && shellReady ? 'App files and lessons are saved. Verify offline reopening on this device before relying on them.' :
       ready.length ? 'Language pack saved. Finish installing the app shell and reopen once while online before going offline.' :
       'No complete pack yet. Sign in and download before taking this edition offline.';
     const updateBlocked=quizBusy || busy || syncing;
@@ -1030,7 +1030,7 @@
       </div>` : ''}
       <details ${panelOpen ? 'open' : ''}>
         <summary><strong>Study offline</strong> <span class="kg-offline-pill">${offline?'Offline':'Connected'}</span>
-        <span class="kg-offline-pill">${pendingCount?pendingCount+' pending':ready.length+' packs saved'}</span><span class="kg-offline-pill">${shellReady?'App ready offline':'App not verified offline'}</span></summary>
+        <span class="kg-offline-pill">${pendingCount?pendingCount+' pending':ready.length+' packs saved'}</span><span class="kg-offline-pill">${shellReady?'App files saved':'App files not verified'}</span></summary>
         <div class="kg-offline-body">
           <div class="kg-offline-description">${status}. ${complete} Shared picture content: ${sizeOf(pictureBytes)}. Older pack copies are retained for recovery.</div>
           <div class="kg-offline-grid">
