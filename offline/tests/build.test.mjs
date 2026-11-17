@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import vm from 'node:vm';
 
 const root=path.resolve(import.meta.dirname,'../..');
 const built=path.join(root,'dist-offline');
@@ -46,4 +47,25 @@ test('online source is not overwritten by offline build',async()=>{
   const offlineManifest=JSON.parse(await fs.readFile(path.join(built,'manifest.webmanifest'),'utf8'));
   assert.notEqual(onlineManifest.name,offlineManifest.name);
   assert.notEqual(onlineManifest.id,offlineManifest.id);
+});
+
+
+test('built worker cold-starts without imported scripts or network access',async()=>{
+  const source=await fs.readFile(path.join(built,'sw.js'),'utf8');
+  assert.doesNotMatch(source,/importScripts\s*\(/);
+  const handlers=new Map();
+  const context={self:{addEventListener:(type,handler)=>handlers.set(type,handler)},
+    importScripts(){throw Error('Imported script unavailable during restart');},
+    fetch(){throw Error('Network unavailable during restart');}};
+  vm.runInNewContext(source,context);
+  assert.equal(typeof context.self.KGSharedPictures.open,'function');
+  for(const type of ['install','activate','message','fetch']) assert(handlers.has(type),type);
+  // Fresh worker process serves the persisted shell without network or imports.
+  context.URL=URL;context.Response=Response;
+  context.self.location={origin:'https://kg.example'};
+  context.self.registration={scope:'https://kg.example/'};
+  context.caches={open:async()=>({match:async()=>new Response('<h1>Saved app</h1>')})};
+  let result;
+  handlers.get('fetch')({request:{method:'GET',mode:'navigate',url:'https://kg.example/'},respondWith:p=>result=p});
+  assert.equal(await (await result).text(),'<h1>Saved app</h1>');
 });
