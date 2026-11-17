@@ -35,7 +35,7 @@ async function installation({hasWaiting=true}={}) {
   vm.runInNewContext(installSource,context,{filename:'offline/install.js'});
   for(const fn of events.get('window-load')||[]) await fn();
   const emit=name=>{for(const fn of [...(events.get(name)||[])]) fn();};
-  return {registration,waitingWorker,messages,notes,get offered(){return offered;},get reloads(){return reloads;},get checks(){return checks;},
+  return {check:()=>page.KGCheckAppUpdate(),navigator:context.navigator,registration,waitingWorker,messages,notes,get offered(){return offered;},get reloads(){return reloads;},get checks(){return checks;},
     get timeouts(){return timers.size;},set safe(value){safe=value;},emit,
     triggerTimeout(){for(const fn of [...timers.values()]) fn();}};
 }
@@ -105,6 +105,7 @@ test('offline toolbar shows a visible update button and disables it while a quiz
   await context.window.KGOffline.ready;
   let approved=0;
   context.window.KGOffline.offerShellUpdate(async()=>{approved++;});
+  assert.match(panel.innerHTML,/Check for app update/);
   assert.match(panel.innerHTML,/New app version downloaded/);
   assert.match(panel.innerHTML,/Update app now/);
   assert.equal(context.window.KGOffline.status().updateAvailable,true);
@@ -116,4 +117,19 @@ test('offline toolbar shows a visible update button and disables it while a quiz
   assert.doesNotMatch(panel.innerHTML,/id="kg-shell-update" disabled/);
   await panel.actions.get('#kg-shell-update:click')();
   assert.equal(approved,1,'The user-visible button delegates to the installer');
+});
+
+
+test('manual check reports results and never activates or reloads automatically',async()=>{
+  const page=await installation({hasWaiting:false});
+  await page.check();assert.equal(page.checks,2);
+  assert.match(page.notes.at(-1),/No new app update/);
+  page.registration.waiting=page.waitingWorker;
+  await page.check();assert.match(page.notes.at(-1),/update is ready/);
+  assert.equal(page.reloads,0);assert.equal(page.messages.length,0);
+  page.navigator.onLine=false;
+  const count=page.checks;await page.check();
+  assert.equal(page.checks,count);assert.match(page.notes.at(-1),/Connect to the internet/);
+  page.navigator.onLine=true;page.registration.update=async()=>{throw Error('Network failure');};
+  await page.check();assert.match(page.notes.at(-1),/Could not check.*Network failure/);
 });
