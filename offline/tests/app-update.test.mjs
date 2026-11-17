@@ -111,10 +111,12 @@ test('offline toolbar shows a visible update button and disables it while a quiz
   assert.equal(context.window.KGOffline.status().updateAvailable,true);
 
   context.window.KGOffline.setQuizBusy(true);
-  assert.match(panel.innerHTML,/Leave the quiz to update safely/);
+  assert.match(panel.innerHTML,/Open the Chart tab to enable the update/);
+  assert.match(panel.innerHTML,/Switch to Chart to update/);
   assert.match(panel.innerHTML,/id="kg-shell-update" disabled/);
   context.window.KGOffline.setQuizBusy(false);
   assert.doesNotMatch(panel.innerHTML,/id="kg-shell-update" disabled/);
+  assert.match(panel.innerHTML,/Update app now/);
   await panel.actions.get('#kg-shell-update:click')();
   assert.equal(approved,1,'The user-visible button delegates to the installer');
 });

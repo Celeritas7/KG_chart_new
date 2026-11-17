@@ -1018,7 +1018,7 @@
       ready.length ? 'Language pack saved. Finish installing the app shell and reopen once while online before going offline.' :
       'No complete pack yet. Sign in and download before taking this edition offline.';
     const updateBlocked=quizBusy || busy || syncing;
-    const updateReason=quizBusy ? 'Leave the quiz to update safely.' :
+    const updateReason=quizBusy ? 'Open the Chart tab to enable the update.' :
       busy ? 'Finish or pause the language-pack download first.' :
       syncing ? 'Wait for synchronization to finish.' : '';
     node.innerHTML=`<section class="kg-offline-toolbar" role="region" aria-label="KG Chart Offline controls">
@@ -1026,7 +1026,7 @@
         <span><strong>New app version downloaded.</strong> Your saved packs and unsent study progress will be kept.
           ${updateReason ? esc(updateReason) : 'Apply it when you are ready.'}
           ${shellUpdateError ? `<span class="kg-offline-update-error">${esc(shellUpdateError)}</span>` : ''}</span>
-        <button id="kg-shell-update" ${updateBlocked || applyingShellUpdate?'disabled':''}>${applyingShellUpdate?'Updating…':'Update app now'}</button>
+        <button id="kg-shell-update" ${updateBlocked || applyingShellUpdate?'disabled':''}>${applyingShellUpdate?'Updating…':quizBusy?'Switch to Chart to update':busy?'Pause the pack download to update':syncing?'Waiting for sync…':'Update app now'}</button>
       </div>` : ''}
       <details ${panelOpen ? 'open' : ''}>
         <summary><strong>Study offline</strong> <span class="kg-offline-pill">${offline?'Offline':'Connected'}</span>
