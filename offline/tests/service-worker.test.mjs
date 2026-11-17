@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
+import { createServer } from 'node:http';
 import { createHash, webcrypto } from 'node:crypto';
 import { IDBFactory } from 'fake-indexeddb';
 
@@ -248,4 +249,57 @@ test('read-only shell audit detects corruption without repairing or deleting sav
   await cache.put('./assets/app.js',new Response('corrupted'));
   await audit();assert.equal(reply.ok,false);
   assert.equal(await (await cache.match('./assets/app.js')).text(),'corrupted');
+});
+
+
+// Use a real followed HTTP redirect: synthetic new Response fixtures lose the
+// URL-list metadata which made the old tests miss the browser rejection.
+async function redirectedHTML(t) {
+  const server=createServer((req,res)=>{
+    if(req.url==='/index.html') {res.writeHead(308,{Location:'/'});res.end();return;}
+    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Content-Security-Policy':"default-src 'self'"});
+    res.end('<h1>KG Chart</h1>');
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
+  const response=await fetch(`http://127.0.0.1:${server.address().port}/index.html`);
+  assert.equal(response.redirected,true);
+  return response;
+}
+function browserNavigationResponse(response) {
+  // Fetch standard HTTP fetch: a non-follow request with a multi-URL response
+  // is a network error, even if respondWith resolved and the bytes hash correctly.
+  assert.equal(response.redirected,false,'navigation redirect=manual must not receive a followed redirect');
+  return response;
+}
+
+test('hash-valid redirected HTML survives cached navigation and a fresh worker restart',async t=>{
+  const w=worker('v-one');await w.event('install');
+  const cache=w.caches.get('kg-offline-shell-v-one');
+  await cache.put('./index.html',await redirectedHTML(t));
+  let report;
+  await w.event('message',{data:{type:'KG_OFFLINE_AUDIT_SHELL'},source:{id:'tab'},ports:[{postMessage:v=>report=v}]});
+  assert.equal(report.ok,true,'Content hashes alone do not detect the navigation error');
+  for(const instance of [w,worker('v-one',w.caches,{networkDown:true})]) {
+    const response=browserNavigationResponse(await instance.event('fetch',{request:{method:'GET',mode:'navigate',redirect:'manual',url:scope}}));
+    assert.equal(response.status,200);
+    assert.equal(response.headers.get('Content-Type'),'text/html; charset=utf-8');
+    assert.equal(response.headers.get('Content-Security-Policy'),"default-src 'self'");
+    assert.equal(await response.text(),'<h1>KG Chart</h1>');
+  }
+  assert.equal((await cache.match('./index.html')).redirected,true,'Existing cache remains intact');
+});
+
+test('retry fallback also normalizes old redirected navigation without deleting packs',async t=>{
+  const w=worker('v-one');await w.event('install');
+  const cache=w.caches.get('kg-offline-shell-v-one');
+  await cache.put('./index.html',await redirectedHTML(t));
+  const pack=await w.cacheStorage.open('kg-offline-pack-test-preserve');
+  await pack.put('./picture.jpg',new Response('saved picture'));
+  const original=cache.match.bind(cache);let reads=0;
+  cache.match=async (...args)=>{if(++reads===1)throw Error('Transient read failure');return original(...args);};
+  const offline=worker('v-one',w.caches,{networkDown:true});
+  const response=browserNavigationResponse(await offline.event('fetch',{request:{method:'GET',mode:'navigate',redirect:'manual',url:scope}}));
+  assert.equal(await response.text(),'<h1>KG Chart</h1>');
+  assert.equal(await (await pack.match('./picture.jpg')).text(),'saved picture');
 });
