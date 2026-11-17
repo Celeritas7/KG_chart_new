@@ -1000,6 +1000,14 @@
     notify();
   }
 
+  function openSettings() {
+    const dialog=document.getElementById('kg-settings-dialog');
+    if(!dialog || dialog.open) return;
+    panelOpen=true;
+    renderPanel();
+    dialog.showModal();
+  }
+
   function renderPanel() {
     const node=document.getElementById('kg-offline-panel');
     if(!node) return;
@@ -1169,6 +1177,7 @@
   }
 
   window.KGOffline={
+    openSettings,
     ready:bounded(init(), 'Opening saved lessons', 20000).catch(e=>{fatal(e);throw e;}), wrapClient,afterVerified,downloadPack,
     setLanguage:value=>{studyLanguage=value;},
     pause:()=>{pauseRequested=true;},sync,exportRecovery,importRecovery,

@@ -1,4 +1,19 @@
 /* Small offline controls. Learner pages and quiz styles still come from the shared Tailwind build. */
+.kg-learning-tabs {flex-wrap:wrap;}
+.kg-settings-open {display:inline-flex;align-items:center;gap:.4rem;margin-left:auto;padding:.5rem .75rem;min-height:44px;flex-shrink:0;border-radius:.5rem;background:rgb(255 255 255 / .2);color:white;font-weight:600;white-space:nowrap;}
+.kg-settings-open:hover {background:rgb(255 255 255 / .3);}
+.kg-auth-settings {display:flex;justify-content:flex-end;margin-bottom:1rem;}
+.kg-auth-settings .kg-settings-open {background:#e7f8f2;color:#075e54;border:1px solid #9bcabf;}
+.kg-settings-dot {width:.5rem;height:.5rem;border-radius:50%;background:#fde047;}
+.kg-settings-dialog {width:min(720px,calc(100% - 1rem));max-width:none;height:auto;max-height:90vh;max-height:90dvh;margin:auto;padding:0;border:1px solid #99caba;border-radius:1rem;background:#e7f8f2;color:#164e43;font-family:'DM Sans',sans-serif;overflow:hidden;}
+.kg-settings-dialog[open] {display:flex;flex-direction:column;}
+.kg-settings-dialog::backdrop {background:rgb(0 0 0 / .45);}
+.kg-settings-heading {display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.6rem 1rem;background:white;border-bottom:1px solid #b2dfd1;flex-shrink:0;}
+.kg-settings-heading h2 {font-size:1.15rem;font-weight:700;}
+.kg-settings-close {min-height:44px;padding:.5rem .8rem;border:1px solid #9bcabf;border-radius:.55rem;color:#075e54;font-weight:600;}
+.kg-settings-content {overflow-y:auto;overscroll-behavior:contain;min-height:0;}
+.kg-settings-open:focus-visible,.kg-settings-close:focus-visible {outline:3px solid #fbbf24;outline-offset:2px;}
+.kg-settings-dialog select,.kg-settings-dialog input[type=file] {max-width:100%;min-width:0;}
 .kg-offline-start { margin: 3rem auto; max-width: 30rem; text-align: center; font: 600 1rem 'DM Sans',sans-serif; color: #075e54; }
 .kg-offline-toolbar { position: relative; z-index: 70; background: #e7f8f2; border-bottom: 1px solid #99caba; color: #164e43; font: 400 .9rem 'DM Sans',sans-serif; }
 .kg-offline-update { display:flex;align-items:center;justify-content:space-between;gap:.8rem;flex-wrap:wrap;padding:.7rem 1rem;background:#fef3c7;border-bottom:1px solid #d3a858;color:#713f12;line-height:1.45; }
