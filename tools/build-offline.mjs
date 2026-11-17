@@ -90,6 +90,8 @@ for (const [from, to] of [
   ['icons/kg-brand.svg', 'icons/kg-brand.svg'],
   ['icons/icon-192.png', 'icons/icon-192.png'], ['icons/apple-touch-icon.png', 'icons/apple-touch-icon.png'],
 ]) await write(to, await fs.readFile(path.join(root, from)));
+// Embed the page version so stale page code can be distinguished from a new worker.
+await write('js/offline-runtime.js', 'window.KG_APP_VERSION = ' + JSON.stringify(rev) + ';\n' + await read('offline/runtime.js'));
 // Keep online player source untouched; share playback and replace only catalog loading.
 const player = await read('js/kg-audio.js');
 const start = player.indexOf('  function loadManifest(lang) {');

@@ -122,6 +122,9 @@ async function ownerFor(clientId) {
 }
 
 self.addEventListener('message', event => {
+  if (event.data?.type === 'KG_OFFLINE_GET_VERSION') {
+    event.source?.postMessage({ type: 'KG_OFFLINE_VERSION', revision: 'APP_REVISION' });
+  }
   if (event.data?.type === 'KG_OFFLINE_APPLY_UPDATE' && event.source?.id) {
     event.waitUntil((async () => {
       // A waiting worker is installed only after manifest hashes were verified.
@@ -138,7 +141,11 @@ self.addEventListener('message', event => {
         if (!await cache.match('./' + file.path)) throw Error('New app shell is incomplete');
       }
       await self.skipWaiting();
-    })());
+      event.ports?.[0]?.postMessage({ ok: true, revision: 'APP_REVISION' });
+    })().catch(error => {
+      if (event.ports?.[0]) event.ports[0].postMessage({ ok: false, error: error.message });
+      else throw error;
+    }));
   }
   if (event.data?.type === 'KG_OFFLINE_OWNER' && /^[\da-f-]{36}$/i.test(event.data.id || '') && event.source?.id) {
     try {
