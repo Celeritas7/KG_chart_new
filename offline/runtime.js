@@ -1041,6 +1041,7 @@
               <button id="kg-sync" ${!currentEnrollment()||syncing||offline?'disabled':''}>${syncing?'Syncing…':'Sync now'}</button>
               <button id="kg-verify" ${checkingReadiness||busy||syncing||quizBusy?'disabled':''}>${checkingReadiness?'Checking saved files…':'Check offline readiness'}</button>
               <button id="kg-report" ${readinessReport?'':'disabled'}>Export check report</button>
+              <button id="kg-check-app-update">Check for app update</button>
               <button id="kg-repair">Repair app files</button>
               <button id="kg-export" ${!currentEnrollment()?'disabled':''}>Export recovery</button>
             </div>
@@ -1063,6 +1064,10 @@
       </details>
     </section>`;
     node.querySelector('details')?.addEventListener('toggle',e=>{panelOpen=e.target.open;});
+    node.querySelector('#kg-check-app-update')?.addEventListener('click',()=>{
+      if(window.KGCheckAppUpdate) window.KGCheckAppUpdate();
+      else {progress.phase='App updater is not ready. Reopen while connected and try again.';notify();}
+    });
     node.querySelector('#kg-pack-lang')?.addEventListener('change',e=>{selectedLang=e.target.value;renderPanel();});
     node.querySelector('#kg-shell-update')?.addEventListener('click',async()=>{
       if(!pendingShellUpdate || quizBusy || busy || syncing || applyingShellUpdate) return;

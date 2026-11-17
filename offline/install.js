@@ -5,6 +5,23 @@
     return;
   }
 
+  let manualCheck = null, checking = false;
+  window.KGCheckAppUpdate = async () => {
+    const notice = text => window.KGOffline?.notice(text);
+    if (!navigator.onLine) return notice('Connect to the internet to check for an app update.');
+    if (!manualCheck) return notice('App updater is not ready. Reopen while connected and try again.');
+    if (checking) return notice('Already checking for an app update…');
+    checking = true;
+    notice('Checking for an app update…');
+    let timer;
+    try {
+      await Promise.race([manualCheck(), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Error('Update check timed out. Try again while connected.')), 20000);
+      })]);
+    } catch(e) { notice('Could not check for an app update: ' + e.message); }
+    finally { clearTimeout(timer); checking = false; }
+  };
+
   window.addEventListener('load', async () => {
     try {
       const registration = await navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' });
@@ -42,6 +59,17 @@
         }));
       };
 
+      manualCheck = async () => {
+        await registration.update();
+        if (registration.waiting) {
+          offerWaitingUpdate();
+          window.KGOffline?.notice('An app update is ready. Use Update app now when you have finished studying.');
+        } else if (registration.installing) {
+          window.KGOffline?.notice('Downloading app update. Keep the app open; Update app now will appear when ready.');
+        } else {
+          window.KGOffline?.notice('No new app update was found.');
+        }
+      };
       offerWaitingUpdate();
       const watched = new WeakSet();
       const watchInstalling = worker => {
