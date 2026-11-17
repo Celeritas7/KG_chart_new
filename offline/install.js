@@ -63,7 +63,7 @@
         await registration.update();
         if (registration.waiting) {
           offerWaitingUpdate();
-          window.KGOffline?.notice('An app update is ready. Use Update app now when you have finished studying.');
+          window.KGOffline?.notice('An app update is ready. See the update banner above Study offline for the next step.');
         } else if (registration.installing) {
           window.KGOffline?.notice('Downloading app update. Keep the app open; Update app now will appear when ready.');
         } else {
