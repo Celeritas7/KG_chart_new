@@ -1033,7 +1033,7 @@
             {colorCode ? (
               <div className="w-16 h-16 rounded-xl shadow-inner border-2 border-gray-200" style={{ backgroundColor: colorCode }} />
             ) : imageError || !item.image_filename ? (
-              <div className="text-5xl opacity-50">📷</div>
+              <div className="text-5xl opacity-50">{item.extra_data?.content_type === 'person_name' ? '👤' : '📷'}</div>
             ) : (
               <img src={getImageUrl(topicId, item.image_filename)} alt={item.display_text}
                 className="max-w-full max-h-full object-contain" onError={() => setImageError(true)} />
@@ -1123,7 +1123,7 @@
                 {colorCode ? (
                   <div className="w-24 h-24 rounded-xl shadow-lg" style={{ backgroundColor: colorCode }} />
                 ) : imageError || !item.image_filename ? (
-                  <div className="text-6xl opacity-50">📷</div>
+                  <div className="text-6xl opacity-50">{item.extra_data?.content_type === 'person_name' ? '👤' : '📷'}</div>
                 ) : (
                   <img src={getImageUrl(topicId, item.image_filename)} alt={item.display_text}
                     className="max-w-full max-h-full object-contain" onError={() => setImageError(true)} />
@@ -1640,7 +1640,7 @@
       return { open, setOpen, playing, idx: pos.idx, rep: pos.rep, settings, setSettings, play, pause, jump, close, current: playing || open ? items[pos.idx] : null };
     }
 
-    function ChartView({ topic, vocabulary, ratings, onRate, languageCode, showEnglish, onToggleEnglish, meaningName }) {
+    function ChartView({ topic, vocabulary, ratings, onRate, languageCode, showEnglish, onToggleEnglish, meaningName, onPracticeTyping }) {
       const { user } = useAuth();
       const [selectedItem, setSelectedItem] = useState(null);
       const [flagMode, setFlagMode] = useState(false);
@@ -1699,6 +1699,14 @@
               </div>
             </div>
           </div>
+
+          {topic.id === 'friends_names' && (
+            <div className="mb-4 bg-jade-50 border border-jade-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+              <div><h2 className="font-bold text-jade-800">Friends’ names</h2>
+                <p className="text-sm text-gray-600">Copy each name, then try typing it from memory with your Burmese keyboard.</p></div>
+              <button onClick={onPracticeTyping} className="px-4 py-3 bg-jade-600 text-white rounded-xl font-semibold hover:bg-jade-700">⌨️ Practise names</button>
+            </div>
+          )}
 
           <div className="flex items-center justify-between mb-4 bg-white rounded-xl p-3 shadow-sm">
             <div className="flex items-center gap-3 flex-wrap">
@@ -3385,10 +3393,13 @@
       if (mode === 'colours') return <ColourQuizView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
       if (mode === 'say') return <SayItView topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
       if (mode === 'speak') return <SpeakView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
-      if (mode === 'typing') return <TypingView vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
+      if (mode === 'typing') return <TypingView key={props.languageCode} topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
       return mode === 'sentences'
         ? <SentenceQuizView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />
-        : <WordQuizView {...props} modeToggle={toggle} />;
+        : <WordQuizView {...props} modeToggle={toggle}
+            topics={props.topics.filter(t => t.id !== 'friends_names')}
+            vocabulary={props.vocabulary.filter(v => v.topic_id !== 'friends_names')}
+            poolVocabulary={(props.poolVocabulary || props.vocabulary).filter(v => v.topic_id !== 'friends_names')} />;
     }
 
     function SentenceQuizView({ languageCode, user, meaningName, modeToggle }) {
@@ -4882,12 +4893,13 @@
       return { ok: i, total: a.length, wrong, done: a.length === b.length && i === b.length };
     }
 
-    function TypingView({ vocabulary, languageCode, user, modeToggle, meaningName }) {
+    function TypingView({ topics = [], vocabulary, languageCode, user, modeToggle, meaningName }) {
       const rules = React.useContext(RulesContext);
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       const saved0 = loadFromStorage(TYPING_SETTINGS_KEY, {});
       const [mode, setMode] = useState(saved0.mode === 'recall' ? 'recall' : 'copy');
       const [source, setSource] = useState(saved0.source === 'sentences' ? 'sentences' : 'words');
+      const [topicId, setTopicId] = useState(saved0.languageCode === languageCode ? saved0.topicId || 'all' : 'all');
       const [duration, setDuration] = useState(TYPING_DURATIONS.includes(saved0.duration) ? saved0.duration : 60);
       const [sentences, setSentences] = useState(null);
       const [phase, setPhase] = useState('setup'); // setup | run | done
@@ -4907,7 +4919,7 @@
       const statsRef = React.useRef(stats); statsRef.current = stats;
       const answersRef = React.useRef(answers); answersRef.current = answers;
 
-      useEffect(() => { saveToStorage(TYPING_SETTINGS_KEY, { mode, source, duration }); }, [mode, source, duration]);
+      useEffect(() => { saveToStorage(TYPING_SETTINGS_KEY, { mode, source, duration, topicId, languageCode }); }, [mode, source, duration, topicId, languageCode]);
 
       // Sentences come from the same table as the sentence quizzes
       useEffect(() => {
@@ -4920,12 +4932,13 @@
       }, [source, languageCode]);
 
       const priv = React.useContext(PrivateLessonsContext);
+      const typingTopics = topics.filter(t => !t.locked && vocabulary.some(v => v.topic_id === t.id && v.translation?.native_text?.trim()));
       const pool = useMemo(() => {
         if (source === 'sentences') return (sentences || []).filter(s => !priv.groups.has(s.group_name)).map(s => ({ kind: 's', id: s.id, text: s.native_text, meaning: sentenceMeaning(s, meaningName) }));
-        return vocabulary.filter(v => v.translation?.native_text?.trim()).map(v => ({ kind: 'w', id: v.id, text: v.translation.native_text, meaning: v.display_text || v.english_text, hint: v.translation.devanagari, v }));
-      }, [source, sentences, vocabulary, priv, meaningName]);
+        return vocabulary.filter(v => v.translation?.native_text?.trim() && (topicId === 'all' || v.topic_id === topicId)).map(v => ({ kind: 'w', id: v.id, text: v.translation.native_text, meaning: v.display_text || v.english_text, hint: v.translation.devanagari, v }));
+      }, [source, sentences, vocabulary, priv, meaningName, topicId]);
 
-      const bestKey = `${languageCode}|${mode}|${source}`;
+      const bestKey = `${languageCode}|${mode}|${source}${source === 'words' && topicId !== 'all' ? '|' + topicId : ''}`;
       const [, setBestsSynced] = useState(0);
       useEffect(() => {
         let cancelled = false;
@@ -5063,6 +5076,17 @@
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Type</label>
                   {seg(source, setSource, [['words', '🔤 Words'], ['sentences', '💬 Sentences']])}
                 </div>
+                {source === 'words' && (
+                  <div>
+                    <label htmlFor="typing-topic" className="block text-sm font-semibold text-gray-700 mb-2">Topic</label>
+                    <select id="typing-topic" value={topicId} onChange={e => setTopicId(e.target.value)} className="w-full px-3 py-3 border border-gray-300 rounded-xl bg-white">
+                      <option value="all">All unlocked topics</option>
+                      {topicId !== 'all' && !typingTopics.some(t => t.id === topicId) && <option value={topicId} disabled>Saved topic is unavailable — choose another</option>}
+                      {typingTopics.map(t => <option key={t.id} value={t.id}>{t.icon} {t.id === 'friends_names' ? 'Friends’ names' : t.translation?.title_native || t.id.replace(/_/g, ' ')}</option>)}
+                    </select>
+                    <p className="text-xs text-gray-500 mt-2">{pool.length} {pool.length === 1 ? 'word' : 'words'} available. {topicId === 'friends_names' ? 'Practise the saved Burmese spelling of each name.' : 'Choose one topic to focus your practice.'}</p>
+                  </div>
+                )}
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Time</label>
                   {seg(duration, setDuration, TYPING_DURATIONS.map(d => [d, d < 60 ? `${d} s` : `${d / 60} min`]))}
@@ -5138,7 +5162,7 @@
               </>
             ) : (
               <>
-                {item.kind === 'w' && (
+                {item.kind === 'w' && (item.v.extra_data?.colorCode || item.v.image_filename) && (
                   <div className="w-28 h-28 mx-auto flex items-center justify-center mb-3">
                     {item.v.extra_data?.colorCode ? <div className="w-24 h-24 rounded-xl shadow-lg" style={{ backgroundColor: item.v.extra_data.colorCode }} />
                       : item.v.image_filename ? <img src={getImageUrl(item.v.topic_id, item.v.image_filename)} alt="" className="max-w-full max-h-full object-contain" /> : null}
@@ -5680,7 +5704,8 @@
           const manual = !!raw?.unlocks?.has(t.id);
           if (nowComplete && !done.has(t.id)) newlyComplete.push(t.id);
           status[t.id] = { unlocked: open || prevComplete || manual || complete, complete, faced: facedCount, total: words.length, steps, stepsTotal: words.length * stepsPerWord, manual };
-          prevComplete = complete;
+          // Personal name typing is extra practice; it must not gate the next regular topic.
+          if (t.id !== 'friends_names') prevComplete = complete;
         });
         const annotated = visible.map(t => ({ ...t, locked: !status[t.id].unlocked }));
         const unlockedIds = new Set(annotated.filter(t => !t.locked).map(t => t.id));
@@ -6024,7 +6049,12 @@
                 )}
                 {activeView === 'chart' && !currentTopic?.locked && (
                   <ChartView topic={currentTopic} vocabulary={topicVocabulary} ratings={ratings} onRate={updateRating}
-                    languageCode={currentLanguage} showEnglish={showEnglish} onToggleEnglish={setShowEnglish} meaningName={meaningName} />
+                    languageCode={currentLanguage} showEnglish={showEnglish} onToggleEnglish={setShowEnglish} meaningName={meaningName}
+                    onPracticeTyping={() => {
+                      saveToStorage(QUIZ_MODE_KEY, 'typing');
+                      saveToStorage(TYPING_SETTINGS_KEY, { ...loadFromStorage(TYPING_SETTINGS_KEY, {}), source: 'words', topicId: currentTopic.id, languageCode: currentLanguage });
+                      setActiveView('quiz');
+                    }} />
                 )}
                 {activeView === 'quiz' && (
                   <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} />
