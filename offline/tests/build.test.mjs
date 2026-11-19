@@ -24,6 +24,14 @@ test('offline output bundles scripts, compiled styles and fonts, with no runtime
   assert.match(await fs.readFile(path.join(built,'assets/app.js'),'utf8'),/KGOffline\.wrapClient/);
 });
 
+test('offline build includes the updated Burmese pronunciation rules',async()=>{
+  const source=await fs.readFile(path.join(root,'offline/language-utils/burmese.js'),'utf8');
+  const bundled=await fs.readFile(path.join(built,'language-utils/burmese.js'),'utf8');
+  assert.equal(bundled,source,'Offline should use the pinned converter source exactly');
+  assert.match(bundled,/\['ဒိန်ခဲ', 'देंघे'\]/);
+  assert.match(await fs.readFile(path.join(built,'assets/app.js'),'utf8'),/toPronunciation/);
+});
+
 test('app shell manifest has a file hash for every locally bundled asset',async()=>{
   const manifest=JSON.parse(await fs.readFile(path.join(built,'shell-manifest.json'),'utf8'));
   const installed=await fs.readdir(path.join(built,'language-utils'));
