@@ -182,11 +182,12 @@
         code = code.replace(/export\s+function\s+/g, 'function ');
         code = code.replace(/export\s+\{[^}]*\};?/g, '');
         code = code.replace(/export\s+const\s+/g, 'const ');
-        // Wrap and execute to extract toDev function
-        const wrapper = new Function(`${code}\nreturn { toDev: typeof toDev === 'function' ? toDev : null, toRoman: typeof toRoman === 'function' ? toRoman : null, breakSyllables: typeof breakSyllables === 'function' ? breakSyllables : null };`);
+        // Burmese's learner-friendly pronunciation includes sandhi and reported corrections.
+        // Other languages continue to use their existing literal converter.
+        const wrapper = new Function(`${code}\nreturn { toDev: typeof toDev === 'function' ? toDev : null, toPronunciation: typeof toPronunciation === 'function' ? toPronunciation : null, toRoman: typeof toRoman === 'function' ? toRoman : null, breakSyllables: typeof breakSyllables === 'function' ? breakSyllables : null };`);
         const mod = wrapper();
         const converter = {
-          toDevanagari: mod.toDev || ((t) => t),
+          toDevanagari: (langCode === 'my' && mod.toPronunciation) || mod.toDev || ((t) => t),
           toRoman: mod.toRoman || ((t) => t),
           breakSyllables: mod.breakSyllables || null,
           usePronunciation: info.type === 'chinese',
