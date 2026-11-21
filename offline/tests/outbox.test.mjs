@@ -140,10 +140,33 @@ test('offline session + answers commit to an account-scoped outbox before acknow
   assert.match(context.window.KGOffline.status().syncError,/Rating conflict/);
   assert.equal(remote.rows.kg_chart_user_ratings[0].rating,3,'Remote rating protected');
 
+  // A later change to the same word must remain behind its first conflicted
+  // rating, but unrelated quiz history must still reach Supabase.
+  const again=await facade.from('kg_chart_user_ratings').upsert({...baseline,rating:4,
+    updated_at:'2026-11-06T00:00:00.000Z',last_reviewed_at:'2026-11-06T00:00:00.000Z'},
+    {onConflict:'user_id,vocabulary_id,language_code'});
+  assert.equal(again.error,null);
+  const nextSession=await facade.from('kg_chart_quiz_sessions').insert({
+    user_id:UID,language_code:'my',topic_id:'food',quiz_type:'image_to_native',
+    total_questions:1,correct_answers:1,created_at:new Date().toISOString()
+  }).select('id').single();
+  assert.equal(nextSession.error,null);
+  const nextAnswer=await facade.from('kg_chart_quiz_answers').insert({
+    session_id:nextSession.data.id,vocabulary_id:'vocab-one',is_correct:true
+  });
+  assert.equal(nextAnswer.error,null);
+  assert.equal(context.window.KGOffline.status().pending,4,'Two ratings and two new quiz records pending');
+  await context.window.KGOffline.sync();
+  assert.equal(context.window.KGOffline.status().pending,2,'Only the two conflicting ratings remain');
+  assert.match(context.window.KGOffline.status().syncError,/Rating conflict retained/);
+  assert(remote.rows.kg_chart_quiz_sessions.some(s=>s.id===nextSession.data.id),'Unrelated quiz session uploaded');
+  assert(remote.rows.kg_chart_quiz_answers.some(a=>a.session_id===nextSession.data.id),'Unrelated quiz answer uploaded');
+  assert.equal(remote.rows.kg_chart_user_ratings[0].rating,3,'Server rating not overwritten by later local rating');
+
   const cross=await facade.from('kg_chart_user_ratings').upsert({user_id:'55555555-5555-4555-8555-555555555555',
     vocabulary_id:'vocab-one',language_code:'my',rating:1});
   assert.match(cross.error.message,/Account mismatch/);
-  assert.equal(context.window.KGOffline.status().pending,1,'Cross-account write rejected');
+  assert.equal(context.window.KGOffline.status().pending,2,'Cross-account write rejected');
 
   const getUser=live.auth.getUser;
   let reconnectChecks=0;
@@ -153,7 +176,7 @@ test('offline session + answers commit to an account-scoped outbox before acknow
   // Synchronization runs immediately even though pack updates default to Wi-Fi only.
   await new Promise(resolve=>setImmediate(resolve));
   assert(reconnectChecks>0,'Reconnect tries progress sync on mobile data');
-  assert.equal(context.window.KGOffline.status().pending,1,'Expired login preserves queued change');
+  assert.equal(context.window.KGOffline.status().pending,2,'Expired login preserves queued change');
   assert.match(context.window.KGOffline.status().syncError,/Session expired/);
   live.auth.getUser=async()=>{await facade.auth.signOut();return getUser();};
   await context.window.KGOffline.sync();
@@ -164,7 +187,7 @@ test('offline session + answers commit to an account-scoped outbox before acknow
   const afterLogout=await open();
   const queued=await new Promise(resolve=>{const r=afterLogout.transaction('outbox').objectStore('outbox').getAll();r.onsuccess=()=>resolve(r.result);});
   afterLogout.close();
-  assert.equal(queued.length,1,'Logout preserves unsent work for future reauthentication');
+  assert.equal(queued.length,2,'Logout preserves unsent work for future reauthentication');
 
   // A partially downloaded update must NOT switch the working pack. Resume the
   // staged file with the same revision rather than fetching it a second time.

@@ -654,7 +654,9 @@
         if(event.kind==='delete' && !remote) return;
         // Concurrent remote deletion/update must be resolved, never overwritten blindly.
         if(remoteStamp!==baseStamp && remoteStamp!==row.updated_at) {
-          throw Error(`Rating conflict on ${row.vocabulary_id}. Server and device changed the same word; export unsynced work before resolving.`);
+          const conflict = Error(`Rating conflict on ${row.vocabulary_id}. Server and device changed the same word; export unsynced work before resolving.`);
+          conflict.code = 'KG_RATING_CONFLICT';
+          throw conflict;
         }
       }
       if(table===TABLES.prefs && remote) {
@@ -721,11 +723,33 @@
   async function doSync() {
     if(syncing || busy || !currentEnrollment() || !navigator.onLine) return;
     const guard=accountGuard();
+    const conflictedRatingKeys=new Map(); // Preserve one word's queued rating order.
+    let deferredRatings=0;
+    const conflictMessage=()=>deferredRatings
+      ? `Rating conflict retained for ${conflictedRatingKeys.size} word(s) (${deferredRatings} pending rating change(s)). Export recovery before resolving.`
+      : '';
     syncing=true;syncError='';notify();
     try {
       await fetchOwner();guard();
       for(const event of await outbox()) {
-        guard();await syncEvent(event);guard();
+        guard();
+        const ratingKey=event.table===TABLES.ratings
+          ? rowKey(event.row,PRIMARY[TABLES.ratings]) : null;
+        // If an earlier rating for this word conflicted, later changes for the
+        // same word must stay in order. Do not silently overwrite either version.
+        if(ratingKey && conflictedRatingKeys.has(ratingKey)) {
+          deferredRatings++;
+          continue;
+        }
+        try { await syncEvent(event);guard(); }
+        catch(e) {
+          // A rating conflict must not block unrelated quiz sessions/answers.
+          // Only the conflicting rating events remain in the local outbox.
+          if(event.table!==TABLES.ratings || e?.code!=='KG_RATING_CONFLICT') throw e;
+          conflictedRatingKeys.set(ratingKey,event.row.vocabulary_id);
+          deferredRatings++;
+          continue;
+        }
         await transact(['outbox'],tx=>tx.objectStore('outbox').delete(event.id));
         pendingCount--;notify();
       }
@@ -746,9 +770,11 @@
           };
         });
       }
-      guard();await pullRemote();guard(); // pulls remote edits even if nothing was queued
-    } catch(e) {syncError=e.message||String(e);}
-    finally {syncing=false;await updatePending();}
+      guard();await pullRemote();guard(); // Replays unresolved local ratings over fresh server data.
+      if(deferredRatings) syncError=conflictMessage()+' Other study changes synchronized.';
+    } catch(e) {
+      syncError=(deferredRatings?conflictMessage()+' Other sync error: ':'')+(e.message||String(e));
+    } finally {syncing=false;await updatePending();}
   }
   async function sync() {
     // Web Locks serialize multiple tabs; UUID PKs and unique rating keys also protect retries.
