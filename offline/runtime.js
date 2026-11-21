@@ -621,6 +621,25 @@
     channel?.postMessage({type:'changed',owner});notify();
   }
 
+  // PostgreSQL can return the same timestamptz with an offset (+00:00)
+  // while JavaScript Date.toISOString() uses Z. Verifying raw strings would
+  // reject an already-saved row and strand every event behind it in the outbox.
+  // Accept the *same instant* only; retain genuinely different saved values.
+  function sameTimestamp(a,b) {
+    if(a==null || b==null) return a==null && b==null;
+    const left=Date.parse(a),right=Date.parse(b);
+    return Number.isFinite(left) && Number.isFinite(right)
+      ? left===right : String(a)===String(b);
+  }
+  function timestampAtLeast(a,b) {
+    const left=Date.parse(a),right=Date.parse(b);
+    return Number.isFinite(left) && Number.isFinite(right) && left>=right;
+  }
+  function sameAcknowledgedField(key,saved,queued) {
+    return ['last_reviewed_at','completed_at'].includes(key)
+      ? sameTimestamp(saved,queued) : String(saved)===String(queued);
+  }
+
   async function syncEvent(event) {
     if(event.ownerId!==owner) throw Error('Outbox account isolation error');
     const guard=accountGuard();
@@ -650,10 +669,10 @@
       if(table===TABLES.ratings) {
         const remoteStamp=remote?.updated_at||remote?.last_reviewed_at||null;
         const baseStamp=event.baseUpdatedAt||null;
-        if(remote && event.kind==='upsert' && remote.rating===row.rating && remote.last_reviewed_at===row.last_reviewed_at) return;
+        if(remote && event.kind==='upsert' && remote.rating===row.rating && sameTimestamp(remote.last_reviewed_at,row.last_reviewed_at)) return;
         if(event.kind==='delete' && !remote) return;
         // Concurrent remote deletion/update must be resolved, never overwritten blindly.
-        if(remoteStamp!==baseStamp && remoteStamp!==row.updated_at) {
+        if(!sameTimestamp(remoteStamp,baseStamp) && !sameTimestamp(remoteStamp,row.updated_at)) {
           const conflict = Error(`Rating conflict on ${row.vocabulary_id}. Server and device changed the same word; export unsynced work before resolving.`);
           conflict.code = 'KG_RATING_CONFLICT';
           throw conflict;
@@ -674,7 +693,7 @@
           row.updated_at=remote.updated_at;
         }
       }
-      if(table===TABLES.completions && remote && remote.completed_at>=row.completed_at) return;
+      if(table===TABLES.completions && remote && timestampAtLeast(remote.completed_at,row.completed_at)) return;
     }
     guard();
     let result;
@@ -714,8 +733,9 @@
           table===TABLES.prefs?['audio_voice','audio_muted']:
           table===TABLES.completions?['completed_at']:
           table===TABLES.levels?['level']:[];
-        if(checkFields.some(k=>row[k]!==undefined && String(ack[k])!==String(row[k])))
-          throw Error('Server row differs from the queued update. Nothing was silently discarded.');
+        const mismatch=checkFields.find(k=>row[k]!==undefined && !sameAcknowledgedField(k,ack[k],row[k]));
+        if(mismatch)
+          throw Error(`Server row differs from queued update in ${table}.${mismatch}${row.vocabulary_id?' ('+row.vocabulary_id+')':''}. Nothing was silently discarded.`);
       }
     }
   }
