@@ -1891,7 +1891,7 @@
 
       const save = async (level, unlocked) => {
         saveToStorage(localKey, { level, unlocked });
-        if (state.db && email) await supabase.from(TABLES.userLevels).upsert({ email, language_code: languageCode, level, updated_at: new Date().toISOString() });
+        if (state.db && email) await supabase.from(TABLES.userLevels).upsert({ email, language_code: languageCode, level, unlocked: Math.max(level, unlocked), updated_at: new Date().toISOString() });
       };
       const setLevel = (n) => {
         const level = Math.min(Math.max(n, 1), state.unlocked);

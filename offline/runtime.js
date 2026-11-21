@@ -633,6 +633,20 @@
       for(const key of keys) check=check.eq(key,row[key]);
       const {data:remote,error}=await check.maybeSingle();guard();
       if(error) throw Error(error.message);
+      if(table===TABLES.levels) {
+        // Earlier app builds queued a selected difficulty without the unlocked
+        // field. PostgreSQL defaults the missing unlocked value to 1 on upsert,
+        // violating level <= unlocked when the learner is studying level 2+.
+        // Merge the server's existing unlock with the queued choice. This fixes
+        // already-pending events without editing or discarding the local outbox.
+        const selectedLevel=Number(row.level);
+        const queuedUnlocked=row.unlocked==null?1:Number(row.unlocked);
+        const serverUnlocked=remote?.unlocked==null?1:Number(remote.unlocked);
+        if(![selectedLevel,queuedUnlocked,serverUnlocked].every(
+          n=>Number.isInteger(n)&&n>=1&&n<=4))
+          throw Error('Invalid saved difficulty level. Export recovery before troubleshooting.');
+        row.unlocked=Math.max(selectedLevel,queuedUnlocked,serverUnlocked);
+      }
       if(table===TABLES.ratings) {
         const remoteStamp=remote?.updated_at||remote?.last_reviewed_at||null;
         const baseStamp=event.baseUpdatedAt||null;
