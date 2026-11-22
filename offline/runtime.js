@@ -639,6 +639,16 @@
     return ['last_reviewed_at','completed_at'].includes(key)
       ? sameTimestamp(saved,queued) : String(saved)===String(queued);
   }
+  function sameDuplicateInsertField(table,key,saved,queued) {
+    // A retried quiz insert may already be saved. PostgreSQL serializes
+    // timestamptz with +00:00 while the queued JavaScript value uses Z.
+    // Only these known timestamp columns may compare as instants; IDs,
+    // quiz results and all other fields keep their original strict check.
+    const timestamp=table===TABLES.sessions && ['created_at','completed_at'].includes(key) ||
+      table===TABLES.answers && ['created_at','answered_at'].includes(key);
+    return timestamp ? sameTimestamp(saved,queued) :
+      JSON.stringify(saved ?? null)===JSON.stringify(queued ?? null);
+  }
 
   async function syncEvent(event) {
     if(event.ownerId!==owner) throw Error('Outbox account isolation error');
@@ -706,9 +716,13 @@
       if(result.error && result.error.code==='23505' && row.id) {
         // An upload may have reached the server before the connection died. Confirm the
         // exact immutable row, then acknowledge the retry without duplicating history.
-        const check=await live.from(table).select('*').eq('id',row.id).maybeSingle();
-        if(!check.error && check.data && Object.entries(row).every(([k,v]) =>
-          JSON.stringify(check.data[k] ?? null)===JSON.stringify(v ?? null))) return;
+        const check=await live.from(table).select('*').eq('id',row.id).maybeSingle();guard();
+        if(!check.error && check.data) {
+          const mismatch=Object.entries(row).find(([key,value]) =>
+            !sameDuplicateInsertField(table,key,check.data[key],value));
+          if(!mismatch) return; // Exact saved row: safe to acknowledge the retry.
+          throw Error(`Existing server row differs from queued insert in ${table}.${mismatch[0]}. Nothing was silently discarded.`);
+        }
       }
     } else if(event.kind==='upsert') {
       result=await live.from(table).upsert(row,{onConflict:(PRIMARY[table]||['id']).join(',')});
