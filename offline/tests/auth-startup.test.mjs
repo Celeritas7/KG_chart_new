@@ -62,6 +62,7 @@ async function boot({enrolled=true}={}) {
     document:{getElementById:()=>null,addEventListener(){},hidden:false},
     addEventListener(){},BroadcastChannel:class{addEventListener(){}postMessage(){}},
     URL,Response,Headers,TextEncoder,Blob,AbortController,crypto:webcrypto,console,
+    fetch:async()=>({ok:false}), // The local version probe has no cached response.
     setTimeout:(fn,ms)=>{const timer=setTimeout(fn,ms);timer.unref?.();return timer;},
     clearTimeout};
   vm.runInNewContext(runtime,context,{filename:'offline/runtime.js'});
