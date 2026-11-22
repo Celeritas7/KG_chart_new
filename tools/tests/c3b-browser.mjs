@@ -162,8 +162,9 @@ try{
  await page.evaluate(async()=>{
   const reg=await navigator.serviceWorker.register('/sw.js',{scope:'/',updateViaCache:'none'});
   await navigator.serviceWorker.ready;
-  if(reg.active?.state!=='activated')throw Error('Initial worker not active');
+  // The registration object can lag the ready promise during first activation.
  });
+ await page.waitForFunction(()=>navigator.serviceWorker.controller?.state==='activated',null,{timeout:deadline});
  await loadHarness(page);
  const old=await expectState(page,versions.old);
  assert.equal(await installedRevision(page),versions.old,'real old worker active');
