@@ -159,7 +159,7 @@ async function updateWorker(page,expected){
 }
 try{
  browser=await chromium.launchPersistentContext(profile,{headless:true,serviceWorkers:'allow'});
- const page=await browser.newPage();
+ let page=await browser.newPage();
  await page.route('**/*',route=>route.request().url().startsWith(origin+'/')?route.continue():route.abort());
  await page.goto(origin+'/__c3b__/');
  await page.addScriptTag({url:origin+'/js/offline-pictures.js'});
@@ -185,6 +185,10 @@ try{
  console.log('PASS failed shell install leaves old controlling worker and personal data intact');
 
  broken=false;await updateWorker(page,versions.unified);
+ // A newly opened Home Screen app is a new controlled client, not the old document.
+ await page.close();
+ page=await browser.newPage();
+ await page.route('**/*',route=>route.request().url().startsWith(origin+'/')?route.continue():route.abort());
  await loadHarness(page);
  const firstUnified=await page.evaluate(()=>({page:window.KG_APP_VERSION,unified:window.KG_UNIFIED,sw:navigator.serviceWorker.controller?.state}));
  console.log('C3B first unified navigation',JSON.stringify(firstUnified));
@@ -202,6 +206,9 @@ try{
  console.log('PASS actual Chromium separate → unified worker activation, data unchanged');
 
  edition='old';await updateWorker(page,versions.old);
+ await page.close();
+ page=await browser.newPage();
+ await page.route('**/*',route=>route.request().url().startsWith(origin+'/')?route.continue():route.abort());
  await loadHarness(page);
  if((await page.evaluate(()=>window.KG_APP_VERSION))!==versions.old)await loadHarness(page);
  const rollback=await expectState(page,versions.old);
