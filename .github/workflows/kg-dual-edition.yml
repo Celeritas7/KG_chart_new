@@ -25,11 +25,19 @@ jobs:
       - run: npm ci
       - name: Compile and test both editions from the same SHA
         run: npm run check:unified
-      - name: C3B real Chromium same-origin migration and rollback (disposable localhost only)
+      - name: C3C isolated Chromium migration and rollback (container has no network)
         run: |
-          npm install --no-save --package-lock=false playwright@1.56.1
-          npx playwright install --with-deps chromium
-          node tools/tests/c3b-browser.mjs
+          # Docker --network none prevents ALL external network traffic, including
+          # Chromium service-worker fetches not covered by Playwright page.route.
+          # Repository mounted read-only; only disposable /tmp is writable.
+          docker run --rm --pull=always \
+            --network none --read-only --tmpfs /tmp:rw,exec,size=1024m \
+            --shm-size=1g \
+            --mount type=bind,source="$GITHUB_WORKSPACE",target=/work,readonly \
+            --workdir /work \
+            -e CI=true -e HOME=/tmp -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+            mcr.microsoft.com/playwright:v1.56.1-noble \
+            npm run test:browser-migration
       - name: Verify online source remains unchanged by the offline build
         run: git diff --exit-code -- index.html sw.js manifest.webmanifest js/
       - name: Package the existing online edition
