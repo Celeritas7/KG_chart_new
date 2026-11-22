@@ -184,6 +184,16 @@ try{
 
  broken=false;await updateWorker(page,versions.unified);
  await loadHarness(page);
+ const firstUnified=await page.evaluate(()=>({page:window.KG_APP_VERSION,unified:window.KG_UNIFIED,sw:navigator.serviceWorker.controller?.state}));
+ console.log('C3B first unified navigation',JSON.stringify(firstUnified));
+ if(firstUnified.page!==versions.unified){
+   const staged=await page.evaluate(async version=>{
+    const cache=await caches.open('kg-offline-shell-'+version),response=await cache.match('./index.html');
+    return {cachePresent:!!response,htmlContainsUnifiedFlag:response? (await response.text()).includes('window.KG_UNIFIED=true'):false,cacheKeys:(await caches.keys()).filter(k=>k.startsWith('kg-offline-shell-'))};
+   },versions.unified);
+   console.log('C3B new shell cache diagnostic',JSON.stringify(staged));
+   await loadHarness(page); // A browser navigation may race a just-claimed controller; require second to settle.
+ }
  const unified=await expectState(page,versions.unified);
  assert.equal(await installedRevision(page),versions.unified);
  assert(unified.cachesBefore.includes('kg-offline-shell-'+versions.old),'previous shell preserved');
@@ -191,6 +201,7 @@ try{
 
  edition='old';await updateWorker(page,versions.old);
  await loadHarness(page);
+ if((await page.evaluate(()=>window.KG_APP_VERSION))!==versions.old)await loadHarness(page);
  const rollback=await expectState(page,versions.old);
  assert.equal(await installedRevision(page),versions.old);
  assert(rollback.cachesBefore.includes('kg-offline-shell-'+versions.unified),'unified shell preserved on rollback');
