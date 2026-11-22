@@ -191,7 +191,11 @@ try{
  await page.route('**/*',route=>route.request().url().startsWith(origin+'/')?route.continue():route.abort());
  await loadHarness(page);
  const firstUnified=await page.evaluate(()=>({page:window.KG_APP_VERSION,unified:window.KG_UNIFIED,sw:navigator.serviceWorker.controller?.state}));
- console.log('C3B first unified navigation',JSON.stringify(firstUnified));
+ console.log('C3B first unified navigation',JSON.stringify({...firstUnified,workerRevision:await installedRevision(page)}));
+ console.log('C3B registration after upgrade',JSON.stringify(await page.evaluate(async()=>{
+  const reg=await navigator.serviceWorker.getRegistration('/');
+  return {scope:reg?.scope,active:reg?.active?.state,waiting:reg?.waiting?.state,controllerState:navigator.serviceWorker.controller?.state,controllerSameAsActive:reg?.active===navigator.serviceWorker.controller};
+ })));
  if(firstUnified.page!==versions.unified){
    const staged=await page.evaluate(async version=>{
     const cache=await caches.open('kg-offline-shell-'+version),response=await cache.match(location.origin+'/index.html'),rootResponse=await cache.match(location.origin+'/');
