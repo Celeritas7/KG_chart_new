@@ -116,7 +116,7 @@ async function loadHarness(page){
  console.log('C3B navigation',JSON.stringify({edition,fromServiceWorker:navResponse?.fromServiceWorker(),status:navResponse?.status(),responseUnified:(await navResponse?.text())?.includes('window.KG_UNIFIED=true')}));
  await page.waitForFunction(()=>window.KGOffline?.ready && window.KG_APP_VERSION && window.KGOffline.client,{timeout:deadline});
  await page.waitForFunction(()=>window.KGOffline?.status()?.shellReady===true,null,{timeout:deadline});
- await page.evaluate(async({OWNER,OTHER,PICTURE,LEGACY,AUDIO})=>{
+ await page.evaluate(async({OWNER,OTHER,PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO})=>{
   window.__c3bOwner=OWNER;window.__c3bOther=OTHER;
   window.__c3bPicture=PICTURE;window.__c3bLegacy=LEGACY;window.__c3bAudio=AUDIO;
   window.__c3bZhPicture=ZH_PICTURE;window.__c3bZhAudio=ZH_AUDIO;
