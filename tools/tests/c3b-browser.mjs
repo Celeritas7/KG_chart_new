@@ -1,17 +1,26 @@
 // Real Chromium, one disposable localhost origin and profile. No public network or production accounts.
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {mkdtemp,readFile,rm} from 'node:fs/promises';
+import {mkdtemp,readFile,readdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve,extname} from 'node:path';
 import {chromium} from 'playwright';
 
 const OWNER='88888888-8888-4888-8888-888888888888';
 const OTHER='99999999-9999-4999-8999-999999999999';
-const MEDIA='https://example.supabase.co/storage/v1/object/public/vocabulary-assets/';
-const PICTURE=MEDIA+'pictures/synthetic.jpg';
-const LEGACY=MEDIA+'pictures/legacy.jpg';
+// The app bundle's public-media hostname is only a URL string in this test:
+ // Docker's --network none prevents requests to it from leaving the container.
+const sourceHtml=await readFile('index.html','utf8');
+const publicOrigin=sourceHtml.match(/\bSUPABASE_URL\s*=\s*['"](https:\/\/[a-z0-9-]+\.supabase\.co)['"]/);
+assert(publicOrigin,'Published public-media URL not found in canonical learner source');
+const MEDIA=publicOrigin[1]+'/storage/v1/object/public/vocabulary-assets/';
+const PICTURE=MEDIA+'pictures/synthetic-food.jpg';
+const LEGACY=MEDIA+'pictures/legacy-vegetables.jpg';
 const AUDIO=MEDIA+'audio/my/synthetic.mp3';
+const ZH_PICTURE=MEDIA+'pictures/synthetic-zh.jpg';
+const ZH_AUDIO=MEDIA+'audio/zh/synthetic.mp3';
+const MY_CATALOG=MEDIA+'audio/my/clips.json';
+const ZH_CATALOG=MEDIA+'audio/zh/clips.json';
 const assets={old:resolve('dist-offline'),unified:resolve('dist-unified')};
 const versions={
  old:JSON.parse(await readFile(join(assets.old,'offline-build.json'),'utf8')).appVersion,
@@ -92,7 +101,30 @@ async function loadHarness(page){
  },{OWNER,OTHER,PICTURE,LEGACY,AUDIO});
 }
 async function seed(page){
- await page.evaluate(async({OWNER,OTHER,MEDIA,PICTURE,LEGACY,AUDIO})=>{
+ await page.evaluate(async({OWNER,OTHER,MEDIA,PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO,MY_CATALOG,ZH_CATALOG})=>{
+  const encoder=new TextEncoder();
+  const hash=async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)))
+   .map(x=>x.toString(16).padStart(2,'0')).join('');
+  const samples=[
+   {url:PICTURE,body:'shared-picture-bytes',mime:'image/jpeg'},
+   {url:LEGACY,body:'legacy-picture-bytes',mime:'image/jpeg'},
+   {url:AUDIO,body:'synthetic-audio-bytes',mime:'audio/mpeg'},
+   {url:MY_CATALOG,body:JSON.stringify({m:[],f:[]}),mime:'application/json'},
+   {url:ZH_PICTURE,body:'zh-picture-bytes',mime:'image/jpeg'},
+   {url:ZH_AUDIO,body:'zh-audio-bytes',mime:'audio/mpeg'},
+   {url:ZH_CATALOG,body:JSON.stringify({m:[],f:[]}),mime:'application/json'}
+  ];
+  const files=new Map();
+  for(const file of samples){
+   const bytes=encoder.encode(file.body);
+   files.set(file.url,{...file,bytes,sha256:await hash(bytes)});
+  }
+  const assets=urls=>urls.map(url=>{
+   const f=files.get(url);
+   return {url,sha256:f.sha256,bytes:f.bytes.length,missingImage:false};
+  });
+  const myCache='kg-offline-pack-'+OWNER+'-my-v2';
+  const zhCache='kg-offline-pack-'+OWNER+'-zh-v2';
   const db=await new Promise((resolve,reject)=>{
    const r=indexedDB.open('kg-chart-offline-v1',1);
    r.onupgradeneeded=()=>{r.result.createObjectStore('kv');r.result.createObjectStore('outbox',{keyPath:'id'});};
@@ -100,13 +132,18 @@ async function seed(page){
   });
   await new Promise((resolve,reject)=>{
    const tx=db.transaction(['kv','outbox'],'readwrite'),kv=tx.objectStore('kv');
-   const name='kg-offline-pack-'+OWNER+'-my-v2';
    kv.put(OWNER,'active-owner');
    kv.put({id:OWNER,email:'synthetic@example.test',unlocked:true},'enroll:'+OWNER);
    kv.put({id:OTHER,email:'other@example.test',unlocked:true},'enroll:'+OTHER);
-   kv.put('synthetic-pack','active:'+OWNER+':my');
-   kv.put({ownerId:OWNER,schemaVersion:1,lang:'my',cacheName:name,assets:[],data:{kg_chart_vocabulary:[{id:'synthetic-food'}]}},'pack:synthetic-pack');
-   kv.put([name],'active-caches:'+OWNER);
+   kv.put('synthetic-my','active:'+OWNER+':my');
+   kv.put('synthetic-zh','active:'+OWNER+':zh');
+   kv.put({ownerId:OWNER,schemaVersion:1,lang:'my',cacheName:myCache,
+    assets:assets([PICTURE,LEGACY,AUDIO,MY_CATALOG]),
+    data:{kg_chart_vocabulary:[{id:'synthetic-food',topic_id:'food'}],kg_chart_languages:[{code:'my'}]}},'pack:synthetic-my');
+   kv.put({ownerId:OWNER,schemaVersion:1,lang:'zh',cacheName:zhCache,
+    assets:assets([ZH_PICTURE,ZH_AUDIO,ZH_CATALOG]),
+    data:{kg_chart_vocabulary:[{id:'synthetic-zh',topic_id:'vegetables'}],kg_chart_languages:[{code:'zh'}]}},'pack:synthetic-zh');
+   kv.put([myCache,zhCache],'active-caches:'+OWNER);
    kv.put([{user_id:OWNER,vocabulary_id:'synthetic-food',rating:4}],'rows:'+OWNER+':kg_chart_user_ratings');
    kv.put([{email:'synthetic@example.test',language_code:'my',level:1,unlocked:2}],'rows:'+OWNER+':kg_chart_user_levels');
    kv.put([{user_id:OWNER,language_code:'my',topic_id:'food'}],'rows:'+OWNER+':kg_chart_topic_completions');
@@ -114,13 +151,20 @@ async function seed(page){
    tx.objectStore('outbox').put({id:'synthetic-pending',ownerId:OWNER,table:'kg_chart_user_ratings',kind:'upsert',sequence:1,at:'2026-11-22T00:00:00Z',row:{user_id:OWNER,vocabulary_id:'synthetic-food',rating:4}});
    tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
   });db.close();
-  const pack=await window.KGSharedPictures.open('kg-offline-pack-'+OWNER+'-my-v2',OWNER);
-  const bytes=new TextEncoder().encode('shared-picture-bytes');
-  const sha=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(x=>x.toString(16).padStart(2,'0')).join('');
-  await pack.put(PICTURE,new Response(bytes,{headers:{'Content-Type':'image/jpeg','X-KG-SHA256':sha}}));
-  await (await caches.open('kg-offline-pack-'+OWNER+'-my-v2')).put(LEGACY,new Response('legacy-picture-bytes',{headers:{'Content-Type':'image/jpeg'}}));
-  await (await caches.open('kg-offline-pack-'+OWNER+'-my-v2')).put(AUDIO,new Response('synthetic-audio-bytes',{headers:{'Content-Type':'audio/mpeg'}}));
- },{OWNER,OTHER,MEDIA,PICTURE,LEGACY,AUDIO});
+  const my=await window.KGSharedPictures.open(myCache,OWNER);
+  const zh=await window.KGSharedPictures.open(zhCache,OWNER);
+  const payload=url=>{
+   const f=files.get(url);
+   return new Response(f.bytes,{headers:{'Content-Type':f.mime,'X-KG-SHA256':f.sha256,'X-KG-Bytes':String(f.bytes.length)}});
+  };
+  await my.put(PICTURE,payload(PICTURE));
+  await (await caches.open(myCache)).put(LEGACY,payload(LEGACY)); // Original inline image, not hash pointer
+  await my.put(AUDIO,payload(AUDIO));
+  await my.put(MY_CATALOG,payload(MY_CATALOG));
+  await zh.put(ZH_PICTURE,payload(ZH_PICTURE));
+  await zh.put(ZH_AUDIO,payload(ZH_AUDIO));
+  await zh.put(ZH_CATALOG,payload(ZH_CATALOG));
+ },{OWNER,OTHER,MEDIA,PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO,MY_CATALOG,ZH_CATALOG});
 }
 async function installedRevision(page){
  return page.evaluate(async()=>new Promise((resolve,reject)=>{
