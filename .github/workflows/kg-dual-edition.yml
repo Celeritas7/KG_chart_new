@@ -25,6 +25,8 @@ jobs:
       - run: npm ci
       - name: Compile and test both editions from the same SHA
         run: npm run check:unified
+      - name: Read-only C4A release artifact contract (no deployment)
+        run: node tools/audit-c4a-artifacts.mjs
       - name: C3C isolated Chromium migration and rollback (container has no network)
         run: |
           # Docker --network none prevents ALL external network traffic, including
