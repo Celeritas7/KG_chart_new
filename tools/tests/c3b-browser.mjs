@@ -28,6 +28,7 @@ const server=createServer(async(req,res)=>{
    return res.end('<!doctype html><title>C3B disposable harness</title><h1>Local migration rehearsal</h1>');
   }
   const path=pathname==='/'?'index.html':decodeURIComponent(pathname.slice(1));
+  if(path==='index.html'||path==='sw.js')console.log('C3B local server',JSON.stringify({path,edition,broken}));
   if(!path || path.split('/').some(p=>p==='..'||p==='.') || path.includes('\\'))throw Error('Bad path');
   const bytes=await readFile(join(assets[edition],path));
   let output=bytes;
@@ -189,8 +190,8 @@ try{
  console.log('C3B first unified navigation',JSON.stringify(firstUnified));
  if(firstUnified.page!==versions.unified){
    const staged=await page.evaluate(async version=>{
-    const cache=await caches.open('kg-offline-shell-'+version),response=await cache.match(location.origin+'/index.html');
-    return {cachePresent:!!response,htmlContainsUnifiedFlag:response? (await response.text()).includes('window.KG_UNIFIED=true'):false,cacheKeys:(await caches.keys()).filter(k=>k.startsWith('kg-offline-shell-')),cachedUrls:(await cache.keys()).slice(0,5).map(x=>x.url)};
+    const cache=await caches.open('kg-offline-shell-'+version),response=await cache.match(location.origin+'/index.html'),rootResponse=await cache.match(location.origin+'/');
+    return {cachePresent:!!response,htmlContainsUnifiedFlag:response? (await response.text()).includes('window.KG_UNIFIED=true'):false,rootContainsUnifiedFlag:rootResponse?(await rootResponse.text()).includes('window.KG_UNIFIED=true'):false,cacheKeys:(await caches.keys()).filter(k=>k.startsWith('kg-offline-shell-')),cachedUrls:(await cache.keys()).filter(x=>x.url.endsWith('/index.html')||x.url.endsWith('/')).map(x=>x.url)};
    },versions.unified);
    console.log('C3B new shell cache diagnostic',JSON.stringify(staged));
    await loadHarness(page); // A browser navigation may race a just-claimed controller; require second to settle.
