@@ -61,8 +61,10 @@ const expectState=async(page,version)=>{
   const open=()=>new Promise((resolve,reject)=>{const r=indexedDB.open('kg-chart-offline-v1',1);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});
   const db=await open();
   const get=(store,key)=>new Promise((resolve,reject)=>{const q=db.transaction(store).objectStore(store).get(key);q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
-  const [owner,enrollment,pack,outbox,ratings,levels,completions,other]=await Promise.all([
+  const [owner,enrollment,pack,packZh,myInfo,zhInfo,outbox,ratings,levels,completions,other]=await Promise.all([
    get('kv','active-owner'),get('kv','enroll:'+window.__c3bOwner),get('kv','active:'+window.__c3bOwner+':my'),
+   get('kv','active:'+window.__c3bOwner+':zh'),
+   get('kv','pack:synthetic-my'),get('kv','pack:synthetic-zh'),
    get('outbox','synthetic-pending'),get('kv','rows:'+window.__c3bOwner+':kg_chart_user_ratings'),
    get('kv','rows:'+window.__c3bOwner+':kg_chart_user_levels'),
    get('kv','rows:'+window.__c3bOwner+':kg_chart_topic_completions'),
@@ -72,11 +74,19 @@ const expectState=async(page,version)=>{
   const media=await Promise.all([window.__c3bPicture,window.__c3bLegacy,window.__c3bAudio].map(async url=>(await pic.match(url))?.text()));
   const cachesBefore=await caches.keys();
   const app=window.KGOffline.status();
-  return {owner,enrollment,pack,outbox,ratings,levels,completions,other,media,cachesBefore,app};
+  const readiness=await window.KGOffline.verifyOffline();
+  return {owner,enrollment,pack,packZh,myInfo,zhInfo,outbox,ratings,levels,completions,other,media,cachesBefore,app,readiness};
  });
  assert.equal(state.owner,OWNER);
  assert.equal(state.enrollment.unlocked,true);
- assert.equal(state.pack,'synthetic-pack');
+ assert.equal(state.pack,'synthetic-my');
+ assert.equal(state.packZh,'synthetic-zh');
+ assert.equal(state.myInfo.assets.length,4);
+ assert.equal(state.zhInfo.assets.length,3);
+ for(const file of [...state.myInfo.assets,...state.zhInfo.assets]){
+  assert.match(file.sha256,/^[a-f0-9]{64}$/);
+  assert(file.bytes>0);
+ }
  assert.equal(state.outbox.id,'synthetic-pending');
  assert.equal(state.ratings[0].rating,4);
  assert.equal(state.levels[0].unlocked,2);
@@ -85,20 +95,27 @@ const expectState=async(page,version)=>{
  assert.deepEqual(state.media,['shared-picture-bytes','legacy-picture-bytes','synthetic-audio-bytes']);
  assert.equal(state.app.ownerId,OWNER);
  assert.equal(state.app.pending,1);
- assert(state.app.readyLanguages.includes('my'));
+ assert.deepEqual([...state.app.readyLanguages].sort(),['my','zh']);
  assert.equal(state.app.appVersion,version);
+ assert.equal(state.readiness.ready,true,'Pack and shell must be verified ready offline');
+ assert.equal(state.readiness.shell.ok,true,'Active worker must pass hashed shell audit');
+ assert.equal(state.readiness.pendingChanges,1);
+ assert.equal(state.readiness.packs.length,2);
+ assert(state.readiness.packs.every(p=>p.ok && p.files>0));
  return state;
 };
 async function loadHarness(page){
  const navResponse=await page.goto(origin+'/',{waitUntil:'domcontentloaded'});
  console.log('C3B navigation',JSON.stringify({edition,fromServiceWorker:navResponse?.fromServiceWorker(),status:navResponse?.status(),responseUnified:(await navResponse?.text())?.includes('window.KG_UNIFIED=true')}));
- await page.waitForFunction(()=>window.KGOffline?.ready && window.KG_APP_VERSION,{timeout:deadline});
+ await page.waitForFunction(()=>window.KGOffline?.ready && window.KG_APP_VERSION && window.KGOffline.client,{timeout:deadline});
+ await page.waitForFunction(()=>window.KGOffline?.status()?.shellReady===true,null,{timeout:deadline});
  await page.evaluate(async({OWNER,OTHER,PICTURE,LEGACY,AUDIO})=>{
   window.__c3bOwner=OWNER;window.__c3bOther=OTHER;
   window.__c3bPicture=PICTURE;window.__c3bLegacy=LEGACY;window.__c3bAudio=AUDIO;
+  window.__c3bZhPicture=ZH_PICTURE;window.__c3bZhAudio=ZH_AUDIO;
   await window.KGOffline.ready;
   window.__c3bVersion=window.KGOffline.status().appVersion;
- },{OWNER,OTHER,PICTURE,LEGACY,AUDIO});
+ },{OWNER,OTHER,PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO});
 }
 async function seed(page){
  await page.evaluate(async({OWNER,OTHER,MEDIA,PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO,MY_CATALOG,ZH_CATALOG})=>{
@@ -165,6 +182,25 @@ async function seed(page){
   await zh.put(ZH_AUDIO,payload(ZH_AUDIO));
   await zh.put(ZH_CATALOG,payload(ZH_CATALOG));
  },{OWNER,OTHER,MEDIA,PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO,MY_CATALOG,ZH_CATALOG});
+}
+async function assertWorkerMedia(page,label){
+ const result=await page.evaluate(async({PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO})=>{
+  window.KGOffline.tellWorker();
+  const list=await Promise.all([PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO].map(async url=>{
+   const response=await fetch(url,{cache:'no-store'});
+   return {status:response.status,body:await response.text()};
+  }));
+  const range=await fetch(AUDIO,{headers:{Range:'bytes=0-8'}});
+  return {list,range:{status:range.status,body:await range.text(),header:range.headers.get('content-range')}};
+ },{PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO});
+ assert.deepEqual(result.list.map(x=>x.status),[200,200,200,200,200],label+' served from caches');
+ assert.deepEqual(result.list.map(x=>x.body),[
+  'shared-picture-bytes','legacy-picture-bytes','synthetic-audio-bytes','zh-picture-bytes','zh-audio-bytes'
+ ],label+' content must be returned by controlling SW');
+ assert.equal(result.range.status,206,'Audio byte-range requests must be handled locally');
+ assert.equal(result.range.body,'syntheti');
+ assert.match(result.range.header,/^bytes 0-8\/\d+$/);
+ console.log('PASS worker-mediated media and audio range:',label);
 }
 async function installedRevision(page){
  return page.evaluate(async()=>new Promise((resolve,reject)=>{
@@ -253,6 +289,7 @@ try{
  await loadHarness(page);
  const old=await expectState(page,versions.old);
  assert.equal(await installedRevision(page),versions.old,'real old worker active');
+ await assertWorkerMedia(page,'separate offline');
  console.log('PASS initial separate worker, IndexedDB/CacheStorage and learning progress');
 
  // Failed install: manifest says unified version but candidate script advertises a different revision.
@@ -286,6 +323,7 @@ try{
  }
  const unified=await expectState(page,versions.unified);
  assert.equal(await installedRevision(page),versions.unified);
+ await assertWorkerMedia(page,'unified');
  assert(unified.cachesBefore.includes('kg-offline-shell-'+versions.old),'previous shell preserved');
  console.log('PASS actual Chromium separate → unified worker activation, data unchanged');
 
@@ -297,6 +335,7 @@ try{
  if((await page.evaluate(()=>window.KG_APP_VERSION))!==versions.old)await loadHarness(page);
  const rollback=await expectState(page,versions.old);
  assert.equal(await installedRevision(page),versions.old);
+ await assertWorkerMedia(page,'rollback');
  assert(rollback.cachesBefore.includes('kg-offline-shell-'+versions.unified),'unified shell preserved on rollback');
  assert(rollback.cachesBefore.includes('kg-offline-pictures-v1-'+OWNER));
  console.log('PASS compatible old-worker rollback with preserved shared picture bytes and outbox');
