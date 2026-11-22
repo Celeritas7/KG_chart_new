@@ -7,7 +7,7 @@ import vm from 'node:vm';
 // acknowledgment. Simulate PostgreSQL's "level <= unlocked" constraint and
 // the default unlocked = 1 on a legacy partial upsert.
 const runtime=await fs.readFile(new URL('../runtime.js',import.meta.url),'utf8');
-const start=runtime.indexOf('  async function syncEvent(event) {');
+const start=runtime.indexOf('  // PostgreSQL can return the same timestamptz');
 const end=runtime.indexOf('\n  async function doSync() {',start);
 assert(start>=0 && end>start,'Could not locate the production sync implementation');
 const code=runtime.slice(start,end);
