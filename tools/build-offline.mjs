@@ -177,7 +177,11 @@ const files = (await walk(out)).map(p => p.slice(out.length + 1)).sort();
 const shellFiles = files.filter(f => f !== 'shell-manifest.json' && f !== 'offline-build.json');
 const shell = { version: rev, files: shellFiles.map(p => ({ path: p, sha256: sha(readFileSync(path.join(out, p))) })) };
 await write('shell-manifest.json', JSON.stringify(shell));
-await write('offline-build.json', JSON.stringify({ appVersion: rev, edition: unified ? 'unified' : 'separate-offline', source: 'index.html', schemaVersion: 1, generatedAt: new Date().toISOString() }));
+// C4C: a pinned CI checkout may request deterministic release metadata.
+const sourceDateEpoch = process.env.SOURCE_DATE_EPOCH;
+if (sourceDateEpoch !== undefined && !/^\d{1,12}$/.test(sourceDateEpoch)) throw Error('Invalid SOURCE_DATE_EPOCH');
+const generatedAt = sourceDateEpoch === undefined ? new Date().toISOString() : new Date(Number(sourceDateEpoch) * 1000).toISOString();
+await write('offline-build.json', JSON.stringify({ appVersion: rev, edition: unified ? 'unified' : 'separate-offline', source: 'index.html', schemaVersion: 1, generatedAt }));
 console.log(`Built KG Chart Offline ${rev}: ${shellFiles.length} local assets`);
 
 async function walk(dir) {
