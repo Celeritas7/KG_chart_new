@@ -205,7 +205,7 @@ async function assertWorkerMedia(page,label){
   'shared-picture-bytes','legacy-picture-bytes','synthetic-audio-bytes','zh-picture-bytes','zh-audio-bytes'
  ],label+' content must be returned by controlling SW');
  assert.equal(result.range.status,206,'Audio byte-range requests must be handled locally');
- assert.equal(result.range.body,'syntheti');
+ assert.equal(result.range.body,'synthetic');
  assert.match(result.range.header,/^bytes 0-8\/\d+$/);
  console.log('PASS worker-mediated media and audio range:',label);
 }
