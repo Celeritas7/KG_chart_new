@@ -80,7 +80,8 @@ const expectState=async(page,version)=>{
  return state;
 };
 async function loadHarness(page){
- await page.goto(origin+'/',{waitUntil:'domcontentloaded'});
+ const navResponse=await page.goto(origin+'/',{waitUntil:'domcontentloaded'});
+ console.log('C3B navigation',JSON.stringify({edition,fromServiceWorker:navResponse?.fromServiceWorker(),status:navResponse?.status(),responseUnified:(await navResponse?.text())?.includes('window.KG_UNIFIED=true')}));
  await page.waitForFunction(()=>window.KGOffline?.ready && window.KG_APP_VERSION,{timeout:deadline});
  await page.evaluate(async({OWNER,OTHER,PICTURE,LEGACY,AUDIO})=>{
   window.__c3bOwner=OWNER;window.__c3bOther=OTHER;
@@ -188,8 +189,8 @@ try{
  console.log('C3B first unified navigation',JSON.stringify(firstUnified));
  if(firstUnified.page!==versions.unified){
    const staged=await page.evaluate(async version=>{
-    const cache=await caches.open('kg-offline-shell-'+version),response=await cache.match('./index.html');
-    return {cachePresent:!!response,htmlContainsUnifiedFlag:response? (await response.text()).includes('window.KG_UNIFIED=true'):false,cacheKeys:(await caches.keys()).filter(k=>k.startsWith('kg-offline-shell-'))};
+    const cache=await caches.open('kg-offline-shell-'+version),response=await cache.match(location.origin+'/index.html');
+    return {cachePresent:!!response,htmlContainsUnifiedFlag:response? (await response.text()).includes('window.KG_UNIFIED=true'):false,cacheKeys:(await caches.keys()).filter(k=>k.startsWith('kg-offline-shell-')),cachedUrls:(await cache.keys()).slice(0,5).map(x=>x.url)};
    },versions.unified);
    console.log('C3B new shell cache diagnostic',JSON.stringify(staged));
    await loadHarness(page); // A browser navigation may race a just-claimed controller; require second to settle.
