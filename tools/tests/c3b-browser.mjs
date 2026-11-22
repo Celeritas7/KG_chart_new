@@ -77,15 +77,14 @@ const expectState=async(page,version)=>{
  return state;
 };
 async function loadHarness(page){
- await page.goto(origin+'/__c3b__/',{waitUntil:'load'});
- await page.addScriptTag({url:origin+'/js/offline-pictures.js'});
- await page.evaluate(({OWNER,OTHER,PICTURE,LEGACY,AUDIO,version})=>{
+ await page.goto(origin+'/',{waitUntil:'domcontentloaded'});
+ await page.waitForFunction(()=>window.KGOffline?.ready && window.KG_APP_VERSION,{timeout:deadline});
+ await page.evaluate(async({OWNER,OTHER,PICTURE,LEGACY,AUDIO})=>{
   window.__c3bOwner=OWNER;window.__c3bOther=OTHER;
   window.__c3bPicture=PICTURE;window.__c3bLegacy=LEGACY;window.__c3bAudio=AUDIO;
-  window.KG_UNIFIED=version.endsWith('-unified');
- },{OWNER,OTHER,PICTURE,LEGACY,AUDIO,version:versions[edition]});
- await page.addScriptTag({url:origin+'/js/offline-runtime.js'});
- await page.evaluate(async()=>{await window.KGOffline.ready;window.__c3bVersion=window.KGOffline.status().appVersion;});
+  await window.KGOffline.ready;
+  window.__c3bVersion=window.KGOffline.status().appVersion;
+ },{OWNER,OTHER,PICTURE,LEGACY,AUDIO});
 }
 async function seed(page){
  await page.evaluate(async({OWNER,OTHER,MEDIA,PICTURE,LEGACY,AUDIO})=>{
@@ -156,14 +155,15 @@ async function updateWorker(page,expected){
 try{
  browser=await chromium.launchPersistentContext(profile,{headless:true,serviceWorkers:'allow'});
  const page=await browser.newPage();
+ await page.route('**/*',route=>route.request().url().startsWith(origin+'/')?route.continue():route.abort());
  await page.goto(origin+'/__c3b__/');
+ await page.addScriptTag({url:origin+'/js/offline-pictures.js'});
+ await seed(page);
  await page.evaluate(async()=>{
   const reg=await navigator.serviceWorker.register('/sw.js',{scope:'/',updateViaCache:'none'});
   await navigator.serviceWorker.ready;
   if(reg.active?.state!=='activated')throw Error('Initial worker not active');
  });
- await loadHarness(page);
- await seed(page);
  await loadHarness(page);
  const old=await expectState(page,versions.old);
  assert.equal(await installedRevision(page),versions.old,'real old worker active');
