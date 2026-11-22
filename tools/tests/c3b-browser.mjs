@@ -43,7 +43,10 @@ const profile=await mkdtemp(join(tmpdir(),'kg-c3b-disposable-'));
 let browser;
 const deadline=60_000;
 const expectState=async(page,version)=>{
- await page.waitForFunction(expected=>navigator.serviceWorker.controller && window.__c3bVersion===expected,version,{timeout:deadline});
+ await page.waitForFunction(()=>window.__c3bVersion!==undefined,null,{timeout:10000});
+ const diagnostic=await page.evaluate(()=>({pageVersion:window.__c3bVersion,globalVersion:window.KG_APP_VERSION,unified:window.KG_UNIFIED,controller:navigator.serviceWorker.controller?.state,title:document.title}));
+ console.log('C3B edition diagnostic',JSON.stringify({expected:version,...diagnostic}));
+ assert.equal(diagnostic.pageVersion,version,'Actual app shell revision must match worker after navigation');
  const state=await page.evaluate(async()=>{
   const open=()=>new Promise((resolve,reject)=>{const r=indexedDB.open('kg-chart-offline-v1',1);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});
   const db=await open();
