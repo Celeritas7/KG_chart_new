@@ -853,6 +853,12 @@
           return client.auth.signOut(...args);
         };
         if(key==='onAuthStateChange') return callback => client.auth.onAuthStateChange((event,session)=>{
+          // During a disconnected cold start the SDK may emit INITIAL_SESSION(null)
+          // or SIGNED_OUT(null) after getSession restored a verified local enrollment.
+          // That missing remote session must not replace the saved learner with the
+          // Welcome Back screen. Explicit sign-out calls lockAccount() first, so
+          // it still passes through; a different signed-in user is handled below.
+          if(!navigator.onLine && currentEnrollment() && !session?.user?.id) return;
           // A different Google/email account must NEVER see the previous owner's local view.
           if(session?.user?.id && currentEnrollment() && session.user.id!==owner) {
             lockAccount().then(()=>callback(event,session));
