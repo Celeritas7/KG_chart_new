@@ -164,7 +164,7 @@ async function updateWorker(page,expected){
  if(disposition==='waiting'){
   await page.evaluate(async()=>{
    const reg=await navigator.serviceWorker.getRegistration('/');
-   if(!reg?.waiting)throw Error('Waiting worker vanished; verify controller before continuing');
+   if(!reg?.waiting)return; // Legacy auto-activation can win the race; verify exact revision below.
    await new Promise((resolve,reject)=>{
     const channel=new MessageChannel();
     const timer=setTimeout(()=>reject(Error('Apply update timed out')),30000);
