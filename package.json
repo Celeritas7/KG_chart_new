@@ -9,7 +9,7 @@
     "check:both": "npm run build:both && npm run test:offline",
     "build:unified": "node tools/build-offline.mjs --unified",
     "check:unified": "npm run check:both && npm run build:unified && npm run test:unified-artifacts",
-    "test:unified-artifacts": "node --test offline/tests/unified-artifacts.test.mjs"
+    "test:unified-artifacts": "node --test tools/tests/unified-artifacts.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.99.3",
