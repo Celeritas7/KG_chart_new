@@ -20,3 +20,13 @@ This tests Chromium headless and a real browser service-worker lifecycle, **not 
 
 ## Next gate
 Review PR/CI logs and ensure no production configuration was changed. Before any C4 deployment, record a fresh Android baseline and private recovery export, confirm OAuth return configuration read-only, and obtain explicit approval identifying the existing production origin, exact candidate SHA/output, rollback SHA, and go/no-go decision. Never uninstall, clear website data, unregister existing workers, or delete saved packs as part of acceptance.
+
+## Observed CI blocker (2026-11-22): C3B NO-GO
+The real Chromium harness runs on pinned `ubuntu-24.04` with Playwright 1.56.1. The current CI **does not pass** the browser rehearsal. Diagnostic run at `de760a2` confirmed the first worker loaded, two synthetic account boundaries and owner outbox were retained, and an intentionally mismatched candidate worker failed without replacing the controlling worker or removing stored data. Subsequent diagnostic run at `0ffe4ce` showed:
+
+- Server served `sw.js` and `index.html` from the **unified** build at the same localhost origin.
+- The unified versioned shell CacheStorage existed, and its cached root HTML contained `window.KG_UNIFIED=true`.
+- Navigation reported `fromServiceWorker=true` but the loaded page remained `KG Chart Offline`, with the **separate-offline** application revision and `window.KG_UNIFIED=false`.
+- Reloading again and opening a new tab with the same isolated browser profile did **not** resolve the old-page result.
+
+This is **not evidence that production devices have migrated or lost data**. The source of the mismatch (worker-client lifecycle, navigation handling, or harness interference) has not yet been conclusively isolated. A real browser migration remains **NO-GO**, and the final rollback segment could not be completed because the unified transition gate failed first. Do not present this PR or the earlier synthetic tests as production readiness. Diagnose worker/version identity on the post-upgrade navigation, including registration.active, actual navigation-response origin, and shell-cache routing, in this isolated branch before trying again. Do not change production app, Supabase, Cloudflare, or stored packs to investigate.
