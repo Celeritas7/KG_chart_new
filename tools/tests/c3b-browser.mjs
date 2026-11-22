@@ -41,11 +41,18 @@ const server=createServer(async(req,res)=>{
   if(!path || path.split('/').some(p=>p==='..'||p==='.') || path.includes('\\'))throw Error('Bad path');
   const bytes=await readFile(join(assets[edition],path));
   let output=bytes;
-  if(broken && path==='sw.js')output=Buffer.from(bytes.toString('utf8').replaceAll(versions.unified,'c3b-broken-revision'));
+  if(broken && path==='assets/app.css')output=Buffer.concat([bytes,Buffer.from('\n/* C3C intentionally corrupt hash */')]);
   res.writeHead(200,{'Content-Type':contentTypes[extname(path)]||'application/octet-stream','Cache-Control':'no-store'});
   res.end(output);
  }catch(e){res.writeHead(404,{'Content-Type':'text/plain','Cache-Control':'no-store'});res.end('Not found');}
 });
+// A CI run with external interfaces would undermine account/media isolation claims,
+ // because page.route cannot cover every service-worker-owned network request.
+if(process.env.CI){
+ const interfaces=(await readdir('/sys/class/net')).sort();
+ assert.deepEqual(interfaces,['lo'],'Browser rehearsal must run with Docker --network none');
+ console.log('PASS browser and service-worker egress isolated at network namespace');
+}
 const listen=()=>new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 await listen();
 const origin='http://127.0.0.1:'+server.address().port;
@@ -292,14 +299,42 @@ try{
  await assertWorkerMedia(page,'separate offline');
  console.log('PASS initial separate worker, IndexedDB/CacheStorage and learning progress');
 
- // Failed install: manifest says unified version but candidate script advertises a different revision.
+ // Intentionally corrupt a hashed shell asset after the candidate cache is opened.
+ // Wait for the real worker to fail; never infer failure from an arbitrary sleep.
  edition='unified';broken=true;
- await page.evaluate(async()=>{const reg=await navigator.serviceWorker.getRegistration('/');try{await reg.update();}catch{}});
- await page.waitForTimeout(1600);
+ const failed=await page.evaluate(async()=>{
+  const reg=await navigator.serviceWorker.getRegistration('/');
+  const states=[];
+  const installFailure=new Promise((resolve,reject)=>{
+   const timer=setTimeout(()=>reject(Error('Broken candidate never reached redundant state')),30000);
+   const watch=()=>{
+    const candidate=reg.installing;
+    if(!candidate)return;
+    states.push(candidate.state);
+    const observe=()=>{
+     states.push(candidate.state);
+     if(candidate.state==='redundant'){
+      clearTimeout(timer);
+      resolve({states});
+     }
+    };
+    candidate.addEventListener('statechange',observe);
+    observe();
+   };
+   reg.addEventListener('updatefound',watch);
+   watch();
+  });
+  await reg.update().catch(()=>{}); // Installation can reject; inspect lifecycle explicitly.
+  return installFailure;
+ });
+ assert(failed.states.includes('redundant'),'Corrupt candidate must fail installation');
  assert.equal(await installedRevision(page),versions.old,'failed candidate must not replace old worker');
- assert((await page.evaluate(()=>caches.keys())).includes('kg-offline-shell-'+versions.old));
+ const afterFailure=await page.evaluate(()=>caches.keys());
+ assert(afterFailure.includes('kg-offline-shell-'+versions.old));
+ assert(!afterFailure.includes('kg-offline-shell-'+versions.unified),
+  'Failed candidate must remove its incomplete shell, not the old shell');
  await expectState(page,versions.old);
- console.log('PASS failed shell install leaves old controlling worker and personal data intact');
+ console.log('PASS deterministic corrupted-shell rejection, cleanup and owner-data preservation');
 
  broken=false;await updateWorker(page,versions.unified);
  // A newly opened Home Screen app is a new controlled client, not the old document.
@@ -339,6 +374,60 @@ try{
  assert(rollback.cachesBefore.includes('kg-offline-shell-'+versions.unified),'unified shell preserved on rollback');
  assert(rollback.cachesBefore.includes('kg-offline-pictures-v1-'+OWNER));
  console.log('PASS compatible old-worker rollback with preserved shared picture bytes and outbox');
+
+ // Attempt a second-account session on a new controlled client at this same synthetic origin.
+ await page.evaluate(async other=>{
+  const db=await new Promise((resolve,reject)=>{
+   const req=indexedDB.open('kg-chart-offline-v1',1);
+   req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
+  });
+  await new Promise((resolve,reject)=>{
+   const tx=db.transaction('kv','readwrite');
+   tx.objectStore('kv').put(other,'active-owner');
+   tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
+  });db.close();
+ },OTHER);
+ await page.close();
+ page=await browser.newPage();
+ await page.route('**/*',route=>route.request().url().startsWith(origin+'/')?route.continue():route.abort());
+ await loadHarness(page);
+ const otherView=await page.evaluate(async({PICTURE})=>{
+  const result=await window.KGOffline.client.from('kg_chart_user_ratings').select('*');
+  window.KGOffline.tellWorker();
+  let response;
+  try{const r=await fetch(PICTURE);response={status:r.status,body:await r.text()};}
+  catch(error){response={error:String(error)};}
+  const report=await window.KGOffline.verifyOffline();
+  return {owner:window.KGOffline.status().ownerId,pending:window.KGOffline.status().pending,
+    languages:window.KGOffline.status().readyLanguages,ratings:result.data,media:response,readiness:report.ready};
+ },{PICTURE});
+ assert.equal(otherView.owner,OTHER);
+ assert.equal(otherView.pending,0);
+ assert.equal(otherView.languages.length,0);
+ assert.equal(otherView.readiness,false);
+ assert.deepEqual(otherView.ratings.map(r=>r.vocabulary_id),['private']);
+ assert.notEqual(otherView.media.body,'shared-picture-bytes',
+  'Other owner must not see the first owner media via SW');
+ console.log('PASS other account cannot see first owner ratings, packs, pending work or media');
+
+ // Return to original owner; account isolation must not delete the first owner's records.
+ await page.evaluate(async owner=>{
+  const db=await new Promise((resolve,reject)=>{
+   const req=indexedDB.open('kg-chart-offline-v1',1);
+   req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
+  });
+  await new Promise((resolve,reject)=>{
+   const tx=db.transaction('kv','readwrite');tx.objectStore('kv').put(owner,'active-owner');
+   tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
+  });db.close();
+ },OWNER);
+ await page.close();
+ page=await browser.newPage();
+ await page.route('**/*',route=>route.request().url().startsWith(origin+'/')?route.continue():route.abort());
+ await loadHarness(page);
+ await expectState(page,versions.old);
+ await assertWorkerMedia(page,'after account switch');
+ console.log('PASS original owner packs, progress and queued writes survive account switch');
  console.log('C3B real-browser PASS: no cloud origin, remote identity, or production storage used');
 }finally{
  await browser?.close();
