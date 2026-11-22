@@ -1,17 +1,26 @@
 // Real Chromium, one disposable localhost origin and profile. No public network or production accounts.
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {mkdtemp,readFile,rm} from 'node:fs/promises';
+import {mkdtemp,readFile,readdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve,extname} from 'node:path';
 import {chromium} from 'playwright';
 
 const OWNER='88888888-8888-4888-8888-888888888888';
 const OTHER='99999999-9999-4999-8999-999999999999';
-const MEDIA='https://example.supabase.co/storage/v1/object/public/vocabulary-assets/';
-const PICTURE=MEDIA+'pictures/synthetic.jpg';
-const LEGACY=MEDIA+'pictures/legacy.jpg';
+// The app bundle's public-media hostname is only a URL string in this test:
+ // Docker's --network none prevents requests to it from leaving the container.
+const sourceHtml=await readFile('index.html','utf8');
+const publicOrigin=sourceHtml.match(/\bSUPABASE_URL\s*=\s*['"](https:\/\/[a-z0-9-]+\.supabase\.co)['"]/);
+assert(publicOrigin,'Published public-media URL not found in canonical learner source');
+const MEDIA=publicOrigin[1]+'/storage/v1/object/public/vocabulary-assets/';
+const PICTURE=MEDIA+'pictures/synthetic-food.jpg';
+const LEGACY=MEDIA+'pictures/legacy-vegetables.jpg';
 const AUDIO=MEDIA+'audio/my/synthetic.mp3';
+const ZH_PICTURE=MEDIA+'pictures/synthetic-zh.jpg';
+const ZH_AUDIO=MEDIA+'audio/zh/synthetic.mp3';
+const MY_CATALOG=MEDIA+'audio/my/clips.json';
+const ZH_CATALOG=MEDIA+'audio/zh/clips.json';
 const assets={old:resolve('dist-offline'),unified:resolve('dist-unified')};
 const versions={
  old:JSON.parse(await readFile(join(assets.old,'offline-build.json'),'utf8')).appVersion,
@@ -32,11 +41,18 @@ const server=createServer(async(req,res)=>{
   if(!path || path.split('/').some(p=>p==='..'||p==='.') || path.includes('\\'))throw Error('Bad path');
   const bytes=await readFile(join(assets[edition],path));
   let output=bytes;
-  if(broken && path==='sw.js')output=Buffer.from(bytes.toString('utf8').replaceAll(versions.unified,'c3b-broken-revision'));
+  if(broken && path==='assets/app.css')output=Buffer.concat([bytes,Buffer.from('\n/* C3C intentionally corrupt hash */')]);
   res.writeHead(200,{'Content-Type':contentTypes[extname(path)]||'application/octet-stream','Cache-Control':'no-store'});
   res.end(output);
  }catch(e){res.writeHead(404,{'Content-Type':'text/plain','Cache-Control':'no-store'});res.end('Not found');}
 });
+// A CI run with external interfaces would undermine account/media isolation claims,
+ // because page.route cannot cover every service-worker-owned network request.
+if(process.env.CI){
+ const interfaces=(await readdir('/sys/class/net')).sort();
+ assert.deepEqual(interfaces,['lo'],'Browser rehearsal must run with Docker --network none');
+ console.log('PASS browser and service-worker egress isolated at network namespace');
+}
 const listen=()=>new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 await listen();
 const origin='http://127.0.0.1:'+server.address().port;
@@ -52,8 +68,10 @@ const expectState=async(page,version)=>{
   const open=()=>new Promise((resolve,reject)=>{const r=indexedDB.open('kg-chart-offline-v1',1);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});
   const db=await open();
   const get=(store,key)=>new Promise((resolve,reject)=>{const q=db.transaction(store).objectStore(store).get(key);q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);});
-  const [owner,enrollment,pack,outbox,ratings,levels,completions,other]=await Promise.all([
+  const [owner,enrollment,pack,packZh,myInfo,zhInfo,outbox,ratings,levels,completions,other]=await Promise.all([
    get('kv','active-owner'),get('kv','enroll:'+window.__c3bOwner),get('kv','active:'+window.__c3bOwner+':my'),
+   get('kv','active:'+window.__c3bOwner+':zh'),
+   get('kv','pack:synthetic-my'),get('kv','pack:synthetic-zh'),
    get('outbox','synthetic-pending'),get('kv','rows:'+window.__c3bOwner+':kg_chart_user_ratings'),
    get('kv','rows:'+window.__c3bOwner+':kg_chart_user_levels'),
    get('kv','rows:'+window.__c3bOwner+':kg_chart_topic_completions'),
@@ -63,11 +81,19 @@ const expectState=async(page,version)=>{
   const media=await Promise.all([window.__c3bPicture,window.__c3bLegacy,window.__c3bAudio].map(async url=>(await pic.match(url))?.text()));
   const cachesBefore=await caches.keys();
   const app=window.KGOffline.status();
-  return {owner,enrollment,pack,outbox,ratings,levels,completions,other,media,cachesBefore,app};
+  const readiness=await window.KGOffline.verifyOffline();
+  return {owner,enrollment,pack,packZh,myInfo,zhInfo,outbox,ratings,levels,completions,other,media,cachesBefore,app,readiness};
  });
  assert.equal(state.owner,OWNER);
  assert.equal(state.enrollment.unlocked,true);
- assert.equal(state.pack,'synthetic-pack');
+ assert.equal(state.pack,'synthetic-my');
+ assert.equal(state.packZh,'synthetic-zh');
+ assert.equal(state.myInfo.assets.length,4);
+ assert.equal(state.zhInfo.assets.length,3);
+ for(const file of [...state.myInfo.assets,...state.zhInfo.assets]){
+  assert.match(file.sha256,/^[a-f0-9]{64}$/);
+  assert(file.bytes>0);
+ }
  assert.equal(state.outbox.id,'synthetic-pending');
  assert.equal(state.ratings[0].rating,4);
  assert.equal(state.levels[0].unlocked,2);
@@ -76,23 +102,53 @@ const expectState=async(page,version)=>{
  assert.deepEqual(state.media,['shared-picture-bytes','legacy-picture-bytes','synthetic-audio-bytes']);
  assert.equal(state.app.ownerId,OWNER);
  assert.equal(state.app.pending,1);
- assert(state.app.readyLanguages.includes('my'));
+ assert.deepEqual([...state.app.readyLanguages].sort(),['my','zh']);
  assert.equal(state.app.appVersion,version);
+ assert.equal(state.readiness.ready,true,'Pack and shell must be verified ready offline');
+ assert.equal(state.readiness.shell.ok,true,'Active worker must pass hashed shell audit');
+ assert.equal(state.readiness.pendingChanges,1);
+ assert.equal(state.readiness.packs.length,2);
+ assert(state.readiness.packs.every(p=>p.ok && p.files>0));
  return state;
 };
 async function loadHarness(page){
  const navResponse=await page.goto(origin+'/',{waitUntil:'domcontentloaded'});
  console.log('C3B navigation',JSON.stringify({edition,fromServiceWorker:navResponse?.fromServiceWorker(),status:navResponse?.status(),responseUnified:(await navResponse?.text())?.includes('window.KG_UNIFIED=true')}));
- await page.waitForFunction(()=>window.KGOffline?.ready && window.KG_APP_VERSION,{timeout:deadline});
- await page.evaluate(async({OWNER,OTHER,PICTURE,LEGACY,AUDIO})=>{
+ await page.waitForFunction(()=>window.KGOffline?.ready && window.KG_APP_VERSION && window.KGOffline.client,{timeout:deadline});
+ await page.waitForFunction(()=>window.KGOffline?.status()?.shellReady===true,null,{timeout:deadline});
+ await page.evaluate(async({OWNER,OTHER,PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO})=>{
   window.__c3bOwner=OWNER;window.__c3bOther=OTHER;
   window.__c3bPicture=PICTURE;window.__c3bLegacy=LEGACY;window.__c3bAudio=AUDIO;
+  window.__c3bZhPicture=ZH_PICTURE;window.__c3bZhAudio=ZH_AUDIO;
   await window.KGOffline.ready;
   window.__c3bVersion=window.KGOffline.status().appVersion;
- },{OWNER,OTHER,PICTURE,LEGACY,AUDIO});
+ },{OWNER,OTHER,PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO});
 }
 async function seed(page){
- await page.evaluate(async({OWNER,OTHER,MEDIA,PICTURE,LEGACY,AUDIO})=>{
+ await page.evaluate(async({OWNER,OTHER,MEDIA,PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO,MY_CATALOG,ZH_CATALOG})=>{
+  const encoder=new TextEncoder();
+  const hash=async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)))
+   .map(x=>x.toString(16).padStart(2,'0')).join('');
+  const samples=[
+   {url:PICTURE,body:'shared-picture-bytes',mime:'image/jpeg'},
+   {url:LEGACY,body:'legacy-picture-bytes',mime:'image/jpeg'},
+   {url:AUDIO,body:'synthetic-audio-bytes',mime:'audio/mpeg'},
+   {url:MY_CATALOG,body:JSON.stringify({m:[],f:[]}),mime:'application/json'},
+   {url:ZH_PICTURE,body:'zh-picture-bytes',mime:'image/jpeg'},
+   {url:ZH_AUDIO,body:'zh-audio-bytes',mime:'audio/mpeg'},
+   {url:ZH_CATALOG,body:JSON.stringify({m:[],f:[]}),mime:'application/json'}
+  ];
+  const files=new Map();
+  for(const file of samples){
+   const bytes=encoder.encode(file.body);
+   files.set(file.url,{...file,bytes,sha256:await hash(bytes)});
+  }
+  const assets=urls=>urls.map(url=>{
+   const f=files.get(url);
+   return {url,sha256:f.sha256,bytes:f.bytes.length,missingImage:false};
+  });
+  const myCache='kg-offline-pack-'+OWNER+'-my-v2';
+  const zhCache='kg-offline-pack-'+OWNER+'-zh-v2';
   const db=await new Promise((resolve,reject)=>{
    const r=indexedDB.open('kg-chart-offline-v1',1);
    r.onupgradeneeded=()=>{r.result.createObjectStore('kv');r.result.createObjectStore('outbox',{keyPath:'id'});};
@@ -100,13 +156,18 @@ async function seed(page){
   });
   await new Promise((resolve,reject)=>{
    const tx=db.transaction(['kv','outbox'],'readwrite'),kv=tx.objectStore('kv');
-   const name='kg-offline-pack-'+OWNER+'-my-v2';
    kv.put(OWNER,'active-owner');
    kv.put({id:OWNER,email:'synthetic@example.test',unlocked:true},'enroll:'+OWNER);
    kv.put({id:OTHER,email:'other@example.test',unlocked:true},'enroll:'+OTHER);
-   kv.put('synthetic-pack','active:'+OWNER+':my');
-   kv.put({ownerId:OWNER,schemaVersion:1,lang:'my',cacheName:name,assets:[],data:{kg_chart_vocabulary:[{id:'synthetic-food'}]}},'pack:synthetic-pack');
-   kv.put([name],'active-caches:'+OWNER);
+   kv.put('synthetic-my','active:'+OWNER+':my');
+   kv.put('synthetic-zh','active:'+OWNER+':zh');
+   kv.put({ownerId:OWNER,schemaVersion:1,lang:'my',cacheName:myCache,
+    assets:assets([PICTURE,LEGACY,AUDIO,MY_CATALOG]),
+    data:{kg_chart_vocabulary:[{id:'synthetic-food',topic_id:'food'}],kg_chart_languages:[{code:'my'}]}},'pack:synthetic-my');
+   kv.put({ownerId:OWNER,schemaVersion:1,lang:'zh',cacheName:zhCache,
+    assets:assets([ZH_PICTURE,ZH_AUDIO,ZH_CATALOG]),
+    data:{kg_chart_vocabulary:[{id:'synthetic-zh',topic_id:'vegetables'}],kg_chart_languages:[{code:'zh'}]}},'pack:synthetic-zh');
+   kv.put([myCache,zhCache],'active-caches:'+OWNER);
    kv.put([{user_id:OWNER,vocabulary_id:'synthetic-food',rating:4}],'rows:'+OWNER+':kg_chart_user_ratings');
    kv.put([{email:'synthetic@example.test',language_code:'my',level:1,unlocked:2}],'rows:'+OWNER+':kg_chart_user_levels');
    kv.put([{user_id:OWNER,language_code:'my',topic_id:'food'}],'rows:'+OWNER+':kg_chart_topic_completions');
@@ -114,13 +175,39 @@ async function seed(page){
    tx.objectStore('outbox').put({id:'synthetic-pending',ownerId:OWNER,table:'kg_chart_user_ratings',kind:'upsert',sequence:1,at:'2026-11-22T00:00:00Z',row:{user_id:OWNER,vocabulary_id:'synthetic-food',rating:4}});
    tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
   });db.close();
-  const pack=await window.KGSharedPictures.open('kg-offline-pack-'+OWNER+'-my-v2',OWNER);
-  const bytes=new TextEncoder().encode('shared-picture-bytes');
-  const sha=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(x=>x.toString(16).padStart(2,'0')).join('');
-  await pack.put(PICTURE,new Response(bytes,{headers:{'Content-Type':'image/jpeg','X-KG-SHA256':sha}}));
-  await (await caches.open('kg-offline-pack-'+OWNER+'-my-v2')).put(LEGACY,new Response('legacy-picture-bytes',{headers:{'Content-Type':'image/jpeg'}}));
-  await (await caches.open('kg-offline-pack-'+OWNER+'-my-v2')).put(AUDIO,new Response('synthetic-audio-bytes',{headers:{'Content-Type':'audio/mpeg'}}));
- },{OWNER,OTHER,MEDIA,PICTURE,LEGACY,AUDIO});
+  const my=await window.KGSharedPictures.open(myCache,OWNER);
+  const zh=await window.KGSharedPictures.open(zhCache,OWNER);
+  const payload=url=>{
+   const f=files.get(url);
+   return new Response(f.bytes,{headers:{'Content-Type':f.mime,'X-KG-SHA256':f.sha256,'X-KG-Bytes':String(f.bytes.length)}});
+  };
+  await my.put(PICTURE,payload(PICTURE));
+  await (await caches.open(myCache)).put(LEGACY,payload(LEGACY)); // Original inline image, not hash pointer
+  await my.put(AUDIO,payload(AUDIO));
+  await my.put(MY_CATALOG,payload(MY_CATALOG));
+  await zh.put(ZH_PICTURE,payload(ZH_PICTURE));
+  await zh.put(ZH_AUDIO,payload(ZH_AUDIO));
+  await zh.put(ZH_CATALOG,payload(ZH_CATALOG));
+ },{OWNER,OTHER,MEDIA,PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO,MY_CATALOG,ZH_CATALOG});
+}
+async function assertWorkerMedia(page,label){
+ const result=await page.evaluate(async({PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO})=>{
+  window.KGOffline.tellWorker();
+  const list=await Promise.all([PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO].map(async url=>{
+   const response=await fetch(url,{cache:'no-store'});
+   return {status:response.status,body:await response.text()};
+  }));
+  const range=await fetch(AUDIO,{headers:{Range:'bytes=0-8'}});
+  return {list,range:{status:range.status,body:await range.text(),header:range.headers.get('content-range')}};
+ },{PICTURE,LEGACY,AUDIO,ZH_PICTURE,ZH_AUDIO});
+ assert.deepEqual(result.list.map(x=>x.status),[200,200,200,200,200],label+' served from caches');
+ assert.deepEqual(result.list.map(x=>x.body),[
+  'shared-picture-bytes','legacy-picture-bytes','synthetic-audio-bytes','zh-picture-bytes','zh-audio-bytes'
+ ],label+' content must be returned by controlling SW');
+ assert.equal(result.range.status,206,'Audio byte-range requests must be handled locally');
+ assert.equal(result.range.body,'synthetic');
+ assert.match(result.range.header,/^bytes 0-8\/\d+$/);
+ console.log('PASS worker-mediated media and audio range:',label);
 }
 async function installedRevision(page){
  return page.evaluate(async()=>new Promise((resolve,reject)=>{
@@ -209,16 +296,45 @@ try{
  await loadHarness(page);
  const old=await expectState(page,versions.old);
  assert.equal(await installedRevision(page),versions.old,'real old worker active');
+ await assertWorkerMedia(page,'separate offline');
  console.log('PASS initial separate worker, IndexedDB/CacheStorage and learning progress');
 
- // Failed install: manifest says unified version but candidate script advertises a different revision.
+ // Intentionally corrupt a hashed shell asset after the candidate cache is opened.
+ // Wait for the real worker to fail; never infer failure from an arbitrary sleep.
  edition='unified';broken=true;
- await page.evaluate(async()=>{const reg=await navigator.serviceWorker.getRegistration('/');try{await reg.update();}catch{}});
- await page.waitForTimeout(1600);
+ const failed=await page.evaluate(async()=>{
+  const reg=await navigator.serviceWorker.getRegistration('/');
+  const states=[];
+  const installFailure=new Promise((resolve,reject)=>{
+   const timer=setTimeout(()=>reject(Error('Broken candidate never reached redundant state')),30000);
+   const watch=()=>{
+    const candidate=reg.installing;
+    if(!candidate)return;
+    states.push(candidate.state);
+    const observe=()=>{
+     states.push(candidate.state);
+     if(candidate.state==='redundant'){
+      clearTimeout(timer);
+      resolve({states});
+     }
+    };
+    candidate.addEventListener('statechange',observe);
+    observe();
+   };
+   reg.addEventListener('updatefound',watch);
+   watch();
+  });
+  await reg.update().catch(()=>{}); // Installation can reject; inspect lifecycle explicitly.
+  return installFailure;
+ });
+ assert(failed.states.includes('redundant'),'Corrupt candidate must fail installation');
  assert.equal(await installedRevision(page),versions.old,'failed candidate must not replace old worker');
- assert((await page.evaluate(()=>caches.keys())).includes('kg-offline-shell-'+versions.old));
+ const afterFailure=await page.evaluate(()=>caches.keys());
+ assert(afterFailure.includes('kg-offline-shell-'+versions.old));
+ assert(!afterFailure.includes('kg-offline-shell-'+versions.unified),
+  'Failed candidate must remove its incomplete shell, not the old shell');
  await expectState(page,versions.old);
- console.log('PASS failed shell install leaves old controlling worker and personal data intact');
+ console.log('PASS deterministic corrupted-shell rejection, cleanup and owner-data preservation');
 
  broken=false;await updateWorker(page,versions.unified);
  // A newly opened Home Screen app is a new controlled client, not the old document.
@@ -242,6 +358,7 @@ try{
  }
  const unified=await expectState(page,versions.unified);
  assert.equal(await installedRevision(page),versions.unified);
+ await assertWorkerMedia(page,'unified');
  assert(unified.cachesBefore.includes('kg-offline-shell-'+versions.old),'previous shell preserved');
  console.log('PASS actual Chromium separate → unified worker activation, data unchanged');
 
@@ -253,9 +370,64 @@ try{
  if((await page.evaluate(()=>window.KG_APP_VERSION))!==versions.old)await loadHarness(page);
  const rollback=await expectState(page,versions.old);
  assert.equal(await installedRevision(page),versions.old);
+ await assertWorkerMedia(page,'rollback');
  assert(rollback.cachesBefore.includes('kg-offline-shell-'+versions.unified),'unified shell preserved on rollback');
  assert(rollback.cachesBefore.includes('kg-offline-pictures-v1-'+OWNER));
  console.log('PASS compatible old-worker rollback with preserved shared picture bytes and outbox');
+
+ // Attempt a second-account session on a new controlled client at this same synthetic origin.
+ await page.evaluate(async other=>{
+  const db=await new Promise((resolve,reject)=>{
+   const req=indexedDB.open('kg-chart-offline-v1',1);
+   req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
+  });
+  await new Promise((resolve,reject)=>{
+   const tx=db.transaction('kv','readwrite');
+   tx.objectStore('kv').put(other,'active-owner');
+   tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
+  });db.close();
+ },OTHER);
+ await page.close();
+ page=await browser.newPage();
+ await page.route('**/*',route=>route.request().url().startsWith(origin+'/')?route.continue():route.abort());
+ await loadHarness(page);
+ const otherView=await page.evaluate(async({PICTURE})=>{
+  const result=await window.KGOffline.client.from('kg_chart_user_ratings').select('*');
+  window.KGOffline.tellWorker();
+  let response;
+  try{const r=await fetch(PICTURE);response={status:r.status,body:await r.text()};}
+  catch(error){response={error:String(error)};}
+  const report=await window.KGOffline.verifyOffline();
+  return {owner:window.KGOffline.status().ownerId,pending:window.KGOffline.status().pending,
+    languages:window.KGOffline.status().readyLanguages,ratings:result.data,media:response,readiness:report.ready};
+ },{PICTURE});
+ assert.equal(otherView.owner,OTHER);
+ assert.equal(otherView.pending,0);
+ assert.equal(otherView.languages.length,0);
+ assert.equal(otherView.readiness,false);
+ assert.deepEqual(otherView.ratings.map(r=>r.vocabulary_id),['private']);
+ assert.notEqual(otherView.media.body,'shared-picture-bytes',
+  'Other owner must not see the first owner media via SW');
+ console.log('PASS other account cannot see first owner ratings, packs, pending work or media');
+
+ // Return to original owner; account isolation must not delete the first owner's records.
+ await page.evaluate(async owner=>{
+  const db=await new Promise((resolve,reject)=>{
+   const req=indexedDB.open('kg-chart-offline-v1',1);
+   req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
+  });
+  await new Promise((resolve,reject)=>{
+   const tx=db.transaction('kv','readwrite');tx.objectStore('kv').put(owner,'active-owner');
+   tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
+  });db.close();
+ },OWNER);
+ await page.close();
+ page=await browser.newPage();
+ await page.route('**/*',route=>route.request().url().startsWith(origin+'/')?route.continue():route.abort());
+ await loadHarness(page);
+ await expectState(page,versions.old);
+ await assertWorkerMedia(page,'after account switch');
+ console.log('PASS original owner packs, progress and queued writes survive account switch');
  console.log('C3B real-browser PASS: no cloud origin, remote identity, or production storage used');
 }finally{
  await browser?.close();

@@ -9,7 +9,8 @@
     "check:both": "npm run build:both && npm run test:offline",
     "build:unified": "node tools/build-offline.mjs --unified",
     "check:unified": "npm run check:both && npm run build:unified && npm run test:unified-artifacts",
-    "test:unified-artifacts": "node --test tools/tests/unified-artifacts.test.mjs"
+    "test:unified-artifacts": "node --test tools/tests/unified-artifacts.test.mjs",
+    "test:browser-migration": "node tools/tests/c3b-browser.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.99.3",
@@ -32,6 +33,7 @@
     "esbuild": "0.25.12",
     "fake-indexeddb": "6.2.4",
     "postcss": "8.5.6",
-    "tailwindcss": "3.4.17"
+    "tailwindcss": "3.4.17",
+    "playwright": "1.56.1"
   }
 }

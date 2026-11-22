@@ -22,7 +22,7 @@ This tests Chromium headless and a real browser service-worker lifecycle, **not 
 Review PR/CI logs and ensure no production configuration was changed. Before any C4 deployment, record a fresh Android baseline and private recovery export, confirm OAuth return configuration read-only, and obtain explicit approval identifying the existing production origin, exact candidate SHA/output, rollback SHA, and go/no-go decision. Never uninstall, clear website data, unregister existing workers, or delete saved packs as part of acceptance.
 
 ## Historical CI blocker (2026-11-22): resolved in final harness
-The real Chromium harness runs on pinned `ubuntu-24.04` with Playwright 1.56.1. The current CI **does not pass** the browser rehearsal. Diagnostic run at `de760a2` confirmed the first worker loaded, two synthetic account boundaries and owner outbox were retained, and an intentionally mismatched candidate worker failed without replacing the controlling worker or removing stored data. Subsequent diagnostic run at `0ffe4ce` showed:
+The original C3B Chromium harness ran on pinned `ubuntu-24.04` with Playwright 1.56.1. Early CI attempts **did not pass** the browser rehearsal; the later C3B pass and C3C hardening are documented below and in `STAGE-C3C-SAFETY.md`. Diagnostic run at `de760a2` confirmed the first worker loaded, two synthetic account boundaries and owner outbox were retained, and an intentionally mismatched candidate worker failed without replacing the controlling worker or removing stored data. Subsequent diagnostic run at `0ffe4ce` showed:
 
 - Server served `sw.js` and `index.html` from the **unified** build at the same localhost origin.
 - The unified versioned shell CacheStorage existed, and its cached root HTML contained `window.KG_UNIFIED=true`.
