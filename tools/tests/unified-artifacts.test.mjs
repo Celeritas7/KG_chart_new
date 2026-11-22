@@ -29,7 +29,6 @@ test('unified and offline builds retain byte-identical storage, picture and auth
  }
  const runtime=(await read('dist-unified','js/offline-runtime.js')).toString();
  assert.match(runtime,/kg-chart-offline-v1/);
- assert.match(runtime,/kg-chart-offline-auth/);
  assert.match(runtime,/outbox/);
  const sw=(await read('dist-unified','sw.js')).toString();
  assert.match(sw,/kg-offline-pictures-v1/);
@@ -66,5 +65,6 @@ test('unified entry keeps local dependencies and does not silently convert to or
  const app=(await read('dist-unified','assets/app.js')).toString();
  assert.match(app,/KGOffline\.ready/);
  assert.match(app,/KGOffline\.wrapClient/);
+ assert.match(app,/kg-chart-offline-auth/);
  assert.match(app,/KGOffline\.setLanguage/);
 });
