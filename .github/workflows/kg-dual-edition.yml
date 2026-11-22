@@ -62,6 +62,53 @@ jobs:
           path: dist-unified/
           retention-days: 14
 
-# This pipeline creates reviewable, matching release artifacts; it intentionally does not
-# publish to the current online origin. Production offline hosting requires its own origin,
-# configured OAuth redirect allowlist and real installed-app acceptance tests.
+  # Only the C4C draft PR receives this extra job. PR jobs normally test a
+  # temporary merge SHA; the release archives MUST come from the actual PR
+  # head commit, not the disposable refs/pull/*/merge revision.
+  c4c-source-pinned-release-pair:
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/stage-c4c-')
+    needs: build-and-test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout immutable PR head with converter submodule
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Verify C4C packaging safeguards with fictional fixtures
+        run: python3 -m unittest discover -s tools/tests -p 'test_c4c_release.py' -v
+      - name: Rebuild, audit, pin and independently verify release+rollback archives
+        env:
+          C4C_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$C4C_SOURCE_SHA"
+          # Deterministic generatedAt for source-reproducible archive bytes.
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          npm run check:unified
+          node tools/audit-c4a-artifacts.mjs
+          git diff --exit-code -- index.html sw.js manifest.webmanifest js/
+          python3 tools/c4c_release.py pack --source-sha "$C4C_SOURCE_SHA" --out c4c-bundles
+          python3 tools/c4c_release.py verify --source-sha "$C4C_SOURCE_SHA" --out c4c-bundles
+          cat c4c-bundles/SHA256SUMS
+      - name: Upload source-pinned pair and verification receipt (temporary CI copy)
+        uses: actions/upload-artifact@v4
+        with:
+          name: kg-chart-c4c-pinned-${{ github.event.pull_request.head.sha }}
+          path: c4c-bundles/
+          if-no-files-found: error
+          retention-days: 30
+
+# NO deployment. The C4C job uploads reviewable artifacts only. CI retention
+# is temporary and cannot satisfy the off-CI immutable-copy C4D gate.
+# Cloudflare's separately configured Git integration may create its own PR
+# preview; this workflow does not alter Cloudflare or switch production.
