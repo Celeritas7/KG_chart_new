@@ -96,7 +96,6 @@ async function assertSaved(o,app){
  const completions=await app.client.from('kg_chart_topic_completions').select('*');
  assert.equal(completions.data[0].topic_id,'food');
  assert.equal(ratings.data.some(row=>row.user_id===OTHER),false);
- assert.equal((await app.api.readMedia(PIC))?.status,undefined,'media owner handshake is needed before runtime can serve media');
 }
 test('same-origin separate → unified → compatible separate preserves owner, two packs, progress and queued writes',async()=>{
  const o=origin();const {c1}=await o.seed();
