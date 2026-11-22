@@ -133,30 +133,46 @@ async function installedRevision(page){
  }));
 }
 async function updateWorker(page,expected){
+ // update() starts an asynchronous install; its promise does not guarantee a waiting worker.
+ // A no-op update cannot satisfy this gate merely because the old controller is activated.
+ await page.evaluate(async()=>{const reg=await navigator.serviceWorker.getRegistration('/');await reg.update();});
+ await page.waitForFunction(async expected=>{
+  const reg=await navigator.serviceWorker.getRegistration('/');
+  if(reg?.waiting?.state==='installed')return true;
+  return false;
+ },expected,{timeout:deadline});
+ const before=await installedRevision(page);
+ assert.notEqual(before,expected,'old worker must remain controlling until explicit apply');
  await page.evaluate(async()=>{
   const reg=await navigator.serviceWorker.getRegistration('/');
-  await reg.update();
-  if(reg.waiting){
-   await new Promise((resolve,reject)=>{
-    const channel=new MessageChannel(),timer=setTimeout(()=>reject(Error('Apply update timed out')),30000);
-    channel.port1.onmessage=e=>{clearTimeout(timer);e.data?.ok?resolve():reject(Error(e.data?.error||'Update rejected'));};
-    reg.waiting.postMessage({type:'KG_OFFLINE_APPLY_UPDATE'},[channel.port2]);
-   });
-  }
+  if(!reg?.waiting || reg.waiting.state!=='installed')throw Error('Candidate did not finish installation');
+  await new Promise((resolve,reject)=>{
+   const channel=new MessageChannel();
+   const timer=setTimeout(()=>reject(Error('Apply update timed out')),30000);
+   channel.port1.onmessage=e=>{
+    clearTimeout(timer);
+    e.data?.ok?resolve():reject(Error(e.data?.error||'Update rejected'));
+   };
+   reg.waiting.postMessage({type:'KG_OFFLINE_APPLY_UPDATE'},[channel.port2]);
+  });
  });
- await page.waitForFunction(expected=>navigator.serviceWorker.controller?.scriptURL.endsWith('/sw.js')&&navigator.serviceWorker.controller?.state==='activated',expected,{timeout:deadline});
- await page.waitForFunction(async(expected)=>{
+ await page.waitForFunction(async expected=>{
   const reg=await navigator.serviceWorker.getRegistration('/');
-  if(reg?.waiting)return false;
-  // Ask the controlling worker; the same path is served for all editions.
+  if(reg?.waiting || !reg?.active || navigator.serviceWorker.controller!==reg.active)return false;
   return new Promise(resolve=>{
-   const listener=e=>{if(e.data?.type==='KG_OFFLINE_VERSION'){navigator.serviceWorker.removeEventListener('message',listener);resolve(e.data.revision===expected);}};
-   navigator.serviceWorker.addEventListener('message',listener);
+   const timer=setTimeout(()=>{navigator.serviceWorker.removeEventListener('message',listen);resolve(false);},900);
+   const listen=e=>{
+    if(e.data?.type!=='KG_OFFLINE_VERSION'||e.source!==navigator.serviceWorker.controller)return;
+    clearTimeout(timer);navigator.serviceWorker.removeEventListener('message',listen);
+    resolve(e.data.revision===expected);
+   };
+   navigator.serviceWorker.addEventListener('message',listen);
    navigator.serviceWorker.controller?.postMessage({type:'KG_OFFLINE_GET_VERSION'});
-   setTimeout(()=>{navigator.serviceWorker.removeEventListener('message',listener);resolve(false);},1500);
   });
  },expected,{timeout:deadline});
+ assert.equal(await installedRevision(page),expected);
 }
+
 try{
  browser=await chromium.launchPersistentContext(profile,{headless:true,serviceWorkers:'allow'});
  let page=await browser.newPage();
