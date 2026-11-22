@@ -12,6 +12,7 @@ assert(start>=0 && end>start,'Sync timestamp helper and syncEvent not found');
 const implementation=runtime.slice(start,end);
 const user='user-123';
 const RATING='kg_chart_user_ratings',COMPLETION='kg_chart_topic_completions';
+const SESSION='kg_chart_quiz_sessions',ANSWER='kg_chart_quiz_answers';
 const UTC='2026-11-20T13:00:00.000Z';
 const OFFSET='2026-11-20T13:00:00.000+00:00';
 const LATER='2026-11-21T13:00:00.000Z';
@@ -21,6 +22,7 @@ const formatStamp=value=>value==null?value:new Date(value).toISOString().replace
 function makeClient(initial={},afterWrite=null) {
   const rows=new Map(Object.entries(initial).map(([table,row])=>[table,row?{...row}:null]));
   const writes=[];
+  const attempts=[];
   const client={from(table) {
     const filters=[];
     return {
@@ -31,9 +33,16 @@ function makeClient(initial={},afterWrite=null) {
         if(!row || !filters.every(([key,value])=>row[key]===value))
           return {data:null,error:null};
         const formatted={...row};
-        for(const key of ['last_reviewed_at','completed_at','updated_at'])
+        for(const key of ['last_reviewed_at','completed_at','updated_at','created_at','answered_at'])
           if(formatted[key]!=null)formatted[key]=formatStamp(formatted[key]);
         return {data:formatted,error:null};
+      },
+      async insert(row) {
+        attempts.push({table,row:{...row}});
+        if(rows.get(table)?.id===row.id) return {data:null,error:{code:'23505',message:'duplicate key'}};
+        writes.push({table,row:{...row}});
+        rows.set(table,{...row});
+        return {data:null,error:null};
       },
       async upsert(row) {
         writes.push({table,row:{...row}});
@@ -45,13 +54,14 @@ function makeClient(initial={},afterWrite=null) {
   }};
   const context={owner:user,accountGuard:()=>()=>{},live:client,
     TABLES:{ratings:RATING,completions:COMPLETION,levels:'kg_chart_user_levels',
-      prefs:'kg_chart_user_prefs',sessions:'kg_chart_quiz_sessions'},
+      prefs:'kg_chart_user_prefs',sessions:SESSION,answers:ANSWER},
     PRIMARY:{
       [RATING]:['user_id','vocabulary_id','language_code'],
-      [COMPLETION]:['user_id','language_code','topic_id']
+      [COMPLETION]:['user_id','language_code','topic_id'],
+      [SESSION]:['id'],[ANSWER]:['id']
     }};
   const syncEvent=vm.runInNewContext(implementation+'\nsyncEvent',context);
-  return {syncEvent,writes,rows};
+  return {syncEvent,writes,rows,attempts};
 }
 
 function rating(fields={},baseUpdatedAt=null) {
@@ -110,4 +120,73 @@ test('a genuine read-back rating mismatch still blocks acknowledgment',async()=>
   });
   await assert.rejects(h.syncEvent(rating()),/kg_chart_user_ratings\.rating/);
   assert.equal(h.writes.length,1);
+});
+
+function session(fields={}) {
+  return {ownerId:user,table:SESSION,kind:'insert',filters:[],
+    row:{id:'session-one',user_id:user,language_code:'my',topic_id:'food',
+      quiz_type:'native_to_image',total_questions:18,correct_answers:18,
+      created_at:UTC,completed_at:UTC,...fields}};
+}
+function answer(fields={}) {
+  return {ownerId:user,table:ANSWER,kind:'insert',filters:[],
+    row:{id:'answer-one',session_id:'session-one',vocabulary_id:'pig',
+      user_answer_vocabulary_id:'pig',is_correct:true,response_time_ms:500,
+      created_at:UTC,answered_at:UTC,...fields}};
+}
+
+test('duplicate quiz session retry acknowledges equivalent created/completed timestamps',async()=>{
+  const event=session();
+  const remote={...event.row,created_at:OFFSET,completed_at:OFFSET};
+  const h=makeClient({[SESSION]:remote});
+  await h.syncEvent(event);
+  assert.equal(h.attempts.length,1,'The duplicate insert was actually retried');
+  assert.equal(h.writes.length,0,'Retry does not generate another session');
+  assert.equal(h.rows.get(SESSION).created_at,OFFSET,'Remote record is unchanged');
+  assert.equal(event.row.created_at,UTC,'Queued record remains unmodified');
+});
+
+test('duplicate quiz answer retry acknowledges equivalent created/answered timestamps',async()=>{
+  const event=answer();
+  const h=makeClient({[ANSWER]:{...event.row,created_at:OFFSET,answered_at:OFFSET}});
+  await h.syncEvent(event);
+  assert.equal(h.attempts.length,1);
+  assert.equal(h.writes.length,0,'Retry does not duplicate an answer');
+  assert.equal(event.row.answered_at,UTC,'Queued answer was not rewritten');
+});
+
+test('duplicate quiz session with genuinely different time remains unacknowledged',async()=>{
+  const event=session();
+  const saved={...event.row,created_at:LATER,completed_at:OFFSET};
+  const h=makeClient({[SESSION]:saved});
+  await assert.rejects(h.syncEvent(event),/kg_chart_quiz_sessions\.created_at/);
+  assert.equal(h.writes.length,0);
+  assert.equal(h.rows.get(SESSION).created_at,LATER,'Conflicting server history is protected');
+});
+
+test('duplicate quiz answer with a different result remains unacknowledged',async()=>{
+  const event=answer();
+  const saved={...event.row,created_at:OFFSET,answered_at:OFFSET,is_correct:false};
+  const h=makeClient({[ANSWER]:saved});
+  await assert.rejects(h.syncEvent(event),/kg_chart_quiz_answers\.is_correct/);
+  assert.equal(h.writes.length,0);
+  assert.equal(h.rows.get(ANSWER).is_correct,false,'Conflicting answer is protected');
+});
+
+test('duplicate quiz answer with a different answered_at remains unacknowledged',async()=>{
+  const event=answer();
+  const saved={...event.row,created_at:OFFSET,answered_at:EARLIER};
+  const h=makeClient({[ANSWER]:saved});
+  await assert.rejects(h.syncEvent(event),/kg_chart_quiz_answers\.answered_at/);
+  assert.equal(h.writes.length,0);
+});
+
+test('new quiz inserts still work normally and are acknowledged',async()=>{
+  for(const event of [session(),answer()]){
+    const h=makeClient();
+    await h.syncEvent(event);
+    assert.equal(h.attempts.length,1);
+    assert.equal(h.writes.length,1);
+    assert.deepEqual(h.rows.get(event.table),event.row);
+  }
 });
