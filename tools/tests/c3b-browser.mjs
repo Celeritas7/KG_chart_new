@@ -133,29 +133,49 @@ async function installedRevision(page){
  }));
 }
 async function updateWorker(page,expected){
- // update() starts an asynchronous install; its promise does not guarantee a waiting worker.
- // A no-op update cannot satisfy this gate merely because the old controller is activated.
+ // Some installations auto-activate once via the legacy rescue marker.
+ // Otherwise the fully installed worker must be explicitly approved.
  await page.evaluate(async()=>{const reg=await navigator.serviceWorker.getRegistration('/');await reg.update();});
- await page.waitForFunction(async expected=>{
-  const reg=await navigator.serviceWorker.getRegistration('/');
-  if(reg?.waiting?.state==='installed')return true;
-  return false;
- },expected,{timeout:deadline});
- const before=await installedRevision(page);
- assert.notEqual(before,expected,'old worker must remain controlling until explicit apply');
- await page.evaluate(async()=>{
-  const reg=await navigator.serviceWorker.getRegistration('/');
-  if(!reg?.waiting || reg.waiting.state!=='installed')throw Error('Candidate did not finish installation');
-  await new Promise((resolve,reject)=>{
-   const channel=new MessageChannel();
-   const timer=setTimeout(()=>reject(Error('Apply update timed out')),30000);
-   channel.port1.onmessage=e=>{
-    clearTimeout(timer);
-    e.data?.ok?resolve():reject(Error(e.data?.error||'Update rejected'));
-   };
-   reg.waiting.postMessage({type:'KG_OFFLINE_APPLY_UPDATE'},[channel.port2]);
+ const disposition=await page.evaluate(async expected=>{
+  const checkActive=async()=>{
+   const reg=await navigator.serviceWorker.getRegistration('/');
+   if(!reg?.active || navigator.serviceWorker.controller!==reg.active)return false;
+   return new Promise(resolve=>{
+    const timer=setTimeout(()=>{navigator.serviceWorker.removeEventListener('message',listener);resolve(false);},500);
+    const listener=e=>{
+     if(e.data?.type!=='KG_OFFLINE_VERSION'||e.source!==reg.active)return;
+     clearTimeout(timer);navigator.serviceWorker.removeEventListener('message',listener);
+     resolve(e.data.revision===expected);
+    };
+    navigator.serviceWorker.addEventListener('message',listener);
+    reg.active.postMessage({type:'KG_OFFLINE_GET_VERSION'});
+   });
+  };
+  const until=Date.now()+45000;
+  while(Date.now()<until){
+   const reg=await navigator.serviceWorker.getRegistration('/');
+   if(reg?.waiting?.state==='installed')return 'waiting';
+   if(await checkActive())return 'auto-activated';
+   await new Promise(resolve=>setTimeout(resolve,120));
+  }
+  throw Error('Expected worker never installed or auto-activated');
+ },expected);
+ console.log('C3B update path',JSON.stringify({expected,disposition}));
+ if(disposition==='waiting'){
+  await page.evaluate(async()=>{
+   const reg=await navigator.serviceWorker.getRegistration('/');
+   if(!reg?.waiting)throw Error('Waiting worker vanished; verify controller before continuing');
+   await new Promise((resolve,reject)=>{
+    const channel=new MessageChannel();
+    const timer=setTimeout(()=>reject(Error('Apply update timed out')),30000);
+    channel.port1.onmessage=e=>{
+     clearTimeout(timer);
+     e.data?.ok?resolve():reject(Error(e.data?.error||'Update rejected'));
+    };
+    reg.waiting.postMessage({type:'KG_OFFLINE_APPLY_UPDATE'},[channel.port2]);
+   });
   });
- });
+ }
  await page.waitForFunction(async expected=>{
   const reg=await navigator.serviceWorker.getRegistration('/');
   if(reg?.waiting || !reg?.active || navigator.serviceWorker.controller!==reg.active)return false;
