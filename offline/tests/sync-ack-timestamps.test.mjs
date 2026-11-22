@@ -159,7 +159,7 @@ test('duplicate quiz session with genuinely different time remains unacknowledge
   const event=session();
   const saved={...event.row,created_at:LATER,completed_at:OFFSET};
   const h=makeClient({[SESSION]:saved});
-  await assert.rejects(h.syncEvent(event),/duplicate key/);
+  await assert.rejects(h.syncEvent(event),/kg_chart_quiz_sessions\.created_at/);
   assert.equal(h.writes.length,0);
   assert.equal(h.rows.get(SESSION).created_at,LATER,'Conflicting server history is protected');
 });
@@ -168,7 +168,7 @@ test('duplicate quiz answer with a different result remains unacknowledged',asyn
   const event=answer();
   const saved={...event.row,created_at:OFFSET,answered_at:OFFSET,is_correct:false};
   const h=makeClient({[ANSWER]:saved});
-  await assert.rejects(h.syncEvent(event),/duplicate key/);
+  await assert.rejects(h.syncEvent(event),/kg_chart_quiz_answers\.is_correct/);
   assert.equal(h.writes.length,0);
   assert.equal(h.rows.get(ANSWER).is_correct,false,'Conflicting answer is protected');
 });
@@ -177,7 +177,7 @@ test('duplicate quiz answer with a different answered_at remains unacknowledged'
   const event=answer();
   const saved={...event.row,created_at:OFFSET,answered_at:EARLIER};
   const h=makeClient({[ANSWER]:saved});
-  await assert.rejects(h.syncEvent(event),/duplicate key/);
+  await assert.rejects(h.syncEvent(event),/kg_chart_quiz_answers\.answered_at/);
   assert.equal(h.writes.length,0);
 });
 
