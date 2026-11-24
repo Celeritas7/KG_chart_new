@@ -85,6 +85,7 @@
   <div id="root"></div>
   
   <script src="./js/kg-learner-access.js"></script>
+  <script src="./js/kg-sentence-access.js"></script>
   <script type="text/babel">
     const { useState, useEffect, useCallback, useMemo, createContext, useContext } = React;
 
@@ -3563,7 +3564,7 @@
             poolVocabulary={(props.poolVocabulary || props.vocabulary).filter(v => v.topic_id !== 'friends_names')} />;
     }
 
-    function SentenceQuizView({ languageCode, user, meaningName, modeToggle }) {
+    function SentenceQuizView({ languageCode, user, meaningName, modeToggle, sentenceAccess }) {
       const [flagSentence, setFlagSentence] = useState(null);
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       useAudioState();
@@ -3612,7 +3613,10 @@
       }, [user, languageCode, sessionSaved]);
 
       const priv = React.useContext(PrivateLessonsContext);
-      const all = useMemo(() => (sentences || []).filter(x => !priv.groups.has(x.group_name)).map(x => ({ ...x, display_text: sentenceMeaning(x, meaningName) })), [sentences, priv, meaningName]);
+      const all = useMemo(() => window.KGSentenceAccess.filterSentences(
+        sentenceAccess,(sentences || []).filter(x => !priv.groups.has(x.group_name)))
+          .map(x => ({ ...x, display_text: sentenceMeaning(x, meaningName) })),
+        [sentences, priv, meaningName, sentenceAccess]);
       const groups = useMemo(() => [...new Set(all.map(x => x.group_name).filter(Boolean))], [all]);
       const filtered = useMemo(() => (group === 'all' ? all : all.filter(x => x.group_name === group)), [all, group]);
       const isBuild = sType === 'build_sentence';
@@ -4380,7 +4384,7 @@
       );
     }
 
-    function SpeakView({ languageCode, user, meaningName, modeToggle }) {
+    function SpeakView({ languageCode, user, meaningName, modeToggle, sentenceAccess }) {
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       const audioVersion = useAudioState();
       const priv = React.useContext(PrivateLessonsContext);
@@ -4424,12 +4428,13 @@
       const groups = useMemo(() => {
         const by = new Map();
         (sentences || []).forEach(s => {
-          if (!s.group_name || priv.groups.has(s.group_name)) return;
+          if (!s.group_name || priv.groups.has(s.group_name) ||
+              !window.KGSentenceAccess.isAllowed(sentenceAccess,s.group_name)) return;
           if (!by.has(s.group_name)) by.set(s.group_name, []);
           by.get(s.group_name).push({ ...s, display_text: sentenceMeaning(s, meaningName) });
         });
         return [...by].filter(([, l]) => l.length >= 2).map(([name, lines]) => ({ name, lines }));
-      }, [sentences, priv, meaningName]);
+      }, [sentences, priv, meaningName, sentenceAccess]);
       const current = groups.find(g => g.name === group) || groups[0] || null;
       const lines = current ? current.lines : [];
       const chooseGroup = (name) => {
