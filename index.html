@@ -603,6 +603,56 @@
         : { owner: user?.id, policy: null, error: null, loading: true };
     }
 
+    // U3C2: separate sentence-group authorization. Every restricted group
+    // must be mapped to a verified learning topic at the database layer.
+    // No mapping is cached or inferred from the group's display name.
+    function useSentenceTopicAccess(user, languageCode, policy) {
+      const [result, setResult] = useState({
+        owner: null, key: null, snapshot: null,
+      });
+      const scopeKey = user?.id && languageCode && policy?.state === 'restricted'
+        ? user.id + '|' + languageCode + '|' + policy.revision : null;
+      useEffect(() => {
+        if (!U3C1_SCOPED_UI_ENABLED || !scopeKey) return;
+        let cancelled = false;
+        let request = 0;
+        const reload = async () => {
+          const attempt = ++request;
+          setResult({ owner: user.id, key: scopeKey, snapshot: null });
+          try {
+            const { data, error } = await supabase.rpc(
+              'kg_chart_u3c2_my_sentence_groups', { p_language: languageCode });
+            if (cancelled || attempt !== request) return;
+            const snapshot = error
+              ? { state: 'blocked', groups: [], reason: 'rpc_unavailable' }
+              : window.KGSentenceAccess.parseGroupSnapshot(
+                data, policy, languageCode);
+            setResult({ owner: user.id, key: scopeKey, snapshot });
+          } catch (_) {
+            if (!cancelled && attempt === request) setResult({
+              owner: user.id, key: scopeKey,
+              snapshot: { state: 'blocked', groups: [], reason: 'rpc_unavailable' },
+            });
+          }
+        };
+        reload();
+        window.addEventListener('focus',reload);
+        window.addEventListener('online',reload);
+        return () => {
+          cancelled=true;
+          request++;
+          window.removeEventListener('focus',reload);
+          window.removeEventListener('online',reload);
+        };
+      }, [scopeKey]);
+      if (!U3C1_SCOPED_UI_ENABLED || policy?.state === 'legacy')
+        return { state: 'legacy', groups: null, serverEnforced: false };
+      if (!scopeKey || result.key !== scopeKey || result.owner !== user?.id
+        || !result.snapshot)
+        return { state: 'blocked', groups: [], reason: 'loading' };
+      return result.snapshot;
+    }
+
     function LearnerAccessUnavailable({ title, description }) {
       const { signOut } = useAuth();
       return (
@@ -3489,8 +3539,10 @@
         const saved = loadFromStorage(QUIZ_MODE_KEY, 'words');
         return ['sentences', 'typing', 'speak', 'say', 'colours'].includes(saved) ? saved : 'words';
       });
-      const allowedModes = window.KGLearnerAccess.visibleQuizModes(props.accessPolicy);
-      const currentMode = window.KGLearnerAccess.chooseQuizMode(props.accessPolicy, mode);
+      const allowedModes = window.KGLearnerAccess.visibleQuizModes(
+        props.accessPolicy,props.sentenceAccess);
+      const currentMode = window.KGLearnerAccess.chooseQuizMode(
+        props.accessPolicy, mode,props.sentenceAccess);
       useEffect(() => {
         if (currentMode && mode !== currentMode) setMode(currentMode);
       }, [mode, currentMode]);
@@ -3501,10 +3553,10 @@
         onChange={next => { if (allowedModes.includes(next)) setMode(next); }} />;
       if (currentMode === 'colours') return <ColourQuizView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
       if (currentMode === 'say') return <SayItView topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
-      if (currentMode === 'speak') return <SpeakView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
+      if (currentMode === 'speak') return <SpeakView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} sentenceAccess={props.sentenceAccess} />;
       if (currentMode === 'typing') return <TypingView key={props.languageCode} topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} accessPolicy={props.accessPolicy} />;
       return currentMode === 'sentences'
-        ? <SentenceQuizView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />
+        ? <SentenceQuizView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} sentenceAccess={props.sentenceAccess} />
         : <WordQuizView {...props} modeToggle={toggle}
             topics={props.topics.filter(t => t.id !== 'friends_names')}
             vocabulary={props.vocabulary.filter(v => v.topic_id !== 'friends_names')}
@@ -6122,8 +6174,11 @@
       const desiredLanguage = window.KGLearnerAccess.chooseLanguage(policy, currentLanguage, allowedLanguages);
       // A stale saved language must not even reach the topic/vocabulary loaders.
       const selectedLanguage = verified && desiredLanguage === currentLanguage ? currentLanguage : null;
-      const allowedViews = useMemo(() => window.KGLearnerAccess.visibleViews(policy), [policy]);
-      const desiredView = window.KGLearnerAccess.chooseView(policy, activeView);
+      const sentenceAccess = useSentenceTopicAccess(user, selectedLanguage, policy);
+      const allowedViews = useMemo(() =>
+        window.KGLearnerAccess.visibleViews(policy,sentenceAccess),
+        [policy,sentenceAccess]);
+      const desiredView = window.KGLearnerAccess.chooseView(policy, activeView,sentenceAccess);
       const selectedView = verified && desiredView === activeView ? activeView : null;
       const meaningName = meaningNameFor(selectedLanguage, meaningsInEnglish);
 
@@ -6230,7 +6285,7 @@
                     } : null} />
                 )}
                 {selectedView === 'quiz' && (
-                  <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={selectedLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} accessPolicy={policy} />
+                  <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={selectedLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} accessPolicy={policy} sentenceAccess={sentenceAccess} />
                 )}
                 {selectedView === 'flashcard' && (
                   <FlashcardView key={selectedLanguage} topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} ratingsLoaded={ratingsLoaded} onRate={updateRating} onClearRating={clearRating} languageCode={selectedLanguage} user={user} />
