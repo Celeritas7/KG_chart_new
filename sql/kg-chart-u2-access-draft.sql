@@ -122,16 +122,16 @@ BEGIN
   END IF;
 
   IF EXISTS (
-    SELECT 1 FROM unnest(p_languages) AS code
-    LEFT JOIN public.kg_chart_languages AS l ON l.code = code
+    SELECT 1 FROM unnest(p_languages) AS selected_lang(code)
+    LEFT JOIN public.kg_chart_languages AS l ON l.code = selected_lang.code
     WHERE l.code IS NULL OR l.is_active IS DISTINCT FROM true
   ) THEN
     RAISE EXCEPTION 'Draft includes a language that is not active in KG Chart';
   END IF;
   IF EXISTS (
-    SELECT 1 FROM unnest(p_features) AS feature
+    SELECT 1 FROM unnest(p_features) AS selected_feature(feature_key)
     LEFT JOIN public.kg_chart_access_feature_catalog AS f
-      ON f.feature_key = feature
+      ON f.feature_key = selected_feature.feature_key
     WHERE f.feature_key IS NULL OR f.is_active IS DISTINCT FROM true
   ) THEN
     RAISE EXCEPTION 'Draft includes an unavailable learning feature';
