@@ -257,6 +257,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg-primary); color:
     <div class="nav-section-label">Analytics</div>
     <div class="nav-item" data-page="quiz-stats"><span class="icon">🧠</span>Quiz Stats</div>
     <div class="nav-item" data-page="pronunciation"><span class="icon">🎙️</span>Pronunciation</div>
+    <div class="nav-item" data-page="access"><span class="icon">🛡️</span>User Permissions</div>
     <div class="nav-item" data-page="levels"><span class="icon">🎚️</span>Learner Levels</div>
     <div class="nav-item" data-page="rules"><span class="icon">⚖️</span>Rules</div>
   </nav>
@@ -411,6 +412,7 @@ function render(){
     case'coverage':t.textContent='Coverage';a.innerHTML=`<button class="btn" onclick="exportMissing('csv','selected')">⬇ Selected Lang</button><button class="btn" onclick="exportMissing('csv','all')">⬇ All Languages</button><button class="btn" onclick="copyAIPrompt()">📋 AI Prompt</button><button class="btn btn-accent" onclick="triggerImport('trans')">⬆ Import</button>`;renderCoverage(c);break;
     case'quiz-stats':t.textContent='Quiz Stats';a.innerHTML='';renderQuiz(c);break;
     case'pronunciation':t.textContent='Pronunciation';a.innerHTML=`<button class="btn" onclick="PRON.data=null;render()">↻ Refresh</button><button class="btn" onclick="exportPron()">⬇ CSV</button>`;renderPron(c);break;
+    case'access':t.textContent='User Permissions';a.innerHTML='';window.KGAccessStudio ? window.KGAccessStudio.render(c,{sb,users:S.users,languages:S.languages,topics:S.topics,topicTranslations:S.topicTrans}) : (c.textContent='Permissions editor did not load. Refresh and review installed assets.');break;
     case'levels':t.textContent='Learner Levels';a.innerHTML='';renderLevels(c);break;
     case'rules':t.textContent='Rules';a.innerHTML='';renderRules(c);break;
   }
@@ -2047,5 +2049,7 @@ function renderQuiz(el){
 
 // ===== INIT (handled by checkAdminAuth above) =====
 </script>
+<script src="./js/kg-admin-access-core.js"></script>
+<script src="./js/kg-admin-access-ui.js"></script>
 </body>
 </html>
