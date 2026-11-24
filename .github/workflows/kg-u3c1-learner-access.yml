@@ -1,0 +1,44 @@
+name: KG Chart U3C1 - learner view permissions (no production)
+
+on:
+  pull_request:
+    paths:
+      - 'index.html'
+      - 'js/kg-learner-access.js'
+      - 'tools/build-offline.mjs'
+      - 'tools/tests/u3c1-learner-permissions.test.mjs'
+      - 'docs/U3C1-LEARNER-ACCESS-REVIEW.md'
+      - '.github/workflows/kg-u3c1-learner-access.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-ui-permissions:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test policy schema, legacy compatibility, restricted scopes and saved modes
+        run: |
+          set -euo pipefail
+          node --check js/kg-learner-access.js
+          node --test tools/tests/u3c1-learner-permissions.test.mjs
+      - name: Verify no production database, Edge or deployment calls are included
+        run: |
+          set -euo pipefail
+          BASE=$(git merge-base origin/main HEAD)
+          git diff --name-only "$BASE" HEAD | tee /tmp/u3c-changes.txt
+          if grep -Eq '^(sql/|supabase/|offline/runtime.js|offline/sw.js)' /tmp/u3c-changes.txt; then
+            echo 'U3C1 is UI-only; backend and offline runtime need separate review.'
+            exit 1
+          fi
+
+# A passing UI test does NOT authorize production rollout. U3A currently
+# declares server_enforced=false, so restricted learners must remain blocked
+# until U3D/production RLS gates explicitly establish enforcement.
