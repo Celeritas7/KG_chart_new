@@ -44,7 +44,7 @@ test('private-only audio, shared text and ordinary audio are distinct classes',(
   assert.equal(report.privacy_enforced,false);
   assert.equal(report.referenced.audio.private_exclusive_candidate,2); // phrase + prompt
   assert.equal(report.referenced.audio.shared,1); // same normalized word referenced both ways
-  assert.equal(report.referenced.audio.public_only,3); // public word/prompt/phrase; ja also
+  assert.equal(report.referenced.audio.public_only,4); // public my word/prompt/phrase and ja word
   assert.equal(report.observed.audio.private_exclusive_candidate,1);
   assert.equal(report.observed.audio.shared,1);
   assert.equal(report.observed.audio.public_only,1);
@@ -61,7 +61,7 @@ test('private picture reference is a candidate, never automatically removed',()=
 test('one hash for different source texts is collision-review even when private',()=>{
  const s={...base,mediaObjects:[{name:'audio/my/m/abcdef01.mp3'}]};
  const r=auditPrivateMedia(s,{hash:()=> 'abcdef01'});
- assert.equal(r.referenced.audio.collision_review,2); // my and ja each hash collision? ja has only 1 text
+ assert.equal(r.referenced.audio.collision_review,1); // many distinct Myanmar texts collide
  assert.equal(r.observed.audio.collision_review,1);
  assert.equal(r.candidate_private_audio_hashes,0);
 });
