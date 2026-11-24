@@ -91,7 +91,7 @@ test('Pending U3A enforcement cannot be mistaken for unrestricted or active poli
 
 test('Malformed, missing, contradictory and forged snapshots fail closed',()=>{
   const invalid=[
-    null,{},false,{contract:2,...legacy},
+    null,{},false,{...legacy,contract:2},
     {...legacy,languages:[]},
     {...snapshot,topics:[{language_code:'ja',topic_id:'food'}]},
     {...snapshot,languages:['my',null]},
@@ -117,6 +117,12 @@ test('Restricted sentence and speak modes are withheld until topic mappings exis
     'The grant is recorded; UI only withholds the unsafe unmapped group');
   const l=api.parseSnapshot(legacy);
   assert.ok(api.visibleQuizModes(l).includes('sentences'));
+});
+
+test('U3C1 activation is explicitly disabled until server and offline acceptance',()=>{
+  assert.match(learner,/const U3C1_SCOPED_UI_ENABLED = false/);
+  assert.match(learner,/if \(!U3C1_SCOPED_UI_ENABLED\) return/);
+  assert.match(learner,/policy: U3C1_LEGACY_POLICY, error: null, loading: false/);
 });
 
 test('Scoped rules are loaded by verified account; not by caller-supplied email',()=>{
