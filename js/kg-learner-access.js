@@ -53,11 +53,17 @@
   const canFeature=(policy,feature)=>!!ready(policy)&&(
     isLegacy(policy)||policy.features.includes(feature));
   const viewFeature=(v)=>FEATURE[v]||null;
+  // Sentence groups currently lack a full topic-level mapping. Even when
+  // admin grants a sentence/speak feature, a restricted learner must not see
+  // unrelated groups until U3D proves a source-to-topic authorization link.
+  const RESTRICTED_TOPIC_SAFE_MODES=new Set(['words','typing','say','colours']);
+  const visibleQuizModes=(policy)=>QUIZ_MODES.filter(m=>
+    canFeature(policy,FEATURE[m]) &&
+    (isLegacy(policy)||RESTRICTED_TOPIC_SAFE_MODES.has(m)));
   const canView=(policy,view)=>VIEWS.includes(view)&&(
-    view==='quiz'?QUIZ_MODES.some(mode=>canFeature(policy,FEATURE[mode])):
+    view==='quiz'?visibleQuizModes(policy).length>0:
       canFeature(policy,FEATURE[view]));
   const visibleViews=(policy)=>VIEWS.filter(v=>canView(policy,v));
-  const visibleQuizModes=(policy)=>QUIZ_MODES.filter(m=>canFeature(policy,FEATURE[m]));
   function visibleLanguages(policy,languages){
     return ready(policy)?(languages||[]).filter(l=>l?.is_active!==false&&canLanguage(policy,l.code)):[];
   }
