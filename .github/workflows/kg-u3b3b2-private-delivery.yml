@@ -1,0 +1,70 @@
+name: KG Chart U3B3B2 - protected private media contract (no production)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/kg-u3b3b2-private-delivery.yml'
+      - 'sql/kg-chart-u3b3b2-private-media-registry.sql'
+      - 'supabase/functions/kg-private-media/**'
+      - 'js/kg-private-media-client.mjs'
+      - 'tools/tests/u3b3b2-*'
+      - 'docs/U3B3B2-PROTECTED-MEDIA-REVIEW.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-private-delivery:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Run source-bound signing and client URL rejection tests
+        run: node --experimental-strip-types --test tools/tests/u3b3b2-private-delivery.test.mjs
+      - name: Start disposable PostgreSQL 17 with no network
+        run: |
+          set -euo pipefail
+          docker run -d --name kg-u3b3b2-synthetic \
+            --network none \
+            -e POSTGRES_PASSWORD=fictional-ci-only \
+            -e POSTGRES_DB=kg_u3b3b2_fixture \
+            postgres:17-alpine
+          for i in {1..50}; do
+            if docker exec kg-u3b3b2-synthetic psql -X -At -v ON_ERROR_STOP=1 \
+              -U postgres -d kg_u3b3b2_fixture -c 'SELECT 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'Fictional database was not queryable' >&2
+          exit 1
+      - name: Test stored resource metadata and private signing authorization
+        run: |
+          set -euo pipefail
+          pgfixture() {
+            docker exec -i kg-u3b3b2-synthetic psql -X -v ON_ERROR_STOP=1 \
+              -U postgres -d kg_u3b3b2_fixture
+          }
+          pgfixture < tools/tests/u1-access-fixture.sql
+          pgfixture < sql/kg-chart-u1-access-foundation.sql
+          pgfixture < tools/tests/u3a-access-fixture.sql
+          pgfixture < tools/tests/u3b1-content-fixture.sql
+          pgfixture < sql/kg-chart-u3b1-restrictive-content-rls.sql
+          pgfixture < tools/tests/u3b2-write-fixture.sql
+          pgfixture < sql/kg-chart-u3b2-write-rpc-guards.sql
+          pgfixture < sql/kg-chart-u3b3a-private-records.sql
+          pgfixture < tools/tests/u3b3a-private-fixture.sql
+          pgfixture < sql/kg-chart-u3b3b1-legacy-private-write-rpc.sql
+          pgfixture < sql/kg-chart-u3b3b2-private-media-registry.sql
+          pgfixture < sql/kg-chart-u3b3b2-private-media-registry.sql
+          pgfixture < tools/tests/u3b3b2-private-media-fixture.sql
+          pgfixture < tools/tests/u3b3b2-private-media-assertions.sql
+      - name: Destroy fictional database
+        if: always()
+        run: docker rm -f kg-u3b3b2-synthetic || true
+
+# Does not create any Supabase Storage bucket, read actual private content,
+# sign a real URL, call external networks or alter live user/devices/packs.
