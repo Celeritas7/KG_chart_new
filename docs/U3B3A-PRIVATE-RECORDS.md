@@ -55,6 +55,12 @@ In a disposable Docker PostgreSQL 17 database with network disabled and **only f
 
 These isolated tests do NOT validate real Auth OAuth state, CDN cache invalidation, public media protection, existing installed iPad/Android apps or Cloudflare production.
 
+## Remaining privileged and legacy-write caveats (NO-GO)
+
+This U3B3A PR closes the specified **table SELECT** exposures and reporter ownership, but the existing U3B2 privileged functions are a separate access surface. In particular, legacy-mode shortcuts in quiz write and pronunciation checks may accept a referenced private word/sentence ID that the same learner can no longer SELECT. The existing security-definer answer-history endpoint may also expose identifiers associated with an old private quiz. Before a privacy-safe rollout, the next stage must test and close those **legacy write and privileged RPC bypasses** for private words, sentences and groups, not merely the restricted-role cases. Protecting the data in table RLS alone is insufficient.
+
+There is also no authorization to make existing public audio/image objects private or invalidate issued URLs. Neither a GitHub merge nor the U3B3A SQL represents completion of U3B3 as a whole.
+
 ## U3B3B — Required separate media security stage
 
 **Current situation: NO-GO for confidential audio/images.** The public vocabulary-assets bucket still serves media by URL without the privacy guarantees of a restricted RLS-protected private bucket. Both the online JS audio catalog and old offline packs use public audio/image URLs.
