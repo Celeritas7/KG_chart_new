@@ -47,6 +47,15 @@ ALTER TABLE public.kg_chart_flags
   ADD COLUMN colour_phrase_id uuid REFERENCES public.kg_chart_colour_phrases(id),
   ADD COLUMN status varchar DEFAULT 'open';
 
+-- Mock the verified email in the real auth.jwt()-based levels policy.
+CREATE FUNCTION auth.jwt() RETURNS jsonb
+  LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog
+  AS $
+    SELECT jsonb_build_object('email',u.email)
+    FROM auth.users AS u WHERE u.id=auth.uid()
+  $;
+GRANT EXECUTE ON FUNCTION auth.jwt() TO authenticated;
+
 -- Existing RLS contracts, modeled using the actual verified production names.
 ALTER TABLE public.kg_chart_quiz_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.kg_chart_quiz_answers ENABLE ROW LEVEL SECURITY;
@@ -93,13 +102,13 @@ CREATE POLICY completions_update ON public.kg_chart_topic_completions FOR UPDATE
   USING(user_id=auth.uid()) WITH CHECK(user_id=auth.uid() AND public.kg_chart_is_allowed());
 
 CREATE POLICY levels_read ON public.kg_chart_user_levels FOR SELECT TO authenticated
-  USING (email=lower((SELECT u.email FROM auth.users u WHERE u.id=auth.uid())));
+  USING (email=lower(auth.jwt()->>'email'));
 CREATE POLICY levels_insert ON public.kg_chart_user_levels FOR INSERT TO authenticated
   WITH CHECK (public.kg_chart_is_allowed() AND
-    email=lower((SELECT u.email FROM auth.users u WHERE u.id=auth.uid())));
+    email=lower(auth.jwt()->>'email'));
 CREATE POLICY levels_update ON public.kg_chart_user_levels FOR UPDATE TO authenticated
-  USING(email=lower((SELECT u.email FROM auth.users u WHERE u.id=auth.uid())))
-  WITH CHECK(email=lower((SELECT u.email FROM auth.users u WHERE u.id=auth.uid())));
+  USING(email=lower(auth.jwt()->>'email'))
+  WITH CHECK(email=lower(auth.jwt()->>'email'));
 
 -- U3B1 test fixture's original flags policy grants SELECT only. Add old
 -- expected report-writing policy without modifying production schema.
