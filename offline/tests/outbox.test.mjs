@@ -77,6 +77,8 @@ test('offline session + answers commit to an account-scoped outbox before acknow
       getSession:async()=>({data:{session:{user:{id:UID}}},error:null}),
       signOut:async()=>({error:null}),onAuthStateChange:()=>({data:{subscription:{unsubscribe(){}}}})},
     rpc:async name=>{
+      if(name==='kg_chart_my_private_lesson_visibility')
+        return {data:{contract:1,topics:[],groups:[]},error:null};
       if(name==='kg_chart_check_level_up'){
         remote.levelCheckCalls++;
         if(remote.failLevelOnce){remote.failLevelOnce=false;return {error:{message:'temporary level update timeout'}};}

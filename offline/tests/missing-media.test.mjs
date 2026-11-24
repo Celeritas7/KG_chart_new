@@ -84,7 +84,9 @@ async function fixture({imageMode='missing',audioMissing=false,failPawOnce=false
   };
   const client={
     auth:{getUser:async()=>({data:{user:{id:OWNER,email:'student@example.org'}},error:null})},
-    rpc:async name=>({data:name==='kg_chart_is_admin'?false:true,error:null}),
+    rpc:async name=>name==='kg_chart_my_private_lesson_visibility'
+      ? {data:{contract:1,topics:[],groups:[]},error:null}
+      : {data:name==='kg_chart_is_admin'?false:true,error:null},
     from:table=>new Query([...(content[table]||[])]),
     storage:{from:()=>({getPublicUrl:name=>({data:{publicUrl:ROOT+name}})})},
   };
