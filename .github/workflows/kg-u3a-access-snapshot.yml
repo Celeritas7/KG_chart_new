@@ -1,0 +1,57 @@
+name: KG Chart U3A - verified permission snapshot (no production)
+
+on:
+  pull_request:
+    paths:
+      - 'sql/kg-chart-u3a-access-snapshot.sql'
+      - 'tools/tests/u3a-access-*.sql'
+      - 'tools/tests/u1-access-fixture.sql'
+      - 'sql/kg-chart-u1-access-foundation.sql'
+      - 'docs/U3A-AUTHORIZATION-AUDIT.md'
+      - '.github/workflows/kg-u3a-access-snapshot.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-postgres-permission-snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start disposable PostgreSQL 17 with network disabled
+        run: |
+          set -euo pipefail
+          docker run -d --name kg-u3a-snapshot-db \
+            --network none \
+            -e POSTGRES_PASSWORD=ci-only-fictional-not-a-real-credential \
+            -e POSTGRES_DB=kg_u3a_fixture \
+            postgres:17-alpine
+          for i in {1..50}; do
+            if docker exec kg-u3a-snapshot-db psql -X -At -v ON_ERROR_STOP=1 \
+                -U postgres -d kg_u3a_fixture -c 'SELECT 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'Disposable test database failed to initialize' >&2
+          exit 1
+      - name: Validate identity-bound legacy/restricted snapshot with invented accounts
+        run: |
+          set -euo pipefail
+          psql_fixture() {
+            docker exec -i kg-u3a-snapshot-db psql -X -v ON_ERROR_STOP=1 \
+              -U postgres -d kg_u3a_fixture
+          }
+          psql_fixture < tools/tests/u1-access-fixture.sql
+          psql_fixture < sql/kg-chart-u1-access-foundation.sql
+          psql_fixture < tools/tests/u3a-access-fixture.sql
+          psql_fixture < sql/kg-chart-u3a-access-snapshot.sql
+          psql_fixture < sql/kg-chart-u3a-access-snapshot.sql
+          psql_fixture < tools/tests/u3a-access-assertions.sql
+      - name: Delete the fictional test database
+        if: always()
+        run: docker rm -f kg-u3a-snapshot-db || true
+
+# DO NOT include cloud secrets, production SQL execution or deployments.
+# A green read-only RPC test is not evidence of enforced source-table RLS.
