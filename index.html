@@ -6054,44 +6054,67 @@
 
     function AppContent() {
       const { user } = useAuth();
+      const access = useLearnerAccess(user);
+      const policy = access.policy;
+      const verified = !access.loading && !access.error && window.KGLearnerAccess.ready(policy);
       const [currentLanguage, setCurrentLanguage] = useState(() => loadFromStorage(STORAGE_KEYS.language, 'my'));
       const [activeView, setActiveView] = useState(() => loadFromStorage(STORAGE_KEYS.view, 'chart'));
       const [activeTopic, setActiveTopic] = useState(() => loadFromStorage(STORAGE_KEYS.topic, null));
       const [showEnglish, setShowEnglish] = useState(() => loadFromStorage(STORAGE_KEYS.showEnglish, true));
       const [meaningsInEnglish, setMeaningsInEnglish] = useState(() => loadFromStorage(MEANING_STORAGE_KEY, false));
-      const meaningName = meaningNameFor(currentLanguage, meaningsInEnglish);
 
       const { languages, loading: loadingLangs } = useLanguages();
-      const { topics: allTopics, loading: loadingTopics } = useTopics(currentLanguage, meaningsInEnglish);
-      const { vocabulary: allVocabulary, loading: loadingVocab } = useVocabulary(currentLanguage, meaningsInEnglish);
-      const priv = usePrivateLessons(user, currentLanguage);
-      const rules = useRules(user, currentLanguage);
-      // Never display/download content while the private-lesson identity check
-      // is pending or failed. Preserve progress; do not clear offline storage.
-      const topics = useMemo(() => priv.loaded && !priv.error
-        ? allTopics.filter(t => !priv.topics.has(t.id)) : [], [allTopics, priv]);
-      const vocabulary = useMemo(() => priv.loaded && !priv.error
-        ? allVocabulary.filter(v => !priv.topics.has(v.topic_id)) : [], [allVocabulary, priv]);
-      const { ratings, ratingsLoaded, updateRating, clearRating } = useUserRatings(currentLanguage);
-      const path = useLearningPath({ user, languageCode: currentLanguage, topics, vocabulary, rules });
-      const visibleTopics = path.topics;
-      const fontClassApp = LANGUAGE_FONTS[currentLanguage] || 'font-body';
+      const allowedLanguages = useMemo(() => window.KGLearnerAccess.visibleLanguages(policy, languages), [policy, languages]);
+      const desiredLanguage = window.KGLearnerAccess.chooseLanguage(policy, currentLanguage, allowedLanguages);
+      // A stale saved language must not even reach the topic/vocabulary loaders.
+      const selectedLanguage = verified && desiredLanguage === currentLanguage ? currentLanguage : null;
+      const allowedViews = useMemo(() => window.KGLearnerAccess.visibleViews(policy), [policy]);
+      const desiredView = window.KGLearnerAccess.chooseView(policy, activeView);
+      const selectedView = verified && desiredView === activeView ? activeView : null;
+      const meaningName = meaningNameFor(selectedLanguage, meaningsInEnglish);
 
-      useEffect(() => { saveToStorage(STORAGE_KEYS.language, currentLanguage); }, [currentLanguage]);
-      useEffect(() => { saveToStorage(STORAGE_KEYS.view, activeView); }, [activeView]);
-      useEffect(() => { saveToStorage(STORAGE_KEYS.topic, activeTopic); }, [activeTopic]);
+      const { topics: allTopics, loading: loadingTopics } = useTopics(selectedLanguage, meaningsInEnglish);
+      const { vocabulary: allVocabulary, loading: loadingVocab } = useVocabulary(selectedLanguage, meaningsInEnglish);
+      const priv = usePrivateLessons(user, selectedLanguage);
+      const rules = useRules(user, selectedLanguage);
+      const topics = useMemo(() => priv.loaded && !priv.error
+        ? window.KGLearnerAccess.visibleTopics(policy, selectedLanguage, allTopics)
+          .filter(t => !priv.topics.has(t.id)) : [], [policy, selectedLanguage, allTopics, priv]);
+      const vocabulary = useMemo(() => priv.loaded && !priv.error
+        ? window.KGLearnerAccess.visibleVocabulary(policy, selectedLanguage, allVocabulary, topics)
+          .filter(v => !priv.topics.has(v.topic_id)) : [],
+          [policy, selectedLanguage, allVocabulary, topics, priv]);
+      const { ratings, ratingsLoaded, updateRating, clearRating } = useUserRatings(selectedLanguage);
+      const path = useLearningPath({ user, languageCode: selectedLanguage, topics, vocabulary, rules });
+      const visibleTopics = path.topics;
+      const fontClassApp = LANGUAGE_FONTS[selectedLanguage] || 'font-body';
+
+      // Repair locally saved preferences when an admin changes visibility.
+      // Do not erase bookmarks, ratings, queued changes or downloaded packs.
+      useEffect(() => {
+        if (!verified || loadingLangs) return;
+        if (desiredLanguage && desiredLanguage !== currentLanguage) setCurrentLanguage(desiredLanguage);
+        if (desiredView && desiredView !== activeView) setActiveView(desiredView);
+      }, [verified, loadingLangs, desiredLanguage, desiredView, currentLanguage, activeView]);
+      useEffect(() => { if (selectedLanguage) saveToStorage(STORAGE_KEYS.language, selectedLanguage); }, [selectedLanguage]);
+      useEffect(() => { if (selectedView) saveToStorage(STORAGE_KEYS.view, selectedView); }, [selectedView]);
+      useEffect(() => { if (verified && selectedLanguage && activeTopic) saveToStorage(STORAGE_KEYS.topic, activeTopic); },
+        [verified, selectedLanguage, activeTopic]);
       useEffect(() => { saveToStorage(STORAGE_KEYS.showEnglish, showEnglish); }, [showEnglish]);
       useEffect(() => { saveToStorage(MEANING_STORAGE_KEY, meaningsInEnglish); }, [meaningsInEnglish]);
-      useEffect(() => { window.KGAudio.loadManifest(currentLanguage); }, [currentLanguage]);
+      useEffect(() => { if (selectedLanguage) window.KGAudio.loadManifest(selectedLanguage); }, [selectedLanguage]);
       useEffect(() => { if (user) window.KGAudio.initPrefs(supabase, user.id); }, [user]);
-      useEffect(() => { window.KGAudio.stop(); }, [activeView, currentLanguage]);
+      useEffect(() => { window.KGAudio.stop(); }, [selectedView, selectedLanguage]);
 
       useEffect(() => {
+        if (!verified || !selectedLanguage) return;
         if (visibleTopics.length > 0) {
           const savedTopicExists = visibleTopics.some(t => t.id === activeTopic);
-          if (!activeTopic || !savedTopicExists) setActiveTopic((visibleTopics.find(t => !t.locked) || visibleTopics[0]).id);
+          if (!savedTopicExists) setActiveTopic((visibleTopics.find(t => !t.locked) || visibleTopics[0]).id);
+        } else if (!loadingTopics && !loadingVocab && activeTopic !== null) {
+          setActiveTopic(null);
         }
-      }, [visibleTopics, activeTopic]);
+      }, [verified, selectedLanguage, visibleTopics, activeTopic, loadingTopics, loadingVocab]);
 
       const topicVocabulary = activeTopic ? vocabulary.filter(v => v.topic_id === activeTopic) : [];
       const currentTopic = visibleTopics.find(t => t.id === activeTopic);
@@ -6099,7 +6122,20 @@
         ? visibleTopics.slice(0, visibleTopics.indexOf(currentTopic)).reverse().find(t => !path.status[t.id]?.empty)
         : null;
 
-      if (loadingLangs) return <div className="min-h-screen flex items-center justify-center"><LoadingSpinner message="Loading..." /></div>;
+      if (loadingLangs || access.loading) return <div className="min-h-screen flex items-center justify-center"><LoadingSpinner message="Verifying learning access..." /></div>;
+      if (access.error || !verified) return <LearnerAccessUnavailable
+        title="Learning access unavailable"
+        description={policy?.reason === 'not_enforced'
+          ? 'Your restricted learning policy is not fully enforced on the server yet. The administrator must complete the access rollout.'
+          : 'KG Chart could not verify your learning permissions. Reconnect and reopen the app. Restricted content will not be shown without authorization.'} />;
+      if (allowedLanguages.length === 0 || allowedViews.length === 0) return <LearnerAccessUnavailable
+        title="No learning access assigned"
+        description="Your account has no permitted languages or study tools. Ask the KG Chart administrator to assign them." />;
+      if (!selectedLanguage || !selectedView) return <div className="min-h-screen flex items-center justify-center"><LoadingSpinner message="Opening permitted lessons..." /></div>;
+      if (policy.state === 'restricted' && !loadingTopics && !loadingVocab
+        && topics.length === 0 && priv.loaded) return <LearnerAccessUnavailable
+        title="No permitted topics"
+        description="Your selected language has no available assigned topics. Ask your administrator to review its topic permissions." />;
 
       return (
         <RulesContext.Provider value={rules}>
