@@ -141,11 +141,16 @@
       // Dynamic import only while deliberately gated ON. The separate offline
       // shell does not load this module during its ordinary legacy startup.
       import('./kg-protected-player.mjs')
-        .then(({acquireProtectedMedia}) => acquireProtectedMedia({
-          kind: 'audio', resource, policy: access.policy,
-          sentenceScope: access.sentenceScope, supabase: access.supabase,
-          projectUrl: access.projectUrl,
-        }))
+        .then(({acquireProtectedMedia}) => {
+          // A stop, language switch or policy revision may win before the
+          // ESM module loads. In that case do not even contact the signer.
+          if (attempt !== protectedAttempt || current?.key !== key) return null;
+          return acquireProtectedMedia({
+            kind: 'audio', resource, policy: access.policy,
+            sentenceScope: access.sentenceScope, supabase: access.supabase,
+            projectUrl: access.projectUrl,
+          });
+        })
         .then(url => {
           if (attempt !== protectedAttempt || current?.key !== key) return;
           if (!url) {
