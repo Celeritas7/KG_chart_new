@@ -545,12 +545,21 @@
     // ==========================================
     // U3C1: VERIFIED, PER-ACCOUNT LEARNER VIEW
     // ==========================================
+    // DO NOT enable this until U1–U3D server and offline acceptance has passed.
+    // Merging the UI PR cannot activate it. The current production database
+    // does not contain the prerequisite snapshot RPC or enforced=true contract.
+    const U3C1_SCOPED_UI_ENABLED = false;
+    const U3C1_LEGACY_POLICY = window.KGLearnerAccess.parseSnapshot({
+      contract: 1, mode: 'legacy', revision: 0, server_enforced: false,
+      languages: null, topics: null, features: null,
+    });
     // This snapshot is a display gate only. Server RLS/Edge authorization
     // must be installed and declared enforced before restricted mode opens.
     // No offline or error path silently assumes a missing policy = legacy.
     function useLearnerAccess(user) {
       const [result, setResult] = useState({ owner: null, policy: null, error: null, loading: true });
       useEffect(() => {
+        if (!U3C1_SCOPED_UI_ENABLED) return;
         if (!user?.id) {
           setResult({ owner: null, policy: null, error: null, loading: true });
           return;
@@ -584,6 +593,12 @@
           window.removeEventListener('focus', reload);
         };
       }, [user?.id]);
+      // Until the gated rollout, preserve the exact legacy navigation and
+      // offline startup contract without making a new Supabase RPC request.
+      // This flag is immutable source code, not a user-toggleable setting.
+      if (!U3C1_SCOPED_UI_ENABLED) return {
+        owner: user?.id, policy: U3C1_LEGACY_POLICY, error: null, loading: false,
+      };
       return result.owner === user?.id ? result
         : { owner: user?.id, policy: null, error: null, loading: true };
     }
