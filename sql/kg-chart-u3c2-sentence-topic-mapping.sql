@@ -109,6 +109,9 @@ SET search_path=pg_catalog
 AS $fn$
 DECLARE v_feature text;
 BEGIN
+  IF auth.uid() IS NULL
+    OR public.kg_chart_is_allowed() IS DISTINCT FROM true
+  THEN RETURN false; END IF;
   IF p_type NOT IN (
       'sentence_to_meaning','meaning_to_sentence','build_sentence',
       'speak_lines','speak_paragraph')
@@ -146,7 +149,7 @@ CREATE OR REPLACE FUNCTION public.kg_chart_u3c2_my_sentence_groups(
 LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path=pg_catalog
 AS $fn$
-DECLARE v_email text; v_mode text; v_groups jsonb;
+DECLARE v_groups jsonb;
 BEGIN
   IF p_language IS NULL OR p_language !~ '^[a-z]{2,3}$'
     THEN RAISE EXCEPTION 'Invalid language scope' USING ERRCODE='22023'; END IF;
