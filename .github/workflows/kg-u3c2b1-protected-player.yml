@@ -1,0 +1,49 @@
+name: KG Chart U3C2B1 - gated protected media player (synthetic)
+
+on:
+  pull_request:
+    paths:
+      - 'index.html'
+      - 'js/kg-audio.js'
+      - 'js/kg-protected-player.mjs'
+      - 'js/kg-protected-media-context.mjs'
+      - 'js/kg-private-media-client.mjs'
+      - 'tools/build-offline.mjs'
+      - 'tools/tests/u3c2b1-protected-player.test.mjs'
+      - 'docs/U3C2B1-PROTECTED-PLAYER-REVIEW.md'
+      - '.github/workflows/kg-u3c2b1-protected-player.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-protected-media:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check player/source syntax and synthetic signed-media contracts
+        run: |
+          set -euo pipefail
+          node --check js/kg-audio.js
+          node --check js/kg-protected-player.mjs
+          node --check js/kg-protected-media-context.mjs
+          node --check js/kg-private-media-client.mjs
+          node --test tools/tests/u3c2b1-protected-player.test.mjs tools/tests/u3c2-protected-media-context.test.mjs
+      - name: Verify access activation remains OFF and SQL/Storage/Edge unchanged
+        run: |
+          set -euo pipefail
+          grep -Fq 'const U3C1_SCOPED_UI_ENABLED = false;' index.html
+          BASE=$(git merge-base origin/main HEAD)
+          git diff --name-only "$BASE" HEAD | tee /tmp/u3c2b1-changes.txt
+          if grep -Eq '^(sql/|supabase/|offline/runtime.js|offline/sw.js)' /tmp/u3c2b1-changes.txt; then
+            echo 'U3C2B1 must not migrate production or mutate the offline runtime'
+            exit 1
+          fi
+
+# Existing dual-edition CI builds both PWAs and runs Chromium migrations.
+# This job uses invented source identifiers only; no credentials or network
+# access to Technical Supabase, Storage, OAuth or Cloudflare.
