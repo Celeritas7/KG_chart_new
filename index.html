@@ -5609,31 +5609,42 @@
     const PrivateLessonsContext = React.createContext({ topics: new Set(), groups: new Set(), loaded: true });
 
     function usePrivateLessons(user, languageCode) {
-      const [rows, setRows] = useState(null); // null = loading
-      const [isAdmin, setIsAdmin] = useState(false);
+      // U3B3A: private_lessons includes OTHER learners' email addresses.
+      // Only a verified server RPC may resolve which topic/group IDs to hide
+      // for this signed-in account; never fetch the raw settings row.
+      const scope = user?.id && languageCode ? user.id + '|' + languageCode : null;
+      const [snapshot, setSnapshot] = useState({ scope: null, topics: [], groups: [], error: null });
       useEffect(() => {
-        if (!user) { setRows([]); return; }
+        if (!scope) { setSnapshot({ scope: null, topics: [], groups: [], error: null }); return; }
         let cancelled = false;
-        Promise.all([
-          supabase.from(TABLES.settings).select('value').eq('key', 'private_lessons').maybeSingle(),
-          supabase.rpc('kg_chart_is_admin'),
-        ]).then(([set, adm]) => {
-          if (cancelled) return;
-          setRows(Array.isArray(set.data?.value) ? set.data.value : []);
-          setIsAdmin(adm.data === true);
-        }, () => { if (!cancelled) setRows([]); });
+        setSnapshot({ scope: null, topics: [], groups: [], error: null });
+        supabase.rpc('kg_chart_my_private_lesson_visibility', { p_language: languageCode })
+          .then(({ data, error }) => {
+            if (cancelled) return;
+            const valid = !error && data?.contract === 1 && Array.isArray(data.topics)
+              && Array.isArray(data.groups)
+              && data.topics.every(t => typeof t === 'string')
+              && data.groups.every(g => typeof g === 'string');
+            setSnapshot(valid
+              ? { scope, topics: data.topics, groups: data.groups, error: null }
+              : { scope, topics: [], groups: [],
+                  error: error?.message || 'Private lesson permissions could not be verified.' });
+          })
+          .catch(() => {
+            if (!cancelled) setSnapshot({ scope, topics: [], groups: [],
+              error: 'Private lesson permissions are unavailable. Reconnect and retry.' });
+          });
         return () => { cancelled = true; };
-      }, [user]);
+      }, [scope, languageCode]);
       return useMemo(() => {
-        const email = (user?.email || '').toLowerCase();
-        const hidden = isAdmin ? [] : (rows || []).filter(r =>
-          (!r.language_code || r.language_code === languageCode) && !(r.emails || []).some(e => String(e).toLowerCase() === email));
+        const ready = !!scope && snapshot.scope === scope;
         return {
-          topics: new Set(hidden.map(r => r.topic_id).filter(Boolean)),
-          groups: new Set(hidden.flatMap(r => r.sentence_groups || [])),
-          loaded: rows !== null,
+          topics: new Set(ready && !snapshot.error ? snapshot.topics : []),
+          groups: new Set(ready && !snapshot.error ? snapshot.groups : []),
+          loaded: ready,
+          error: ready ? snapshot.error : null,
         };
-      }, [rows, isAdmin, user, languageCode]);
+      }, [scope, snapshot]);
     }
 
     function useLearningPath({ user, languageCode, topics, vocabulary, rules }) {
@@ -5994,8 +6005,12 @@
       const { vocabulary: allVocabulary, loading: loadingVocab } = useVocabulary(currentLanguage, meaningsInEnglish);
       const priv = usePrivateLessons(user, currentLanguage);
       const rules = useRules(user, currentLanguage);
-      const topics = useMemo(() => allTopics.filter(t => !priv.topics.has(t.id)), [allTopics, priv]);
-      const vocabulary = useMemo(() => allVocabulary.filter(v => !priv.topics.has(v.topic_id)), [allVocabulary, priv]);
+      // Never display/download content while the private-lesson identity check
+      // is pending or failed. Preserve progress; do not clear offline storage.
+      const topics = useMemo(() => priv.loaded && !priv.error
+        ? allTopics.filter(t => !priv.topics.has(t.id)) : [], [allTopics, priv]);
+      const vocabulary = useMemo(() => priv.loaded && !priv.error
+        ? allVocabulary.filter(v => !priv.topics.has(v.topic_id)) : [], [allVocabulary, priv]);
       const { ratings, ratingsLoaded, updateRating, clearRating } = useUserRatings(currentLanguage);
       const path = useLearningPath({ user, languageCode: currentLanguage, topics, vocabulary, rules });
       const visibleTopics = path.topics;
@@ -6040,7 +6055,12 @@
 
           <PrivateLessonsContext.Provider value={priv}>
           <main className="pb-8">
-            {(loadingTopics || loadingVocab || path.loading || !priv.loaded || !rules.loaded) ? (
+            {priv.error ? (
+              <div role="alert" className="mx-auto max-w-2xl rounded-xl border border-amber-300 bg-amber-50 p-6 text-amber-900">
+                <strong>Private lesson access could not be verified.</strong>
+                <p className="mt-2 text-sm">Reconnect and reopen this study page. Your progress and downloaded packs have not been cleared.</p>
+              </div>
+            ) : (loadingTopics || loadingVocab || path.loading || !priv.loaded || !rules.loaded) ? (
               <div className="py-12"><LoadingSpinner message="Loading vocabulary..." /></div>
             ) : (
               <>
