@@ -922,7 +922,7 @@
       );
     }
 
-    function Header({ currentLanguage, languages, onLanguageChange, activeView, onViewChange, meaning, meaningsInEnglish, onToggleMeanings }) {
+    function Header({ currentLanguage, languages, allowedViews, onLanguageChange, activeView, onViewChange, meaning, meaningsInEnglish, onToggleMeanings }) {
       const { user, signOut } = useAuth();
       const [showAuthModal, setShowAuthModal] = useState(false);
       const [showUserMenu, setShowUserMenu] = useState(false);
