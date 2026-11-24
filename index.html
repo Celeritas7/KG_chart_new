@@ -932,7 +932,7 @@
         { id: 'quiz', icon: '🎯', label: 'Quiz' },
         { id: 'flashcard', icon: '🃏', label: 'Cards' },
         { id: 'progress', icon: '📈', label: 'Progress' },
-      ];
+      ].filter(view => allowedViews.includes(view.id));
 
       return (
         <>
