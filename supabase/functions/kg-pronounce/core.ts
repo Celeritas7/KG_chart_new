@@ -162,6 +162,28 @@ export function makeHandler(deps: Deps) {
     const wavProblem = checkWav(wav);
     if (wavProblem) return fail(400, 'bad_request', wavProblem);
 
+    // U3B2: authenticated caller-scoped database permission check MUST run
+    // before Azure synthesis/assessment or the service-role database insert.
+    // In particular, do not trust a user-provided vocabulary/sentence ID,
+    // text or language as proof of permission. U3B2's reviewed RPC checks
+    // the real row, its translation, the selected feature and the real user.
+    const { data: canPronounce, error: accessError } = await userDb.rpc(
+      'kg_chart_u3b2_can_pronounce',
+      {
+        p_lang: body.lang, p_text: text,
+        p_vocabulary_id: vocabulary_id, p_sentence_id: sentence_id,
+        p_source: source,
+      },
+    );
+    if (accessError) {
+      // Fail closed if the U3B2 database RPC is not installed/available.
+      // Never silently fall back to the older allowlist-only behavior.
+      return fail(503, 'config', 'Pronunciation permissions are temporarily unavailable.');
+    }
+    if (canPronounce !== true) {
+      return fail(403, 'not_allowed', 'This pronunciation content is not allowed for this account.');
+    }
+
     // 3. daily limit (checks since midnight UTC)
     const admin = deps.adminClient();
     const { data: lim } = await admin.from('kg_chart_settings').select('value').eq('key', 'pronunciation_daily_limit').maybeSingle();
