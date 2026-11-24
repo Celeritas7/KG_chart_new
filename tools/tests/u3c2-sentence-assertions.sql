@@ -104,6 +104,9 @@ BEGIN
    RAISE EXCEPTION 'Restricted caller-scoped mapping wrong: %',snapshot; END IF;
  IF (SELECT count(*) FROM public.kg_chart_sentences WHERE language_code='my')<>1 THEN
    RAISE EXCEPTION 'Direct RLS query exposed unmapped/private groups';END IF;
+ IF public.kg_chart_u3b3b2_can_media(
+      '81000000-0000-4000-8000-000000000003') THEN
+   RAISE EXCEPTION 'Denied private sentence granted a signed-media asset'; END IF;
  IF public.kg_chart_u3b2_can_sentence(
       'my','20000000-0000-4000-8000-000000000001') IS DISTINCT FROM true
     OR public.kg_chart_u3b2_can_sentence(
@@ -161,6 +164,9 @@ BEGIN
     OR public.kg_chart_u3c2_can_sentence_session(
       'my',NULL,'speak_lines') IS DISTINCT FROM true THEN
    RAISE EXCEPTION 'Private group / Speak scope mismatch'; END IF;
+ IF public.kg_chart_u3b3b2_can_media(
+    '81000000-0000-4000-8000-000000000003') IS DISTINCT FROM true
+ THEN RAISE EXCEPTION 'Authorized private group no longer signs its sentence audio';END IF;
  SELECT public.kg_chart_u3c2_my_sentence_groups('my') INTO snapshot;
  IF snapshot->'groups'<>'[{"group_name":"private_conversation","topic_id":"friends_names"}]'::jsonb
  THEN RAISE EXCEPTION 'Private member group mapping wrong: %',snapshot;END IF;
