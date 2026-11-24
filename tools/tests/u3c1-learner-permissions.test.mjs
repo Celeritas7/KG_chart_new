@@ -156,10 +156,11 @@ test('Quiz mode tabs enforce the allowlist, including stored old modes',()=>{
 });
 
 test('Restricted Typing cannot reopen stored sentence source or inaccessible topic',()=>{
-  assert.match(learner,/const safeSource = accessPolicy\?\.state === 'legacy' \? source : 'words'/);
-  assert.match(learner,/const safeTopicId = topicId === 'all' \|\| topics\.some\(t => t\.id === topicId\)/);
+  assert.match(learner,/const safeSource = accessPolicy\?\.state === 'restricted' \? 'words' : source/);
+  assert.match(learner,/const safeTopicId = topicId;/);
+  assert.match(learner,/Do NOT silently select All when a previously saved topic is revoked/);
   assert.match(learner,/if \(safeSource !== 'sentences'\) return/);
-  assert.match(learner,/accessPolicy\?\.state === 'legacy' \? \[\['words'/);
+  assert.match(learner,/accessPolicy\?\.state === 'restricted' \? \[\['words'/);
 });
 
 test('Offline edition bundles same policy parser, without changing PWA identity',()=>{
