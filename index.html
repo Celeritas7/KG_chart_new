@@ -5008,7 +5008,7 @@
       const saved0 = loadFromStorage(TYPING_SETTINGS_KEY, {});
       const [mode, setMode] = useState(saved0.mode === 'recall' ? 'recall' : 'copy');
       const [source, setSource] = useState(saved0.source === 'sentences' ? 'sentences' : 'words');
-      const safeSource = accessPolicy?.state === 'legacy' ? source : 'words';
+      const safeSource = accessPolicy?.state === 'restricted' ? 'words' : source;
       const [topicId, setTopicId] = useState(saved0.languageCode === languageCode ? saved0.topicId || 'all' : 'all');
       const [duration, setDuration] = useState(TYPING_DURATIONS.includes(saved0.duration) ? saved0.duration : 60);
       const [sentences, setSentences] = useState(null);
@@ -5029,11 +5029,12 @@
       const statsRef = React.useRef(stats); statsRef.current = stats;
       const answersRef = React.useRef(answers); answersRef.current = answers;
 
-      const safeTopicId = topicId === 'all' || topics.some(t => t.id === topicId) ? topicId : 'all';
+      // Do NOT silently select All when a previously saved topic is revoked:
+      // an explicit user selection is required before unrelated words appear.
+      const safeTopicId = topicId;
       useEffect(() => {
-        if (accessPolicy?.state !== 'legacy' && source !== 'words') setSource('words');
+        if (accessPolicy?.state === 'restricted' && source !== 'words') setSource('words');
       }, [accessPolicy?.state, source]);
-      useEffect(() => { if (safeTopicId !== topicId) setTopicId('all'); }, [safeTopicId, topicId]);
       useEffect(() => { saveToStorage(TYPING_SETTINGS_KEY, { mode, source: safeSource, duration, topicId: safeTopicId, languageCode }); }, [mode, safeSource, duration, safeTopicId, languageCode]);
 
       // Sentences come from the same table as the sentence quizzes
@@ -5189,7 +5190,7 @@
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Type</label>
-                  {seg(safeSource, setSource, accessPolicy?.state === 'legacy' ? [['words', '🔤 Words'], ['sentences', '💬 Sentences']] : [['words', '🔤 Words']])}
+                  {seg(safeSource, setSource, accessPolicy?.state === 'restricted' ? [['words', '🔤 Words']] : [['words', '🔤 Words'], ['sentences', '💬 Sentences']])}
                 </div>
                 {safeSource === 'words' && (
                   <div>
