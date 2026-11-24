@@ -175,4 +175,17 @@ test('Client refuses hostile returned signed URLs and guessed object paths',asyn
     supabase:client,sourceType:'word_audio',sourceId:'../../../',
     language:'my',voice:'m',projectUrl:PROJECT,
   }),/Invalid protected media resource request/);
+  const incorrectPath={
+    rpc:async()=>({data:ID,error:null}),
+    functions:{invoke:async()=>({
+      data:{ok:true,asset_id:ID,
+        url:sourceUrl('protected/10000000-0000-4000-8000-000000000999.mp3'),
+        expires_in:30,content_type:'audio/mpeg'},
+      error:null,
+    })}
+  };
+  await assert.rejects(resolveProtectedMedia({
+    supabase:incorrectPath,sourceType:'word_audio',sourceId:SOURCE,
+    language:'my',voice:'m',projectUrl:PROJECT,
+  }),/not issued by this project/);
 });
