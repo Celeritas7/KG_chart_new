@@ -1,0 +1,64 @@
+name: KG Chart U3B2 - write and privileged RPC guards (no production)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/kg-u3b2-write-guards.yml'
+      - 'sql/kg-chart-u3b2-write-rpc-guards.sql'
+      - 'tools/tests/u3b2-*'
+      - 'supabase/functions/kg-pronounce/core.ts'
+      - 'docs/U3B2-WRITE-AND-RPC-REVIEW.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-postgres-and-pronounce:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test Edge Function deny-before-Azure with invented dependencies
+        run: node --experimental-strip-types --test tools/tests/u3b2-pronounce-preflight.test.mjs
+      - name: Start isolated fictional PostgreSQL 17 (no network)
+        run: |
+          set -euo pipefail
+          docker run -d --name kg-u3b2-test-db \
+            --network none \
+            -e POSTGRES_PASSWORD=fictional-ci-only \
+            -e POSTGRES_DB=kg_u3b2_synthetic \
+            postgres:17-alpine
+          for i in {1..50}; do
+            if docker exec kg-u3b2-test-db psql -X -At -v ON_ERROR_STOP=1 \
+              -U postgres -d kg_u3b2_synthetic -c 'SELECT 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'Fictional PostgreSQL fixture failed to start' >&2
+          exit 1
+      - name: Check restrictive writes, ownership, historical rows, and security-definer RPCs
+        run: |
+          set -euo pipefail
+          psql_fixture() {
+            docker exec -i kg-u3b2-test-db psql -X -v ON_ERROR_STOP=1 \
+              -U postgres -d kg_u3b2_synthetic
+          }
+          psql_fixture < tools/tests/u1-access-fixture.sql
+          psql_fixture < sql/kg-chart-u1-access-foundation.sql
+          psql_fixture < tools/tests/u3a-access-fixture.sql
+          psql_fixture < tools/tests/u3b1-content-fixture.sql
+          psql_fixture < sql/kg-chart-u3b1-restrictive-content-rls.sql
+          psql_fixture < tools/tests/u3b2-write-fixture.sql
+          psql_fixture < sql/kg-chart-u3b2-write-rpc-guards.sql
+          psql_fixture < sql/kg-chart-u3b2-write-rpc-guards.sql
+          psql_fixture < tools/tests/u3b2-write-assertions.sql
+      - name: Delete fictional Postgres
+        if: always()
+        run: docker rm -f kg-u3b2-test-db || true
+
+# There are no production credentials, Supabase migration calls, deployments,
+# client storage resets or permitted access publication actions in this job.
