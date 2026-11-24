@@ -50,10 +50,10 @@ ALTER TABLE public.kg_chart_flags
 -- Mock the verified email in the real auth.jwt()-based levels policy.
 CREATE FUNCTION auth.jwt() RETURNS jsonb
   LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog
-  AS $
+  AS $$
     SELECT jsonb_build_object('email',u.email)
     FROM auth.users AS u WHERE u.id=auth.uid()
-  $;
+  $$;
 GRANT EXECUTE ON FUNCTION auth.jwt() TO authenticated;
 
 -- Existing RLS contracts, modeled using the actual verified production names.
