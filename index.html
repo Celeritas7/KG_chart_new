@@ -84,6 +84,7 @@
 <body class="bg-gray-50">
   <div id="root"></div>
   
+  <script src="./js/kg-learner-access.js"></script>
   <script type="text/babel">
     const { useState, useEffect, useCallback, useMemo, createContext, useContext } = React;
 
@@ -538,6 +539,66 @@
         <AuthContext.Provider value={{ user, loading, authError, signInWithEmail, signUpWithEmail, signOut, signInWithGoogle }}>
           {!loading && children}
         </AuthContext.Provider>
+      );
+    }
+
+    // ==========================================
+    // U3C1: VERIFIED, PER-ACCOUNT LEARNER VIEW
+    // ==========================================
+    // This snapshot is a display gate only. Server RLS/Edge authorization
+    // must be installed and declared enforced before restricted mode opens.
+    // No offline or error path silently assumes a missing policy = legacy.
+    function useLearnerAccess(user) {
+      const [result, setResult] = useState({ owner: null, policy: null, error: null, loading: true });
+      useEffect(() => {
+        if (!user?.id) {
+          setResult({ owner: null, policy: null, error: null, loading: true });
+          return;
+        }
+        let stopped = false;
+        let sequence = 0;
+        const reload = async () => {
+          const call = ++sequence;
+          setResult({ owner: user.id, policy: null, error: null, loading: true });
+          try {
+            const { data, error } = await supabase.rpc('kg_chart_u3_my_access_snapshot');
+            if (stopped || call !== sequence) return;
+            if (error) throw Error('Learner access permissions are unavailable.');
+            const policy = window.KGLearnerAccess.parseSnapshot(data);
+            setResult({ owner: user.id, policy, error: null, loading: false });
+          } catch (_) {
+            if (!stopped && call === sequence) setResult({
+              owner: user.id, policy: null,
+              error: 'Unable to verify learner permissions. Reconnect and reopen KG Chart.',
+              loading: false,
+            });
+          }
+        };
+        reload();
+        window.addEventListener('online', reload);
+        window.addEventListener('focus', reload);
+        return () => {
+          stopped = true;
+          ++sequence;
+          window.removeEventListener('online', reload);
+          window.removeEventListener('focus', reload);
+        };
+      }, [user?.id]);
+      return result.owner === user?.id ? result
+        : { owner: user?.id, policy: null, error: null, loading: true };
+    }
+
+    function LearnerAccessUnavailable({ title, description }) {
+      const { signOut } = useAuth();
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+          <div role="alert" className="max-w-lg w-full bg-white rounded-2xl border border-amber-200 shadow-sm p-7">
+            <h1 className="text-xl font-bold text-gray-800">{title}</h1>
+            <p className="mt-3 text-gray-600">{description}</p>
+            <p className="mt-3 text-sm text-gray-500">Your existing progress, unsent changes and downloaded language packs have not been cleared.</p>
+            <button onClick={signOut} className="mt-5 px-4 py-2 border rounded-lg text-gray-700 hover:bg-gray-50">Sign out</button>
+          </div>
+        </div>
       );
     }
 
