@@ -1,0 +1,69 @@
+name: KG Chart U3B3B1 - legacy private access and media classification
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/kg-u3b3b1-private-media.yml'
+      - 'sql/kg-chart-u3b3b1-legacy-private-write-rpc.sql'
+      - 'tools/audit-kg-private-media.mjs'
+      - 'tools/tests/u3b3b1-*'
+      - 'docs/U3B3B1-PRIVATE-MEDIA-REVIEW.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-regression-with-fake-users:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify media classifications, hash collisions and no private text in reports
+        run: node --test tools/tests/u3b3b1-private-media.test.mjs
+      - name: Start disposable PostgreSQL 17 without network
+        run: |
+          set -euo pipefail
+          docker run -d --name kg-u3b3b1-test-db \
+            --network none \
+            -e POSTGRES_PASSWORD=fictional-ci-only \
+            -e POSTGRES_DB=kg_u3b3b1_test \
+            postgres:17-alpine
+          for i in {1..50}; do
+            if docker exec kg-u3b3b1-test-db psql -X -At -v ON_ERROR_STOP=1 \
+              -U postgres -d kg_u3b3b1_test -c 'SELECT 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'Fictional database not queryable' >&2
+          exit 1
+      - name: Apply prior schema and test private SQL bypasses with fictional history
+        run: |
+          set -euo pipefail
+          pgfixture() {
+            docker exec -i kg-u3b3b1-test-db psql -X -v ON_ERROR_STOP=1 \
+              -U postgres -d kg_u3b3b1_test
+          }
+          pgfixture < tools/tests/u1-access-fixture.sql
+          pgfixture < sql/kg-chart-u1-access-foundation.sql
+          pgfixture < tools/tests/u3a-access-fixture.sql
+          pgfixture < tools/tests/u3b1-content-fixture.sql
+          pgfixture < sql/kg-chart-u3b1-restrictive-content-rls.sql
+          pgfixture < tools/tests/u3b2-write-fixture.sql
+          pgfixture < sql/kg-chart-u3b2-write-rpc-guards.sql
+          pgfixture < sql/kg-chart-u3b3a-private-records.sql
+          pgfixture < tools/tests/u3b3a-private-fixture.sql
+          pgfixture < tools/tests/u3b3a-private-assertions.sql
+          pgfixture < tools/tests/u3b3b1-legacy-fixture.sql
+          pgfixture < sql/kg-chart-u3b3b1-legacy-private-write-rpc.sql
+          pgfixture < sql/kg-chart-u3b3b1-legacy-private-write-rpc.sql
+          pgfixture < tools/tests/u3b3b1-legacy-assertions.sql
+      - name: Destroy fictional database
+        if: always()
+        run: docker rm -f kg-u3b3b1-test-db || true
+
+# Pure hypothetical validation: no service keys, Supabase production writes,
+# Storage uploads/moves, Cloudflare deployment, or PWA/browser data operations.
