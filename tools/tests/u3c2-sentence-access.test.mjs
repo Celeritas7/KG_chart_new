@@ -9,7 +9,7 @@ const offlineBuild=await fs.readFile(new URL('../build-offline.mjs',import.meta.
 
 function getCore(){
   const window={};
-  vm.runInNewContext(src+'\\n'+learnerSource,{window});
+  vm.runInNewContext(src+'\n'+learnerSource,{window});
   return {
     sentence:window.KGSentenceAccess,
     learner:window.KGLearnerAccess,
