@@ -71,12 +71,13 @@ BEGIN
     RAISE EXCEPTION 'An explicit expected draft revision is required';
   END IF;
 
-  -- Lock the allowlisted user even when no profile exists; concurrent first
-  -- saves then serialize instead of creating two conflicting profiles.
+  -- Serialize drafts per email without requiring UPDATE privilege on the
+  -- existing allowlist table. This transaction-scoped lock also covers the
+  -- first save, when no access profile exists yet.
+  PERFORM pg_advisory_xact_lock(hashtext('kg_chart_u2_draft:' || v_email));
   SELECT u.role INTO v_role
     FROM public.kg_chart_users AS u
-    WHERE u.email = v_email
-    FOR UPDATE;
+    WHERE u.email = v_email;
   IF v_role IS DISTINCT FROM 'operator' THEN
     RAISE EXCEPTION 'U2 drafts are only for existing operator learners';
   END IF;
