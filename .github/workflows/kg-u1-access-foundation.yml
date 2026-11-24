@@ -1,0 +1,53 @@
+name: KG Chart U1 - permission schema contract (no production)
+
+on:
+  pull_request:
+    paths:
+      - 'sql/kg-chart-u1-access-foundation.sql'
+      - 'tools/tests/u1-access-*.sql'
+      - 'docs/U1-USER-ACCESS-ARCHITECTURE.md'
+      - '.github/workflows/kg-u1-access-foundation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-postgres-schema-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start disposable network-disabled PostgreSQL 17
+        run: |
+          set -euo pipefail
+          docker run -d --name kg-u1-contract-db \
+            --network none \
+            -e POSTGRES_PASSWORD=ci-only-not-a-production-credential \
+            -e POSTGRES_DB=kg_u1_fixture \
+            postgres:17-alpine
+          for i in {1..40}; do
+            if docker exec kg-u1-contract-db pg_isready -U postgres -d kg_u1_fixture; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'Synthetic PostgreSQL container did not become ready' >&2
+          exit 1
+      - name: Apply U1 twice to fictional accounts; test admin-only RLS and legacy defaults
+        run: |
+          set -euo pipefail
+          run_psql() {
+            docker exec -i kg-u1-contract-db psql -X -v ON_ERROR_STOP=1 \
+              -U postgres -d kg_u1_fixture
+          }
+          run_psql < tools/tests/u1-access-fixture.sql
+          run_psql < sql/kg-chart-u1-access-foundation.sql
+          run_psql < sql/kg-chart-u1-access-foundation.sql
+          run_psql < tools/tests/u1-access-assertions.sql
+      - name: Dispose fictional database
+        if: always()
+        run: docker rm -f kg-u1-contract-db || true
+
+# No Supabase credentials, network connections from the DB, migrations,
+# deployments, existing browser profiles or actual learner data are used.
+# The branch contains a MANUAL SQL proposal only; never auto-apply it.
