@@ -40,9 +40,14 @@ export async function resolveProtectedMedia({
   try{base=new URL(projectUrl);url=new URL(data.url);}catch(_){
     throw Error('Invalid protected media URL');
   }
-  const path='/storage/v1/object/sign/kg-chart-private-media/protected/';
-  if(base.protocol!=='https:'||url.protocol!=='https:'||
-     url.origin!==base.origin||!url.pathname.startsWith(path)||
+  const suffix={
+    'audio/mpeg':'.mp3','image/jpeg':'.jpg','image/png':'.png',
+    'image/webp':'.webp','image/gif':'.gif',
+  }[data.content_type];
+  const exactPath='/storage/v1/object/sign/kg-chart-private-media/protected/'
+    +assetId.toLowerCase()+String(suffix||'');
+  if(!suffix||base.protocol!=='https:'||url.protocol!=='https:'||
+     url.origin!==base.origin||url.pathname!==exactPath||
      !url.searchParams.has('token'))
     throw Error('Protected media URL was not issued by this project');
 
