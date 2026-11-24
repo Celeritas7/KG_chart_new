@@ -433,7 +433,7 @@
       const restricted = U3C1_SCOPED_UI_ENABLED && media?.policy?.state === 'restricted';
       const isEmoji = item?.image_filename?.startsWith('emoji:');
       const key = JSON.stringify([
-        media?.ownerId, media?.policy?.revision, item?.id, topicId, languageCode,
+        media?.ownerId, media?.policy?.revision, item?.id, item?.image_filename, topicId, languageCode,
       ]);
       const [signed, setSigned] = useState({ key: null, url: null });
       useEffect(() => {
