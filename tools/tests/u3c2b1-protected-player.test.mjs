@@ -128,6 +128,8 @@ test('Legacy audio is preserved only with the source-controlled gate OFF',async(
 test('HTML/packaging remain default-OFF and include signed-media modules',async()=>{
   const index=await fs.readFile(new URL('../../index.html',import.meta.url),'utf8');
   const build=await fs.readFile(new URL('../build-offline.mjs',import.meta.url),'utf8');
+  const offlineCatalog=await fs.readFile(new URL('../../offline/audio-manifest.js',import.meta.url),'utf8');
+  assert.match(offlineCatalog,/if \(!canUsePublicMedia\(\) \|\| !lang/);
   assert.match(index,/const U3C1_SCOPED_UI_ENABLED = false/);
   assert.match(index,/requireVerifiedMediaPolicy\(U3C1_SCOPED_UI_ENABLED\)/);
   assert.match(index,/if \(!window\.KGAudio\.canUsePublicMedia\(\)\) return null/);
