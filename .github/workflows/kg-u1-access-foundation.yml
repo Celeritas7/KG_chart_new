@@ -26,7 +26,7 @@ jobs:
             -e POSTGRES_DB=kg_u1_fixture \
             postgres:17-alpine
           for i in {1..40}; do
-            if docker exec kg-u1-contract-db pg_isready -U postgres -d kg_u1_fixture; then
+            if docker exec kg-u1-contract-db psql -X -At -v ON_ERROR_STOP=1 -U postgres -d kg_u1_fixture -c 'SELECT 1' >/dev/null 2>&1; then
               exit 0
             fi
             sleep 1
