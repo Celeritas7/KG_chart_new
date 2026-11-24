@@ -29,25 +29,19 @@ jobs:
           set -euo pipefail
           node --check js/kg-learner-access.js
           node --test tools/tests/u3c1-learner-permissions.test.mjs
-      - name: Verify no production database, Edge or deployment calls are included
+      - name: Verify only reviewed U3C2 mapping SQL is added outside the UI
         run: |
           set -euo pipefail
           BASE=$(git merge-base origin/main HEAD)
           git diff --name-only "$BASE" HEAD | tee /tmp/u3c-changes.txt
           if grep -Eq '^(supabase/|offline/runtime.js|offline/sw.js)' /tmp/u3c-changes.txt; then
-            echo 'U3C1/C2 must not alter Edge, PWA runtime or storage.'
+            echo 'U3C1/C2 must not alter Edge, PWA runtime or Storage.'
             exit 1
           fi
-          if grep '^sql/' /tmp/u3c-changes.txt | grep -Ev '^sql/kg-chart-u3c2-sentence-topic-mapping.sql
-
-# A passing UI test does NOT authorize production rollout. U3A currently
-# declares server_enforced=false, so restricted learners must remain blocked
-# until U3D/production RLS gates explicitly establish enforcement.
-; then
-            echo 'Only U3C2 reviewed sentence mapping SQL is allowed in this phase.'
+          if grep '^sql/' /tmp/u3c-changes.txt | grep -Ev '^sql/kg-chart-u3c2-sentence-topic-mapping[.]sql$'; then
+            echo 'Only the reviewed U3C2 sentence mapping SQL is allowed in this stage.'
             exit 1
           fi
 
-# A passing UI test does NOT authorize production rollout. U3A currently
-# declares server_enforced=false, so restricted learners must remain blocked
-# until U3D/production RLS gates explicitly establish enforcement.
+# Passing these tests does NOT activate production access enforcement.
+# The default-OFF U3C1 gate remains disabled until U3D and hardware checks.
