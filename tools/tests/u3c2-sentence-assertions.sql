@@ -64,7 +64,7 @@ BEGIN
   RAISE EXCEPTION 'Legacy mapping endpoint exposed raw group registry: %',snapshot;END IF;
  SELECT count(*) INTO n FROM public.kg_chart_sentences
  WHERE language_code='my';
- IF n<>3 THEN RAISE EXCEPTION 'Legacy sentence read behavior changed: %',n;END IF;
+ IF n<>2 THEN RAISE EXCEPTION 'Legacy ordinary sentence reads changed or private group leaked: %',n;END IF;
  IF public.kg_chart_u3b2_can_sentence(
       'my','20000000-0000-4000-8000-000000000003') THEN
   RAISE EXCEPTION 'Legacy private sentence bypass';END IF;
