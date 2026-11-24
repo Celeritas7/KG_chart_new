@@ -5,7 +5,8 @@
  */
 (function(root){
   'use strict';
-  const validGroup=x=>typeof x==='string'&&x.length>0&&x.length<=250&&x.trim()===x;
+  const validGroup=x=>typeof x==='string'&&x.length>0&&x.length<=250
+    &&x.trim()===x&&!['__proto__','prototype','constructor'].includes(x);
   const validTopic=x=>typeof x==='string'&&x.length>0&&x.length<=150;
   const blocked=reason=>({state:'blocked',reason,groups:[],groupTopics:{},serverEnforced:false});
   const legacy=()=>({state:'legacy',reason:null,groups:null,groupTopics:{},serverEnforced:false});
@@ -20,9 +21,10 @@
       return blocked('unverified_mapping');
 
     const grants=new Set(policy.topics||[]);
-    const topics={},groupNames=new Set();
+    const topics=Object.create(null),groupNames=new Set();
     for(const item of data.groups){
-      if(!item||!validGroup(item.group_name)||!validTopic(item.topic_id)
+      if(!item||Object.keys(item).some(k=>!['group_name','topic_id'].includes(k))
+         ||!validGroup(item.group_name)||!validTopic(item.topic_id)
          ||groupNames.has(item.group_name)
          ||!grants.has(language+'|'+item.topic_id))
         return blocked('invalid_group_mapping');
