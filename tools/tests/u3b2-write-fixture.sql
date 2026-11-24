@@ -45,7 +45,8 @@ CREATE TABLE public.kg_chart_user_levels(
 ALTER TABLE public.kg_chart_flags
   ADD COLUMN sentence_id uuid REFERENCES public.kg_chart_sentences(id),
   ADD COLUMN colour_phrase_id uuid REFERENCES public.kg_chart_colour_phrases(id),
-  ADD COLUMN status varchar DEFAULT 'open';
+  ADD COLUMN status varchar DEFAULT 'open',
+  ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
 
 -- Mock the verified email in the real auth.jwt()-based levels policy.
 CREATE FUNCTION auth.jwt() RETURNS jsonb
