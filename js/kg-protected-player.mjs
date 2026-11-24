@@ -29,6 +29,8 @@ export async function acquireProtectedMedia({
   if(!['audio','image'].includes(kind)||
      (kind==='audio'&&!AUDIO.has(resource?.type))||
      (kind==='image'&&resource?.type!=='word_image')||
+     (kind==='audio'&&!['m','f'].includes(resource?.voice))||
+     (kind==='image'&&resource?.voice!=null)||
      !sourceRequest(resource,policy,sentenceScope)||
      !supabase||typeof projectUrl!=='string')return null;
 
