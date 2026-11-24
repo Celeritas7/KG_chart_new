@@ -1,0 +1,56 @@
+name: KG Chart U3B1 - restrictive read RLS (synthetic only)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/kg-u3b1-content-rls.yml'
+      - 'sql/kg-chart-u3b1-restrictive-content-rls.sql'
+      - 'tools/tests/u3b1-content-*.sql'
+      - 'docs/U3B1-CONTENT-RLS-REVIEW.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-restrictive-rls:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start temporary PostgreSQL 17 without external network
+        run: |
+          set -euo pipefail
+          docker run -d --name kg-u3b1-contract-db \
+            --network none \
+            -e POSTGRES_PASSWORD=fictional-only-not-production \
+            -e POSTGRES_DB=kg_u3b1_fixture \
+            postgres:17-alpine
+          for i in {1..50}; do
+            if docker exec kg-u3b1-contract-db psql -X -At -v ON_ERROR_STOP=1 \
+                -U postgres -d kg_u3b1_fixture -c 'SELECT 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'Synthetic database not queryable' >&2
+          exit 1
+      - name: Exercise old permissive plus new restrictive policies with fake accounts
+        run: |
+          set -euo pipefail
+          psql_fixture() {
+            docker exec -i kg-u3b1-contract-db psql -X -v ON_ERROR_STOP=1 \
+              -U postgres -d kg_u3b1_fixture
+          }
+          psql_fixture < tools/tests/u1-access-fixture.sql
+          psql_fixture < sql/kg-chart-u1-access-foundation.sql
+          psql_fixture < tools/tests/u3a-access-fixture.sql
+          psql_fixture < tools/tests/u3b1-content-fixture.sql
+          psql_fixture < sql/kg-chart-u3b1-restrictive-content-rls.sql
+          psql_fixture < sql/kg-chart-u3b1-restrictive-content-rls.sql
+          psql_fixture < tools/tests/u3b1-content-assertions.sql
+      - name: Destroy synthetic test database
+        if: always()
+        run: docker rm -f kg-u3b1-contract-db || true
+
+# This job only runs against a disposable, network-disabled PostgreSQL server.
+# Never run U1/U2/U3A/U3B1 against actual Supabase without separate approval.
