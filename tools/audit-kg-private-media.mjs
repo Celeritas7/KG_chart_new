@@ -16,6 +16,7 @@
  */
 import {readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
+import {resolve} from 'node:path';
 
 export const norm = t => String(t??'').normalize('NFC').trim().split(/\s+/u).filter(Boolean).join(' ');
 export function fnv1a8(value) {
@@ -151,7 +152,7 @@ export function auditPrivateMedia(snapshot,{hash=fnv1a8}={}) {
   };
 }
 const path=fileURLToPath(import.meta.url);
-if(process.argv[1]&&fileURLToPath(new URL('file://'+process.argv[1]))===path) {
+if(process.argv[1]&&resolve(process.argv[1])===path) {
   const ix=process.argv.indexOf('--input');
   if(ix<0||!process.argv[ix+1]) {
     process.stdout.write('Usage: node tools/audit-kg-private-media.mjs --input <local-snapshot.json>\nRead-only; emits aggregate counts only. Never commit actual private export data.\n');
