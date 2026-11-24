@@ -149,7 +149,8 @@ test('Canonical app gates loaders and switches only into verified languages/topi
 
 test('Quiz mode tabs enforce the allowlist, including stored old modes',()=>{
   assert.match(learner,/allowedModes\.includes\(id\)/);
-  assert.match(learner,/const currentMode = window\.KGLearnerAccess\.chooseQuizMode\(props\.accessPolicy, mode\)/);
+  assert.match(learner,/const currentMode = window\.KGLearnerAccess\.chooseQuizMode\(/);
+  assert.match(learner,/props\.accessPolicy, mode,props\.sentenceAccess/);
   assert.match(learner,/onChange=\{next => \{ if \(allowedModes\.includes\(next\)\) setMode\(next\); \}\}/);
   assert.match(learner,/if \(!currentMode\) return <div role="alert"/);
   assert.match(learner,/accessPolicy=\{props\.accessPolicy\}/);
