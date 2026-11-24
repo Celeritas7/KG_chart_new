@@ -43,8 +43,6 @@ UPDATE public.kg_chart_languages SET is_active=false WHERE code='ja';
 UPDATE public.kg_chart_languages SET sort_order=1 WHERE code='my';
 UPDATE public.kg_chart_languages SET sort_order=2 WHERE code='ja';
 
-INSERT INTO public.kg_chart_topic_translations(topic_id,language_code,title_native)
-VALUES ('friends_names','my','Friends names');
 UPDATE public.kg_chart_topics SET is_hidden=false;
 
 INSERT INTO public.kg_chart_settings(key,value) VALUES
