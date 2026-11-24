@@ -81,7 +81,7 @@ BEGIN
   IF v_mode IS NULL OR v_mode = 'legacy' THEN
     RETURN pg_catalog.jsonb_build_object(
       'contract', 1, 'mode', 'legacy',
-      'revision', pg_catalog.coalesce(v_revision, 0),
+      'revision', coalesce(v_revision, 0),
       'languages', NULL, 'topics', NULL, 'features', NULL,
       'server_enforced', false
     );
@@ -94,14 +94,14 @@ BEGIN
 
   -- This is a prospective permission selection, NOT yet an enforced one.
   -- A restricted policy with no rows MUST return empty arrays.
-  SELECT pg_catalog.coalesce(pg_catalog.jsonb_agg(l.code ORDER BY l.sort_order, l.code),
+  SELECT coalesce(pg_catalog.jsonb_agg(l.code ORDER BY l.sort_order, l.code),
                              '[]'::jsonb)
     INTO v_languages
     FROM public.kg_chart_access_languages AS al
     JOIN public.kg_chart_languages AS l ON l.code = al.language_code
     WHERE al.email = v_email AND l.is_active IS TRUE;
 
-  SELECT pg_catalog.coalesce(
+  SELECT coalesce(
       pg_catalog.jsonb_agg(
         pg_catalog.jsonb_build_object('language_code', at.language_code, 'topic_id', at.topic_id)
         ORDER BY l.sort_order, t.sort_order, at.topic_id
@@ -139,7 +139,7 @@ BEGIN
           )
       );
 
-  SELECT pg_catalog.coalesce(pg_catalog.jsonb_agg(f.feature_key ORDER BY f.sort_order, f.feature_key),
+  SELECT coalesce(pg_catalog.jsonb_agg(f.feature_key ORDER BY f.sort_order, f.feature_key),
                              '[]'::jsonb)
     INTO v_features
     FROM public.kg_chart_access_features AS af
