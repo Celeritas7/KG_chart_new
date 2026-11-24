@@ -38,7 +38,7 @@ BEGIN
 
   -- The current signed-in user must exist, be approved and have an allowed
   -- session. Never accept an arbitrary email, JWT user_metadata, or caller id.
-  IF v_uid IS NULL OR NOT public.kg_chart_is_allowed() THEN
+  IF v_uid IS NULL OR public.kg_chart_is_allowed() IS DISTINCT FROM TRUE THEN
     RAISE EXCEPTION 'KG Chart account access is not approved'
       USING ERRCODE = '42501';
   END IF;
