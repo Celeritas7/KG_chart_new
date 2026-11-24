@@ -259,6 +259,9 @@
     const getImageUrl = (topicId, filename) => {
       if (!filename) return null;
       if (filename.startsWith('emoji:')) return emojiImageUrl(filename.slice(6));
+      // Fail closed while a verified restricted media policy is active.
+      // Public URLs must never be a fallback after signed-media denial.
+      if (!window.KGAudio.canUsePublicMedia()) return null;
       if (filename.startsWith('http')) return filename;
       return `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${topicId}/${filename}`;
     };
@@ -421,16 +424,59 @@
     // ==========================================
     const useAudioState = () => React.useSyncExternalStore(window.KGAudio.subscribe, window.KGAudio.getVersion);
 
+    // U3C2B1 — source-bound picture integration for chart cards and details.
+    // Remaining quiz/flashcard picture surfaces require the separate U3C2B2
+    // review; generic getImageUrl is intentionally blocked for restricted use.
+    const KGMediaScopeContext = createContext(null);
+    function ProtectedWordImage({ item, topicId, languageCode, alt = '', onError, ...props }) {
+      const media = useContext(KGMediaScopeContext);
+      const restricted = U3C1_SCOPED_UI_ENABLED && media?.policy?.state === 'restricted';
+      const isEmoji = item?.image_filename?.startsWith('emoji:');
+      const key = JSON.stringify([
+        media?.ownerId, media?.policy?.revision, item?.id, item?.image_filename, topicId, languageCode,
+      ]);
+      const [signed, setSigned] = useState({ key: null, url: null });
+      useEffect(() => {
+        if (!restricted || isEmoji || !media?.ownerId || !item?.id ||
+            !topicId || !languageCode) return;
+        let cancelled = false;
+        setSigned({ key, url: null });
+        // Resolve relative to the document: online Pages uses a /repo/ path
+        // while separate-offline and unified editions use their own root.
+        import(new URL('./js/kg-protected-player.mjs', document.baseURI).href)
+          .then(({ acquireProtectedMedia }) => acquireProtectedMedia({
+            kind: 'image',
+            resource: {
+              type: 'word_image', id: item.id, topicId, language: languageCode,
+            },
+            policy: media.policy, sentenceScope: media.sentenceScope,
+            supabase, projectUrl: SUPABASE_URL,
+          }))
+          .then(url => { if (!cancelled) setSigned({ key, url }); })
+          .catch(() => { if (!cancelled) setSigned({ key, url: null }); });
+        return () => { cancelled = true; };
+      }, [restricted, isEmoji, key]);
+      const src = isEmoji ? getImageUrl(topicId, item.image_filename)
+        : restricted ? (signed.key === key ? signed.url : null)
+        : getImageUrl(topicId, item?.image_filename);
+      if (!src) return <span role="img" aria-label={alt || 'Image unavailable'}
+        className="inline-flex items-center justify-center text-5xl text-gray-400">📷</span>;
+      return <img src={src} alt={alt} {...props} onError={e => {
+        if (restricted) setSigned({ key, url: null });
+        onError?.(e);
+      }} />;
+    }
+
     // 🔊 (+ optional 🐢). A span, not a button, so it can sit inside quiz option buttons and clickable cards.
-    function SpeakButton({ text, lang, slow = false, size = 'md', className = '', voice }) {
+    function SpeakButton({ text, lang, slow = false, size = 'md', className = '', voice, resource }) {
       useAudioState();
       const A = window.KGAudio;
       if (!text) return null;
-      const avail = A.has(text, lang);
+      const avail = A.has(text, lang, resource);
       const dims = { sm: 'w-7 h-7 text-sm', md: 'w-9 h-9 text-base', lg: 'w-11 h-11 text-xl' }[size];
       const tap = (isSlow) => (e) => {
         e.stopPropagation(); e.preventDefault();
-        if (avail === true) A.play(text, lang, { slow: isSlow, voice });
+        if (avail === true) A.play(text, lang, { slow: isSlow, voice, resource });
         else if (avail === false) A.toast('No audio for this yet');
       };
       const onKey = (isSlow) => (e) => { if (e.key === 'Enter' || e.key === ' ') tap(isSlow)(e); };
@@ -442,12 +488,12 @@
       return (
         <span className={`inline-flex items-center gap-1.5 align-middle ${className}`}>
           <span role="button" tabIndex={0} aria-label="Play audio" title={avail === false ? 'No audio for this yet' : 'Play'}
-            onClick={tap(false)} onKeyDown={onKey(false)} className={cls(A.stateOf(text, lang, false))}>
+            onClick={tap(false)} onKeyDown={onKey(false)} className={cls(A.stateOf(text, lang, false, resource))}>
             {avail === false ? '🔇' : '🔊'}
           </span>
           {slow && avail !== false && (
             <span role="button" tabIndex={0} aria-label="Play slowly" title="Play slowly"
-              onClick={tap(true)} onKeyDown={onKey(true)} className={cls(A.stateOf(text, lang, true))}>🐢</span>
+              onClick={tap(true)} onKeyDown={onKey(true)} className={cls(A.stateOf(text, lang, true, resource))}>🐢</span>
           )}
         </span>
       );
@@ -550,6 +596,7 @@
     // Merging the UI PR cannot activate it. The current production database
     // does not contain the prerequisite snapshot RPC or enforced=true contract.
     const U3C1_SCOPED_UI_ENABLED = false;
+    window.KGAudio.requireVerifiedMediaPolicy(U3C1_SCOPED_UI_ENABLED);
     const U3C1_LEGACY_POLICY = window.KGLearnerAccess.parseSnapshot({
       contract: 1, mode: 'legacy', revision: 0, server_enforced: false,
       languages: null, topics: null, features: null,
@@ -1168,7 +1215,7 @@
           )}
           {!flagMode && (
             <div className="absolute top-2 left-2 z-10">
-              <SpeakButton text={item.translation?.native_text} lang={languageCode} size="sm" />
+              <SpeakButton text={item.translation?.native_text} lang={languageCode} size="sm" resource={{ type: "word_audio", id: item.id, topicId, language: languageCode }} />
             </div>
           )}
           {currentRating && !flagMode && (
@@ -1183,7 +1230,7 @@
             ) : imageError || !item.image_filename ? (
               <div className="text-5xl opacity-50">{item.extra_data?.content_type === 'person_name' ? '👤' : '📷'}</div>
             ) : (
-              <img src={getImageUrl(topicId, item.image_filename)} alt={item.display_text}
+              <ProtectedWordImage item={item} topicId={topicId} languageCode={languageCode} alt={item.display_text}
                 className="max-w-full max-h-full object-contain" onError={() => setImageError(true)} />
             )}
           </div>
@@ -1273,7 +1320,7 @@
                 ) : imageError || !item.image_filename ? (
                   <div className="text-6xl opacity-50">{item.extra_data?.content_type === 'person_name' ? '👤' : '📷'}</div>
                 ) : (
-                  <img src={getImageUrl(topicId, item.image_filename)} alt={item.display_text}
+                  <ProtectedWordImage item={item} topicId={topicId} languageCode={languageCode} alt={item.display_text}
                     className="max-w-full max-h-full object-contain" onError={() => setImageError(true)} />
                 )}
               </div>
@@ -1282,7 +1329,7 @@
                 {item.translation?.native_text}
               </h2>
               <div className="mb-3 flex flex-wrap justify-center items-center gap-2">
-                <SpeakButton text={item.translation?.native_text} lang={languageCode} slow size="lg" />
+                <SpeakButton text={item.translation?.native_text} lang={languageCode} slow size="lg" resource={{ type: "word_audio", id: item.id, topicId, language: languageCode }} />
                 <PronounceCheck text={item.translation?.native_text} lang={languageCode} fontClass={fontClass} vocabularyId={item.id} source="word" compact />
               </div>
 
@@ -1843,7 +1890,7 @@
                 <div className="text-xs text-red-500 text-center mt-1 font-devanagari">
                   {topic.translation?.question_devanagari}
                 </div>
-                <SpeakButton text={topic.translation?.question_native} lang={languageCode} slow size="sm" className="mt-2" />
+                <SpeakButton text={topic.translation?.question_native} lang={languageCode} slow size="sm" className="mt-2" resource={{ type: "topic_audio", topicId: topic.id, language: languageCode }} />
               </div>
             </div>
           </div>
@@ -6180,6 +6227,22 @@
       // A stale saved language must not even reach the topic/vocabulary loaders.
       const selectedLanguage = verified && desiredLanguage === currentLanguage ? currentLanguage : null;
       const sentenceAccess = useSentenceTopicAccess(user, selectedLanguage, policy);
+      // Only a separately approved U3D/U4 release can enable this effect.
+      // Until then, the existing legacy audio and offline behavior is intact.
+      const sentenceKey = sentenceAccess?.groups?.join('|') || '';
+      useEffect(() => {
+        if (!U3C1_SCOPED_UI_ENABLED) return;
+        if (!verified || !user?.id || !selectedLanguage) {
+          window.KGAudio.setVerifiedMediaPolicy(null);
+          return;
+        }
+        window.KGAudio.setVerifiedMediaPolicy({
+          ownerId: user.id, policy, sentenceScope: sentenceAccess,
+          supabase, projectUrl: SUPABASE_URL,
+        });
+        return () => window.KGAudio.setVerifiedMediaPolicy(null);
+      }, [user?.id, verified, selectedLanguage, policy?.state, policy?.revision,
+          sentenceAccess?.state, sentenceAccess?.serverEnforced, sentenceKey]);
       const allowedViews = useMemo(() =>
         window.KGLearnerAccess.visibleViews(policy,sentenceAccess),
         [policy,sentenceAccess]);
@@ -6253,6 +6316,9 @@
 
       return (
         <RulesContext.Provider value={rules}>
+        <KGMediaScopeContext.Provider value={{
+          ownerId: user?.id, policy, sentenceScope: sentenceAccess,
+        }}>
         <div className="min-h-screen bg-gray-50">
           <Header currentLanguage={selectedLanguage} languages={allowedLanguages} allowedViews={allowedViews}
             onLanguageChange={lang => { if (window.KGLearnerAccess.canLanguage(policy, lang)) setCurrentLanguage(lang); }}
@@ -6316,6 +6382,7 @@
             </div>
           </footer>
         </div>
+        </KGMediaScopeContext.Provider>
         </RulesContext.Provider>
       );
     }

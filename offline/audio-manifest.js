@@ -2,7 +2,9 @@
   // player, voices, speed controls and filename hashing shared with online KG.
   const manifestRuns = {};
   async function loadManifest(lang, force = false) {
-    if (!lang || (!force && manifests[lang])) return;
+    // U3C2B1: never load legacy public audio catalogs for a restricted or
+    // unverified account when the future source-controlled gate is enabled.
+    if (!canUsePublicMedia() || !lang || (!force && manifests[lang])) return;
     const run = manifestRuns[lang] = (manifestRuns[lang] || 0) + 1;
     const previous = manifests[lang];
     manifests[lang] = 'loading';
