@@ -212,7 +212,13 @@ BEGIN
   IF v_mode <> 'restricted' THEN RETURN false; END IF;
   -- Private lesson emails and other user-level configuration cannot be
   -- disclosed to restricted learners through raw kg_chart_settings.
-  RETURN p_key = ANY(ARRAY[
+  -- A restricted profile with ZERO available languages sees NO settings:
+  -- even benign configuration must not defeat the empty-policy contract.
+  RETURN EXISTS (
+    SELECT 1 FROM public.kg_chart_access_languages AS al
+    JOIN public.kg_chart_languages AS l ON l.code=al.language_code
+    WHERE al.email=v_email AND l.is_active IS TRUE
+  ) AND p_key = ANY(ARRAY[
     'unlock_rules','pronunciation_daily_limit','catalyst_daily_limit',
     'admin_bypass_lock'
   ]);
