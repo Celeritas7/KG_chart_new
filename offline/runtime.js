@@ -315,7 +315,7 @@
     if (!/^[a-z]{2,3}$/.test(lang)) throw Error('Unknown language code');
     // Only include the selected language and its alternative meaning language.
     const meaning = lang === 'mr' ? ['mr','fil'] : [lang];
-    const [languages,topics,tt,vocabulary,vt,sentences,colours,settings] = await Promise.all([
+    const [languages,topics,tt,vocabulary,vt,sentences,colours,settings,privateVis] = await Promise.all([
       readPaged(TABLES.languages,q=>q.eq('is_active',true)),
       readPaged(TABLES.topics),
       readPaged(TABLES.topicTranslations,q=>q.in('language_code',meaning)),
@@ -323,13 +323,25 @@
       readPaged(TABLES.vocabularyTranslations,q=>q.in('language_code',meaning)),
       readPaged(TABLES.sentences,q=>q.eq('language_code',lang)),
       readPaged(TABLES.colours,q=>q.eq('language_code',lang)),
-      readPaged(TABLES.settings,q=>q.in('key',['unlock_rules','private_lessons','admin_bypass_lock'])),
+      // Never package the raw private_lessons email allowlist.
+      readPaged(TABLES.settings,q=>q.in('key',['unlock_rules','admin_bypass_lock'])),
+      live.rpc('kg_chart_my_private_lesson_visibility',{p_language:lang}),
     ]);
+    if(privateVis.error || privateVis.data?.contract!==1
+        || !Array.isArray(privateVis.data.topics) || !Array.isArray(privateVis.data.groups)
+        || !privateVis.data.topics.every(t=>typeof t==='string')
+        || !privateVis.data.groups.every(g=>typeof g==='string')) {
+      throw Error('Private lesson visibility could not be verified for this pack. Reconnect and retry; existing packs are preserved.');
+    }
     if(!languages.some(l=>l.code===lang)) throw Error('This language is not currently published/active.');
     if(!tt.some(t=>t.language_code===lang) || !vt.some(v=>v.language_code===lang)) throw Error('Published topics or vocabulary translations are missing.');
+    // The sanitized cache key is unique per language. Existing account-scoped
+    // pack and service-worker identity remain untouched.
+    const safeSettings=[...settings.filter(s=>s.key!=='private_lessons'),
+      {key:'kg_private_visibility:'+lang,value:privateVis.data}];
     return { [TABLES.languages]:languages,[TABLES.topics]:topics,[TABLES.topicTranslations]:tt,
       [TABLES.vocabulary]:vocabulary,[TABLES.vocabularyTranslations]:vt,
-      [TABLES.sentences]:sentences,[TABLES.colours]:colours,[TABLES.settings]:settings };
+      [TABLES.sentences]:sentences,[TABLES.colours]:colours,[TABLES.settings]:safeSettings };
   }
 
   function requiredMedia(data,lang) {
@@ -820,6 +832,41 @@
     if(!currentEnrollment()) return null;
     if(name==='kg_chart_is_allowed') return {data:true,error:null};
     if(name==='kg_chart_is_admin') return {data:!!enrollment.admin,error:null};
+    if(name==='kg_chart_my_private_lesson_visibility') {
+      // The live endpoint is authoritative whenever a connection exists;
+      // offline only, resolve the per-owner sanitized pack snapshot.
+      if(navigator.onLine) return null;
+      return (async()=>{
+        const lang=String(args.p_language||'');
+        if(!/^[a-z]{2,3}$/.test(lang)) return {
+          data:null,error:Error('Invalid requested private-lesson language')
+        };
+        const settings=await selectRows(TABLES.settings);
+        const safe=settings.find(x=>x.key==='kg_private_visibility:'+lang)?.value;
+        const isSafe=x=>x?.contract===1&&Array.isArray(x.topics)
+          &&Array.isArray(x.groups)&&x.topics.every(t=>typeof t==='string')
+          &&x.groups.every(g=>typeof g==='string');
+        if(isSafe(safe))return {data:safe,error:null};
+        // Older installed packs already contain the legacy global setting.
+        // Calculate only this enrolled account's own hidden IDs locally.
+        // Never return/expose the original list of other learners' emails.
+        const old=settings.find(x=>x.key==='private_lessons')?.value;
+        if(!Array.isArray(old))return {
+          data:null,error:Error('Private lesson visibility is not saved in this pack. Reconnect and update the language pack.')
+        };
+        const email=String(enrollment.email||'').toLowerCase();
+        const denied=old.filter(rule=>(!rule?.language_code||rule.language_code===lang)
+          &&!(rule.emails||[]).some(x=>String(x).toLowerCase()===email));
+        if(denied.some(x=>!x||typeof x!=='object'
+          ||(x.sentence_groups!=null&&!Array.isArray(x.sentence_groups))))return {
+          data:null,error:Error('Saved private lesson metadata cannot be verified')
+        };
+        return {data:{contract:1,
+          topics:[...new Set(denied.map(x=>x.topic_id).filter(x=>typeof x==='string'&&x))],
+          groups:[...new Set(denied.flatMap(x=>x.sentence_groups||[]).filter(x=>typeof x==='string'&&x))]
+        },error:null};
+      })();
+    }
     if(name==='kg_chart_my_answers') return (async()=>{
       const sessions=await selectRows(TABLES.sessions);
       const byId=new Map(sessions.filter(s=>s.user_id===owner && s.language_code===args.p_lang).map(s=>[s.id,s]));
