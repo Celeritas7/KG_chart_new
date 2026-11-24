@@ -84,6 +84,7 @@
 <body class="bg-gray-50">
   <div id="root"></div>
   
+  <script src="./js/kg-learner-access.js"></script>
   <script type="text/babel">
     const { useState, useEffect, useCallback, useMemo, createContext, useContext } = React;
 
@@ -542,6 +543,81 @@
     }
 
     // ==========================================
+    // U3C1: VERIFIED, PER-ACCOUNT LEARNER VIEW
+    // ==========================================
+    // DO NOT enable this until U1–U3D server and offline acceptance has passed.
+    // Merging the UI PR cannot activate it. The current production database
+    // does not contain the prerequisite snapshot RPC or enforced=true contract.
+    const U3C1_SCOPED_UI_ENABLED = false;
+    const U3C1_LEGACY_POLICY = window.KGLearnerAccess.parseSnapshot({
+      contract: 1, mode: 'legacy', revision: 0, server_enforced: false,
+      languages: null, topics: null, features: null,
+    });
+    // This snapshot is a display gate only. Server RLS/Edge authorization
+    // must be installed and declared enforced before restricted mode opens.
+    // No offline or error path silently assumes a missing policy = legacy.
+    function useLearnerAccess(user) {
+      const [result, setResult] = useState({ owner: null, policy: null, error: null, loading: true });
+      useEffect(() => {
+        if (!U3C1_SCOPED_UI_ENABLED) return;
+        if (!user?.id) {
+          setResult({ owner: null, policy: null, error: null, loading: true });
+          return;
+        }
+        let stopped = false;
+        let sequence = 0;
+        const reload = async () => {
+          const call = ++sequence;
+          setResult({ owner: user.id, policy: null, error: null, loading: true });
+          try {
+            const { data, error } = await supabase.rpc('kg_chart_u3_my_access_snapshot');
+            if (stopped || call !== sequence) return;
+            if (error) throw Error('Learner access permissions are unavailable.');
+            const policy = window.KGLearnerAccess.parseSnapshot(data);
+            setResult({ owner: user.id, policy, error: null, loading: false });
+          } catch (_) {
+            if (!stopped && call === sequence) setResult({
+              owner: user.id, policy: null,
+              error: 'Unable to verify learner permissions. Reconnect and reopen KG Chart.',
+              loading: false,
+            });
+          }
+        };
+        reload();
+        window.addEventListener('online', reload);
+        window.addEventListener('focus', reload);
+        return () => {
+          stopped = true;
+          ++sequence;
+          window.removeEventListener('online', reload);
+          window.removeEventListener('focus', reload);
+        };
+      }, [user?.id]);
+      // Until the gated rollout, preserve the exact legacy navigation and
+      // offline startup contract without making a new Supabase RPC request.
+      // This flag is immutable source code, not a user-toggleable setting.
+      if (!U3C1_SCOPED_UI_ENABLED) return {
+        owner: user?.id, policy: U3C1_LEGACY_POLICY, error: null, loading: false,
+      };
+      return result.owner === user?.id ? result
+        : { owner: user?.id, policy: null, error: null, loading: true };
+    }
+
+    function LearnerAccessUnavailable({ title, description }) {
+      const { signOut } = useAuth();
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+          <div role="alert" className="max-w-lg w-full bg-white rounded-2xl border border-amber-200 shadow-sm p-7">
+            <h1 className="text-xl font-bold text-gray-800">{title}</h1>
+            <p className="mt-3 text-gray-600">{description}</p>
+            <p className="mt-3 text-sm text-gray-500">Your existing progress, unsent changes and downloaded language packs have not been cleared.</p>
+            <button onClick={signOut} className="mt-5 px-4 py-2 border rounded-lg text-gray-700 hover:bg-gray-50">Sign out</button>
+          </div>
+        </div>
+      );
+    }
+
+    // ==========================================
     // DATA HOOKS
     // ==========================================
     function useLanguages() {
@@ -563,17 +639,23 @@
       return { languages, loading };
     }
 
-    function useTopics(languageCode, meaningsInEnglish) {
+    function useTopics(languageCode, meaningsInEnglish, ownerId) {
       const [topics, setTopics] = useState([]);
       const [loading, setLoading] = useState(true);
+      const [loadedFor, setLoadedFor] = useState(null);
+      const scope = ownerId && languageCode
+        ? ownerId + '|' + languageCode + '|' + String(!!meaningsInEnglish) : null;
       const lateConverters = useLateConverters();
       const lateSeen = React.useRef(0);
 
       useEffect(() => {
-        if (!languageCode) return;
+        if (!scope) return;
         let cancelled = false;
-        // A late converter only rebuilds the list in place; a language or meaning switch shows the spinner
-        if (lateSeen.current === lateConverters) setLoading(true);
+        // Never reuse another account's or language's cached translations.
+        // Even during a fast switch, the previous language's text is hidden.
+        setLoading(true);
+        setLoadedFor(null);
+        setTopics([]);
         lateSeen.current = lateConverters;
 
         Promise.all([supabase
@@ -615,12 +697,16 @@
               }).filter(t => t.translation);
               setTopics(mapped);
             }
+            setLoadedFor(scope);
             setLoading(false);
           });
         return () => { cancelled = true; };
-      }, [languageCode, meaningsInEnglish, lateConverters]);
+      }, [scope, lateConverters]);
 
-      return { topics, loading };
+      return {
+        topics: loadedFor === scope ? topics : [],
+        loading: !!scope && (loading || loadedFor !== scope),
+      };
     }
 
     // Chinese: convert from the pinyin pronunciation field; Burmese/others: from native_text
@@ -630,17 +716,23 @@
       return convertToHint(sourceText, languageCode);
     }
 
-    function useVocabulary(languageCode, meaningsInEnglish) {
+    function useVocabulary(languageCode, meaningsInEnglish, ownerId) {
       const [vocabulary, setVocabulary] = useState([]);
       const [loading, setLoading] = useState(true);
+      const [loadedFor, setLoadedFor] = useState(null);
+      const scope = ownerId && languageCode
+        ? ownerId + '|' + languageCode + '|' + String(!!meaningsInEnglish) : null;
       const lateConverters = useLateConverters();
       const lateSeen = React.useRef(0);
 
       useEffect(() => {
-        if (!languageCode) return;
+        if (!scope) return;
         let cancelled = false;
-        // A late converter only rebuilds the list in place; a language or meaning switch shows the spinner
-        if (lateSeen.current === lateConverters) setLoading(true);
+        // Never reuse another account's or language's cached translations.
+        // Even during a fast switch, the previous language's text is hidden.
+        setLoading(true);
+        setLoadedFor(null);
+        setVocabulary([]);
         lateSeen.current = lateConverters;
 
         Promise.all([supabase
@@ -685,12 +777,16 @@
               }).filter(v => v.translation);
               setVocabulary(mapped);
             }
+            setLoadedFor(scope);
             setLoading(false);
           });
         return () => { cancelled = true; };
-      }, [languageCode, meaningsInEnglish, lateConverters]);
+      }, [scope, lateConverters]);
 
-      return { vocabulary, loading };
+      return {
+        vocabulary: loadedFor === scope ? vocabulary : [],
+        loading: !!scope && (loading || loadedFor !== scope),
+      };
     }
 
     function useUserRatings(languageCode) {
@@ -861,7 +957,7 @@
       );
     }
 
-    function Header({ currentLanguage, languages, onLanguageChange, activeView, onViewChange, meaning, meaningsInEnglish, onToggleMeanings }) {
+    function Header({ currentLanguage, languages, allowedViews, onLanguageChange, activeView, onViewChange, meaning, meaningsInEnglish, onToggleMeanings }) {
       const { user, signOut } = useAuth();
       const [showAuthModal, setShowAuthModal] = useState(false);
       const [showUserMenu, setShowUserMenu] = useState(false);
@@ -871,7 +967,7 @@
         { id: 'quiz', icon: '🎯', label: 'Quiz' },
         { id: 'flashcard', icon: '🃏', label: 'Cards' },
         { id: 'progress', icon: '📈', label: 'Progress' },
-      ];
+      ].filter(view => allowedViews.includes(view.id));
 
       return (
         <>
@@ -1705,7 +1801,7 @@
             <div className="mb-4 bg-jade-50 border border-jade-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
               <div><h2 className="font-bold text-jade-800">Friends’ names</h2>
                 <p className="text-sm text-gray-600">Copy each name, then try typing it from memory with your Burmese keyboard.</p></div>
-              <button onClick={onPracticeTyping} className="px-4 py-3 bg-jade-600 text-white rounded-xl font-semibold hover:bg-jade-700">⌨️ Practise names</button>
+              {onPracticeTyping && <button onClick={onPracticeTyping} className="px-4 py-3 bg-jade-600 text-white rounded-xl font-semibold hover:bg-jade-700">⌨️ Practise names</button>}
             </div>
           )}
 
@@ -3373,11 +3469,12 @@
       );
     }
 
-    function QuizModeToggle({ mode, onChange }) {
+    function QuizModeToggle({ mode, onChange, allowedModes }) {
       return (
-        // Six modes: two rows of three on a phone, one row from sm up
+        // U3C1: only modes selected for THIS learner appear in the menu.
         <div className="grid grid-cols-3 sm:flex gap-1 bg-gray-100 rounded-2xl p-1 mb-6">
-          {[['words', '🔤', 'Words'], ['sentences', '💬', 'Sentences'], ['typing', '⌨️', 'Typing'], ['speak', '🗣️', 'Speak'], ['say', '🎙️', 'Say'], ['colours', '🎨', 'Colours']].map(([id, icon, label]) => (
+          {[['words', '🔤', 'Words'], ['sentences', '💬', 'Sentences'], ['typing', '⌨️', 'Typing'], ['speak', '🗣️', 'Speak'], ['say', '🎙️', 'Say'], ['colours', '🎨', 'Colours']]
+            .filter(([id]) => allowedModes.includes(id)).map(([id, icon, label]) => (
             <button key={id} onClick={() => onChange(id)}
               className={`sm:flex-1 min-w-0 py-2 px-1 rounded-xl font-medium transition-all ${mode === id ? 'bg-white shadow text-jade-700' : 'text-gray-500 hover:text-gray-700'}`}>
               <span className="block sm:inline">{icon}</span> <span className="text-xs sm:text-base">{label}</span>
@@ -3388,14 +3485,25 @@
     }
 
     function QuizView(props) {
-      const [mode, setMode] = useState(() => { const m = loadFromStorage(QUIZ_MODE_KEY, 'words'); return ['sentences', 'typing', 'speak', 'say', 'colours'].includes(m) ? m : 'words'; });
-      useEffect(() => { saveToStorage(QUIZ_MODE_KEY, mode); }, [mode]);
-      const toggle = <QuizModeToggle mode={mode} onChange={setMode} />;
-      if (mode === 'colours') return <ColourQuizView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
-      if (mode === 'say') return <SayItView topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
-      if (mode === 'speak') return <SpeakView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
-      if (mode === 'typing') return <TypingView key={props.languageCode} topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
-      return mode === 'sentences'
+      const [mode, setMode] = useState(() => {
+        const saved = loadFromStorage(QUIZ_MODE_KEY, 'words');
+        return ['sentences', 'typing', 'speak', 'say', 'colours'].includes(saved) ? saved : 'words';
+      });
+      const allowedModes = window.KGLearnerAccess.visibleQuizModes(props.accessPolicy);
+      const currentMode = window.KGLearnerAccess.chooseQuizMode(props.accessPolicy, mode);
+      useEffect(() => {
+        if (currentMode && mode !== currentMode) setMode(currentMode);
+      }, [mode, currentMode]);
+      useEffect(() => { if (currentMode) saveToStorage(QUIZ_MODE_KEY, currentMode); }, [currentMode]);
+      if (!currentMode) return <div role="alert" className="p-6 text-center text-gray-600">
+        No quiz modes are assigned to this learner.</div>;
+      const toggle = <QuizModeToggle mode={currentMode} allowedModes={allowedModes}
+        onChange={next => { if (allowedModes.includes(next)) setMode(next); }} />;
+      if (currentMode === 'colours') return <ColourQuizView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
+      if (currentMode === 'say') return <SayItView topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
+      if (currentMode === 'speak') return <SpeakView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
+      if (currentMode === 'typing') return <TypingView key={props.languageCode} topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} accessPolicy={props.accessPolicy} />;
+      return currentMode === 'sentences'
         ? <SentenceQuizView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />
         : <WordQuizView {...props} modeToggle={toggle}
             topics={props.topics.filter(t => t.id !== 'friends_names')}
@@ -4894,12 +5002,13 @@
       return { ok: i, total: a.length, wrong, done: a.length === b.length && i === b.length };
     }
 
-    function TypingView({ topics = [], vocabulary, languageCode, user, modeToggle, meaningName }) {
+    function TypingView({ topics = [], vocabulary, languageCode, user, modeToggle, meaningName, accessPolicy }) {
       const rules = React.useContext(RulesContext);
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       const saved0 = loadFromStorage(TYPING_SETTINGS_KEY, {});
       const [mode, setMode] = useState(saved0.mode === 'recall' ? 'recall' : 'copy');
       const [source, setSource] = useState(saved0.source === 'sentences' ? 'sentences' : 'words');
+      const safeSource = accessPolicy?.state === 'restricted' ? 'words' : source;
       const [topicId, setTopicId] = useState(saved0.languageCode === languageCode ? saved0.topicId || 'all' : 'all');
       const [duration, setDuration] = useState(TYPING_DURATIONS.includes(saved0.duration) ? saved0.duration : 60);
       const [sentences, setSentences] = useState(null);
@@ -4920,26 +5029,32 @@
       const statsRef = React.useRef(stats); statsRef.current = stats;
       const answersRef = React.useRef(answers); answersRef.current = answers;
 
-      useEffect(() => { saveToStorage(TYPING_SETTINGS_KEY, { mode, source, duration, topicId, languageCode }); }, [mode, source, duration, topicId, languageCode]);
+      // Do NOT silently select All when a previously saved topic is revoked:
+      // an explicit user selection is required before unrelated words appear.
+      const safeTopicId = topicId;
+      useEffect(() => {
+        if (accessPolicy?.state === 'restricted' && source !== 'words') setSource('words');
+      }, [accessPolicy?.state, source]);
+      useEffect(() => { saveToStorage(TYPING_SETTINGS_KEY, { mode, source: safeSource, duration, topicId: safeTopicId, languageCode }); }, [mode, safeSource, duration, safeTopicId, languageCode]);
 
       // Sentences come from the same table as the sentence quizzes
       useEffect(() => {
-        if (source !== 'sentences') return;
+        if (safeSource !== 'sentences') return;
         let cancelled = false;
         setSentences(null);
         supabase.from(TABLES.sentences).select('*').eq('language_code', languageCode).order('sort_order')
           .then(({ data, error }) => { if (!cancelled) setSentences(error ? [] : (data || []).filter(s => s.native_text?.trim())); });
         return () => { cancelled = true; };
-      }, [source, languageCode]);
+      }, [safeSource, languageCode]);
 
       const priv = React.useContext(PrivateLessonsContext);
       const typingTopics = topics.filter(t => !t.locked && vocabulary.some(v => v.topic_id === t.id && v.translation?.native_text?.trim()));
       const pool = useMemo(() => {
-        if (source === 'sentences') return (sentences || []).filter(s => !priv.groups.has(s.group_name)).map(s => ({ kind: 's', id: s.id, text: s.native_text, meaning: sentenceMeaning(s, meaningName) }));
-        return vocabulary.filter(v => v.translation?.native_text?.trim() && (topicId === 'all' || v.topic_id === topicId)).map(v => ({ kind: 'w', id: v.id, text: v.translation.native_text, meaning: v.display_text || v.english_text, hint: v.translation.devanagari, v }));
-      }, [source, sentences, vocabulary, priv, meaningName, topicId]);
+        if (safeSource === 'sentences') return (sentences || []).filter(s => !priv.groups.has(s.group_name)).map(s => ({ kind: 's', id: s.id, text: s.native_text, meaning: sentenceMeaning(s, meaningName) }));
+        return vocabulary.filter(v => v.translation?.native_text?.trim() && (safeTopicId === 'all' || v.topic_id === safeTopicId)).map(v => ({ kind: 'w', id: v.id, text: v.translation.native_text, meaning: v.display_text || v.english_text, hint: v.translation.devanagari, v }));
+      }, [safeSource, sentences, vocabulary, priv, meaningName, safeTopicId]);
 
-      const bestKey = `${languageCode}|${mode}|${source}${source === 'words' && topicId !== 'all' ? '|' + topicId : ''}`;
+      const bestKey = `${languageCode}|${mode}|${safeSource}${safeSource === 'words' && safeTopicId !== 'all' ? '|' + safeTopicId : ''}`;
       const [, setBestsSynced] = useState(0);
       useEffect(() => {
         let cancelled = false;
@@ -5075,12 +5190,12 @@
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Type</label>
-                  {seg(source, setSource, [['words', '🔤 Words'], ['sentences', '💬 Sentences']])}
+                  {seg(safeSource, setSource, accessPolicy?.state === 'restricted' ? [['words', '🔤 Words']] : [['words', '🔤 Words'], ['sentences', '💬 Sentences']])}
                 </div>
-                {source === 'words' && (
+                {safeSource === 'words' && (
                   <div>
                     <label htmlFor="typing-topic" className="block text-sm font-semibold text-gray-700 mb-2">Topic</label>
-                    <select id="typing-topic" value={topicId} onChange={e => setTopicId(e.target.value)} className="w-full px-3 py-3 border border-gray-300 rounded-xl bg-white">
+                    <select id="typing-topic" value={safeTopicId} onChange={e => setTopicId(e.target.value)} className="w-full px-3 py-3 border border-gray-300 rounded-xl bg-white">
                       <option value="all">All unlocked topics</option>
                       {topicId !== 'all' && !typingTopics.some(t => t.id === topicId) && <option value={topicId} disabled>Saved topic is unavailable — choose another</option>}
                       {typingTopics.map(t => <option key={t.id} value={t.id}>{t.icon} {t.id === 'friends_names' ? 'Friends’ names' : t.translation?.title_native || t.id.replace(/_/g, ' ')}</option>)}
@@ -5093,12 +5208,12 @@
                   {seg(duration, setDuration, TYPING_DURATIONS.map(d => [d, d < 60 ? `${d} s` : `${d / 60} min`]))}
                 </div>
                 <div className="bg-blue-50 text-blue-800 rounded-2xl p-4 text-sm">
-                  You need a {lang} keyboard on this device. The clock starts on your first key. A mistake turns red and must be fixed before the next {source === 'words' ? 'word' : 'sentence'}.
+                  You need a {lang} keyboard on this device. The clock starts on your first key. A mistake turns red and must be fixed before the next {safeSource === 'words' ? 'word' : 'sentence'}.
                 </div>
                 {best && <div className="text-center text-sm text-gray-500">Your best: <b className="text-jade-700">{best.cpm}</b> characters/min{best.last != null ? ` · last time ${best.last}` : ''}</div>}
                 <button onClick={start} disabled={!pool.length}
                   className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">
-                  {source === 'sentences' && sentences === null ? 'Loading sentences…' : !pool.length ? (source === 'sentences' ? `No ${lang} sentences yet` : 'No words to type') : 'Start'}
+                  {safeSource === 'sentences' && sentences === null ? 'Loading sentences…' : !pool.length ? (safeSource === 'sentences' ? `No ${lang} sentences yet` : 'No words to type') : 'Start'}
                 </button>
               </div>
             </div>
@@ -5755,7 +5870,7 @@
                 <p className="text-gray-500 mb-5">Answer every word in <b className={fontClass}>{topicTitle(prevTopic)}</b> {ruleText(rules)} to unlock it. Right or wrong both count.</p>
                 <div className="h-3 bg-gray-100 rounded-full overflow-hidden mb-2"><div className="h-full bg-jade-500 rounded-full" style={{ width: Math.max(pct, 2) + '%' }} /></div>
                 <p className="text-sm text-gray-500 mb-6">{prevStatus.faced} of {prevStatus.total} words done · {prevStatus.steps}/{prevStatus.stepsTotal} answers</p>
-                <button onClick={onGoQuiz} className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Go to Quiz →</button>
+                {onGoQuiz && <button onClick={onGoQuiz} className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Go to Quiz →</button>}
               </>
             ) : <p className="text-gray-500">Ask the admin to unlock this topic.</p>}
           </div>
@@ -5993,44 +6108,67 @@
 
     function AppContent() {
       const { user } = useAuth();
+      const access = useLearnerAccess(user);
+      const policy = access.policy;
+      const verified = !access.loading && !access.error && window.KGLearnerAccess.ready(policy);
       const [currentLanguage, setCurrentLanguage] = useState(() => loadFromStorage(STORAGE_KEYS.language, 'my'));
       const [activeView, setActiveView] = useState(() => loadFromStorage(STORAGE_KEYS.view, 'chart'));
       const [activeTopic, setActiveTopic] = useState(() => loadFromStorage(STORAGE_KEYS.topic, null));
       const [showEnglish, setShowEnglish] = useState(() => loadFromStorage(STORAGE_KEYS.showEnglish, true));
       const [meaningsInEnglish, setMeaningsInEnglish] = useState(() => loadFromStorage(MEANING_STORAGE_KEY, false));
-      const meaningName = meaningNameFor(currentLanguage, meaningsInEnglish);
 
       const { languages, loading: loadingLangs } = useLanguages();
-      const { topics: allTopics, loading: loadingTopics } = useTopics(currentLanguage, meaningsInEnglish);
-      const { vocabulary: allVocabulary, loading: loadingVocab } = useVocabulary(currentLanguage, meaningsInEnglish);
-      const priv = usePrivateLessons(user, currentLanguage);
-      const rules = useRules(user, currentLanguage);
-      // Never display/download content while the private-lesson identity check
-      // is pending or failed. Preserve progress; do not clear offline storage.
-      const topics = useMemo(() => priv.loaded && !priv.error
-        ? allTopics.filter(t => !priv.topics.has(t.id)) : [], [allTopics, priv]);
-      const vocabulary = useMemo(() => priv.loaded && !priv.error
-        ? allVocabulary.filter(v => !priv.topics.has(v.topic_id)) : [], [allVocabulary, priv]);
-      const { ratings, ratingsLoaded, updateRating, clearRating } = useUserRatings(currentLanguage);
-      const path = useLearningPath({ user, languageCode: currentLanguage, topics, vocabulary, rules });
-      const visibleTopics = path.topics;
-      const fontClassApp = LANGUAGE_FONTS[currentLanguage] || 'font-body';
+      const allowedLanguages = useMemo(() => window.KGLearnerAccess.visibleLanguages(policy, languages), [policy, languages]);
+      const desiredLanguage = window.KGLearnerAccess.chooseLanguage(policy, currentLanguage, allowedLanguages);
+      // A stale saved language must not even reach the topic/vocabulary loaders.
+      const selectedLanguage = verified && desiredLanguage === currentLanguage ? currentLanguage : null;
+      const allowedViews = useMemo(() => window.KGLearnerAccess.visibleViews(policy), [policy]);
+      const desiredView = window.KGLearnerAccess.chooseView(policy, activeView);
+      const selectedView = verified && desiredView === activeView ? activeView : null;
+      const meaningName = meaningNameFor(selectedLanguage, meaningsInEnglish);
 
-      useEffect(() => { saveToStorage(STORAGE_KEYS.language, currentLanguage); }, [currentLanguage]);
-      useEffect(() => { saveToStorage(STORAGE_KEYS.view, activeView); }, [activeView]);
-      useEffect(() => { saveToStorage(STORAGE_KEYS.topic, activeTopic); }, [activeTopic]);
+      const { topics: allTopics, loading: loadingTopics } = useTopics(selectedLanguage, meaningsInEnglish, user?.id);
+      const { vocabulary: allVocabulary, loading: loadingVocab } = useVocabulary(selectedLanguage, meaningsInEnglish, user?.id);
+      const priv = usePrivateLessons(user, selectedLanguage);
+      const rules = useRules(user, selectedLanguage);
+      const topics = useMemo(() => priv.loaded && !priv.error
+        ? window.KGLearnerAccess.visibleTopics(policy, selectedLanguage, allTopics)
+          .filter(t => !priv.topics.has(t.id)) : [], [policy, selectedLanguage, allTopics, priv]);
+      const vocabulary = useMemo(() => priv.loaded && !priv.error
+        ? window.KGLearnerAccess.visibleVocabulary(policy, selectedLanguage, allVocabulary, topics)
+          .filter(v => !priv.topics.has(v.topic_id)) : [],
+          [policy, selectedLanguage, allVocabulary, topics, priv]);
+      const { ratings, ratingsLoaded, updateRating, clearRating } = useUserRatings(selectedLanguage);
+      const path = useLearningPath({ user, languageCode: selectedLanguage, topics, vocabulary, rules });
+      const visibleTopics = path.topics;
+      const fontClassApp = LANGUAGE_FONTS[selectedLanguage] || 'font-body';
+
+      // Repair locally saved preferences when an admin changes visibility.
+      // Do not erase bookmarks, ratings, queued changes or downloaded packs.
+      useEffect(() => {
+        if (!verified || loadingLangs) return;
+        if (desiredLanguage && desiredLanguage !== currentLanguage) setCurrentLanguage(desiredLanguage);
+        if (desiredView && desiredView !== activeView) setActiveView(desiredView);
+      }, [verified, loadingLangs, desiredLanguage, desiredView, currentLanguage, activeView]);
+      useEffect(() => { if (selectedLanguage) saveToStorage(STORAGE_KEYS.language, selectedLanguage); }, [selectedLanguage]);
+      useEffect(() => { if (selectedView) saveToStorage(STORAGE_KEYS.view, selectedView); }, [selectedView]);
+      useEffect(() => { if (verified && selectedLanguage && activeTopic) saveToStorage(STORAGE_KEYS.topic, activeTopic); },
+        [verified, selectedLanguage, activeTopic]);
       useEffect(() => { saveToStorage(STORAGE_KEYS.showEnglish, showEnglish); }, [showEnglish]);
       useEffect(() => { saveToStorage(MEANING_STORAGE_KEY, meaningsInEnglish); }, [meaningsInEnglish]);
-      useEffect(() => { window.KGAudio.loadManifest(currentLanguage); }, [currentLanguage]);
+      useEffect(() => { if (selectedLanguage) window.KGAudio.loadManifest(selectedLanguage); }, [selectedLanguage]);
       useEffect(() => { if (user) window.KGAudio.initPrefs(supabase, user.id); }, [user]);
-      useEffect(() => { window.KGAudio.stop(); }, [activeView, currentLanguage]);
+      useEffect(() => { window.KGAudio.stop(); }, [selectedView, selectedLanguage]);
 
       useEffect(() => {
+        if (!verified || !selectedLanguage) return;
         if (visibleTopics.length > 0) {
           const savedTopicExists = visibleTopics.some(t => t.id === activeTopic);
-          if (!activeTopic || !savedTopicExists) setActiveTopic((visibleTopics.find(t => !t.locked) || visibleTopics[0]).id);
+          if (!savedTopicExists) setActiveTopic((visibleTopics.find(t => !t.locked) || visibleTopics[0]).id);
+        } else if (!loadingTopics && !loadingVocab && activeTopic !== null) {
+          setActiveTopic(null);
         }
-      }, [visibleTopics, activeTopic]);
+      }, [verified, selectedLanguage, visibleTopics, activeTopic, loadingTopics, loadingVocab]);
 
       const topicVocabulary = activeTopic ? vocabulary.filter(v => v.topic_id === activeTopic) : [];
       const currentTopic = visibleTopics.find(t => t.id === activeTopic);
@@ -6038,18 +6176,32 @@
         ? visibleTopics.slice(0, visibleTopics.indexOf(currentTopic)).reverse().find(t => !path.status[t.id]?.empty)
         : null;
 
-      if (loadingLangs) return <div className="min-h-screen flex items-center justify-center"><LoadingSpinner message="Loading..." /></div>;
+      if (loadingLangs || access.loading) return <div className="min-h-screen flex items-center justify-center"><LoadingSpinner message="Verifying learning access..." /></div>;
+      if (access.error || !verified) return <LearnerAccessUnavailable
+        title="Learning access unavailable"
+        description={policy?.reason === 'not_enforced'
+          ? 'Your restricted learning policy is not fully enforced on the server yet. The administrator must complete the access rollout.'
+          : 'KG Chart could not verify your learning permissions. Reconnect and reopen the app. Restricted content will not be shown without authorization.'} />;
+      if (allowedLanguages.length === 0 || allowedViews.length === 0) return <LearnerAccessUnavailable
+        title="No learning access assigned"
+        description="Your account has no permitted languages or study tools. Ask the KG Chart administrator to assign them." />;
+      if (!selectedLanguage || !selectedView) return <div className="min-h-screen flex items-center justify-center"><LoadingSpinner message="Opening permitted lessons..." /></div>;
+      if (policy.state === 'restricted' && !loadingTopics && !loadingVocab
+        && topics.length === 0 && priv.loaded) return <LearnerAccessUnavailable
+        title="No permitted topics"
+        description="Your selected language has no available assigned topics. Ask your administrator to review its topic permissions." />;
 
       return (
         <RulesContext.Provider value={rules}>
         <div className="min-h-screen bg-gray-50">
-          <Header currentLanguage={currentLanguage} languages={languages} onLanguageChange={setCurrentLanguage}
-            activeView={activeView} onViewChange={setActiveView}
-            meaning={MEANING_LANGS[currentLanguage] || null} meaningsInEnglish={meaningsInEnglish} onToggleMeanings={setMeaningsInEnglish} />
+          <Header currentLanguage={selectedLanguage} languages={allowedLanguages} allowedViews={allowedViews}
+            onLanguageChange={lang => { if (window.KGLearnerAccess.canLanguage(policy, lang)) setCurrentLanguage(lang); }}
+            activeView={selectedView} onViewChange={view => { if (window.KGLearnerAccess.canView(policy, view)) setActiveView(view); }}
+            meaning={MEANING_LANGS[selectedLanguage] || null} meaningsInEnglish={meaningsInEnglish} onToggleMeanings={setMeaningsInEnglish} />
 
           <PictureDownloads vocabulary={vocabulary} loading={loadingVocab || !priv.loaded} />
 
-          {activeView === 'chart' && !loadingTopics && visibleTopics.length > 0 && (
+          {selectedView === 'chart' && !loadingTopics && visibleTopics.length > 0 && (
             <TopicNav topics={visibleTopics} activeTopic={activeTopic} onSelect={setActiveTopic} showEnglish={showEnglish} pathStatus={path.enabled ? path.status : null} />
           )}
 
@@ -6064,27 +6216,27 @@
               <div className="py-12"><LoadingSpinner message="Loading vocabulary..." /></div>
             ) : (
               <>
-                {activeView === 'chart' && currentTopic?.locked && (
+                {selectedView === 'chart' && currentTopic?.locked && (
                   <LockedTopicPanel topic={currentTopic} prevTopic={prevPathTopic} prevStatus={prevPathTopic ? path.status[prevPathTopic.id] : null}
-                    fontClass={fontClassApp} onGoQuiz={() => setActiveView('quiz')} />
+                    fontClass={fontClassApp} onGoQuiz={window.KGLearnerAccess.canView(policy, 'quiz') ? () => setActiveView('quiz') : null} />
                 )}
-                {activeView === 'chart' && !currentTopic?.locked && (
+                {selectedView === 'chart' && !currentTopic?.locked && (
                   <ChartView topic={currentTopic} vocabulary={topicVocabulary} ratings={ratings} onRate={updateRating}
-                    languageCode={currentLanguage} showEnglish={showEnglish} onToggleEnglish={setShowEnglish} meaningName={meaningName}
-                    onPracticeTyping={() => {
+                    languageCode={selectedLanguage} showEnglish={showEnglish} onToggleEnglish={setShowEnglish} meaningName={meaningName}
+                    onPracticeTyping={window.KGLearnerAccess.canFeature(policy, 'quiz.typing') ? () => {
                       saveToStorage(QUIZ_MODE_KEY, 'typing');
-                      saveToStorage(TYPING_SETTINGS_KEY, { ...loadFromStorage(TYPING_SETTINGS_KEY, {}), source: 'words', topicId: currentTopic.id, languageCode: currentLanguage });
+                      saveToStorage(TYPING_SETTINGS_KEY, { ...loadFromStorage(TYPING_SETTINGS_KEY, {}), source: 'words', topicId: currentTopic.id, languageCode: selectedLanguage });
                       setActiveView('quiz');
-                    }} />
+                    } : null} />
                 )}
-                {activeView === 'quiz' && (
-                  <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} />
+                {selectedView === 'quiz' && (
+                  <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={selectedLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} accessPolicy={policy} />
                 )}
-                {activeView === 'flashcard' && (
-                  <FlashcardView key={currentLanguage} topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} ratingsLoaded={ratingsLoaded} onRate={updateRating} onClearRating={clearRating} languageCode={currentLanguage} user={user} />
+                {selectedView === 'flashcard' && (
+                  <FlashcardView key={selectedLanguage} topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} ratingsLoaded={ratingsLoaded} onRate={updateRating} onClearRating={clearRating} languageCode={selectedLanguage} user={user} />
                 )}
-                {activeView === 'progress' && (
-                  <ProgressView topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} languageCode={currentLanguage} user={user} path={path.enabled || path.bypass ? path : null} meaningName={meaningName} />
+                {selectedView === 'progress' && (
+                  <ProgressView topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} languageCode={selectedLanguage} user={user} path={path.enabled || path.bypass ? path : null} meaningName={meaningName} />
                 )}
               </>
             )}
@@ -6094,7 +6246,7 @@
           {path.celebration && (
             <CelebrationModal topic={path.celebration.topic} next={path.celebration.next} fontClass={fontClassApp}
               onClose={path.dismissCelebration}
-              onOpen={() => { const n = path.celebration.next; path.dismissCelebration(); if (n) { setActiveTopic(n.id); setActiveView('chart'); } }} />
+              onOpen={() => { const n = path.celebration.next; path.dismissCelebration(); if (n && window.KGLearnerAccess.canView(policy, 'chart')) { setActiveTopic(n.id); setActiveView('chart'); } }} />
           )}
 
           <footer className="bg-gray-800 text-white py-6 px-4">

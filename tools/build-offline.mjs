@@ -113,6 +113,7 @@ for (const [from, to] of [
   ['node_modules/react-dom/umd/react-dom.production.min.js', 'assets/react-dom.production.min.js'],
   ['js/image-store.js', 'js/image-store.js'], ['js/kg-audio.js', 'js/kg-audio.js'],
   ['js/kg-shared.js', 'js/kg-shared.js'],
+  ['js/kg-learner-access.js', 'js/kg-learner-access.js'],
   ['offline/pictures.js', 'js/offline-pictures.js'], ['offline/startup.js', 'js/startup.js'], ['offline/runtime.js', 'js/offline-runtime.js'], ['offline/install.js', 'js/offline-install.js'],
   ['offline/offline.css', 'assets/offline.css'],
   ['icons/kg-brand.svg', 'icons/kg-brand.svg'],

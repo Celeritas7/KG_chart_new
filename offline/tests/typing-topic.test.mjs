@@ -71,6 +71,10 @@ test('names do not become questions or distractors in picture and listening quiz
   const compiled=(await transform(html.slice(from,to),{loader:'jsx'})).code;
   const ctx={React:{createElement:(type,props)=>({type,props})},
     useState:fn=>[fn(),()=>{}],useEffect(){},loadFromStorage:()=> 'words',QUIZ_MODE_KEY:'mode',
+    window:{KGLearnerAccess:{
+      visibleQuizModes:()=>['words','sentences','typing','speak','say','colours'],
+      chooseQuizMode:(_,mode)=>mode,
+    }},
     QuizModeToggle:()=>null,WordQuizView:()=>null};
   vm.runInNewContext(compiled,ctx);
   const result=ctx.QuizView({topics:[{id:'friends_names'},{id:'food'}],vocabulary:[name,other],poolVocabulary:[name,other]});
