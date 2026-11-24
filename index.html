@@ -1766,7 +1766,7 @@
             <div className="mb-4 bg-jade-50 border border-jade-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
               <div><h2 className="font-bold text-jade-800">Friends’ names</h2>
                 <p className="text-sm text-gray-600">Copy each name, then try typing it from memory with your Burmese keyboard.</p></div>
-              <button onClick={onPracticeTyping} className="px-4 py-3 bg-jade-600 text-white rounded-xl font-semibold hover:bg-jade-700">⌨️ Practise names</button>
+              {onPracticeTyping && <button onClick={onPracticeTyping} className="px-4 py-3 bg-jade-600 text-white rounded-xl font-semibold hover:bg-jade-700">⌨️ Practise names</button>}
             </div>
           )}
 
@@ -5816,7 +5816,7 @@
                 <p className="text-gray-500 mb-5">Answer every word in <b className={fontClass}>{topicTitle(prevTopic)}</b> {ruleText(rules)} to unlock it. Right or wrong both count.</p>
                 <div className="h-3 bg-gray-100 rounded-full overflow-hidden mb-2"><div className="h-full bg-jade-500 rounded-full" style={{ width: Math.max(pct, 2) + '%' }} /></div>
                 <p className="text-sm text-gray-500 mb-6">{prevStatus.faced} of {prevStatus.total} words done · {prevStatus.steps}/{prevStatus.stepsTotal} answers</p>
-                <button onClick={onGoQuiz} className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Go to Quiz →</button>
+                {onGoQuiz && <button onClick={onGoQuiz} className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Go to Quiz →</button>}
               </>
             ) : <p className="text-gray-500">Ask the admin to unlock this topic.</p>}
           </div>
@@ -6140,13 +6140,14 @@
       return (
         <RulesContext.Provider value={rules}>
         <div className="min-h-screen bg-gray-50">
-          <Header currentLanguage={currentLanguage} languages={languages} onLanguageChange={setCurrentLanguage}
-            activeView={activeView} onViewChange={setActiveView}
-            meaning={MEANING_LANGS[currentLanguage] || null} meaningsInEnglish={meaningsInEnglish} onToggleMeanings={setMeaningsInEnglish} />
+          <Header currentLanguage={selectedLanguage} languages={allowedLanguages} allowedViews={allowedViews}
+            onLanguageChange={lang => { if (window.KGLearnerAccess.canLanguage(policy, lang)) setCurrentLanguage(lang); }}
+            activeView={selectedView} onViewChange={view => { if (window.KGLearnerAccess.canView(policy, view)) setActiveView(view); }}
+            meaning={MEANING_LANGS[selectedLanguage] || null} meaningsInEnglish={meaningsInEnglish} onToggleMeanings={setMeaningsInEnglish} />
 
           <PictureDownloads vocabulary={vocabulary} loading={loadingVocab || !priv.loaded} />
 
-          {activeView === 'chart' && !loadingTopics && visibleTopics.length > 0 && (
+          {selectedView === 'chart' && !loadingTopics && visibleTopics.length > 0 && (
             <TopicNav topics={visibleTopics} activeTopic={activeTopic} onSelect={setActiveTopic} showEnglish={showEnglish} pathStatus={path.enabled ? path.status : null} />
           )}
 
@@ -6161,27 +6162,27 @@
               <div className="py-12"><LoadingSpinner message="Loading vocabulary..." /></div>
             ) : (
               <>
-                {activeView === 'chart' && currentTopic?.locked && (
+                {selectedView === 'chart' && currentTopic?.locked && (
                   <LockedTopicPanel topic={currentTopic} prevTopic={prevPathTopic} prevStatus={prevPathTopic ? path.status[prevPathTopic.id] : null}
-                    fontClass={fontClassApp} onGoQuiz={() => setActiveView('quiz')} />
+                    fontClass={fontClassApp} onGoQuiz={window.KGLearnerAccess.canView(policy, 'quiz') ? () => setActiveView('quiz') : null} />
                 )}
-                {activeView === 'chart' && !currentTopic?.locked && (
+                {selectedView === 'chart' && !currentTopic?.locked && (
                   <ChartView topic={currentTopic} vocabulary={topicVocabulary} ratings={ratings} onRate={updateRating}
-                    languageCode={currentLanguage} showEnglish={showEnglish} onToggleEnglish={setShowEnglish} meaningName={meaningName}
-                    onPracticeTyping={() => {
+                    languageCode={selectedLanguage} showEnglish={showEnglish} onToggleEnglish={setShowEnglish} meaningName={meaningName}
+                    onPracticeTyping={window.KGLearnerAccess.canFeature(policy, 'quiz.typing') ? () => {
                       saveToStorage(QUIZ_MODE_KEY, 'typing');
-                      saveToStorage(TYPING_SETTINGS_KEY, { ...loadFromStorage(TYPING_SETTINGS_KEY, {}), source: 'words', topicId: currentTopic.id, languageCode: currentLanguage });
+                      saveToStorage(TYPING_SETTINGS_KEY, { ...loadFromStorage(TYPING_SETTINGS_KEY, {}), source: 'words', topicId: currentTopic.id, languageCode: selectedLanguage });
                       setActiveView('quiz');
-                    }} />
+                    } : null} />
                 )}
-                {activeView === 'quiz' && (
-                  <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={currentLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} />
+                {selectedView === 'quiz' && (
+                  <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={selectedLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} accessPolicy={policy} />
                 )}
-                {activeView === 'flashcard' && (
-                  <FlashcardView key={currentLanguage} topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} ratingsLoaded={ratingsLoaded} onRate={updateRating} onClearRating={clearRating} languageCode={currentLanguage} user={user} />
+                {selectedView === 'flashcard' && (
+                  <FlashcardView key={selectedLanguage} topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} ratingsLoaded={ratingsLoaded} onRate={updateRating} onClearRating={clearRating} languageCode={selectedLanguage} user={user} />
                 )}
-                {activeView === 'progress' && (
-                  <ProgressView topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} languageCode={currentLanguage} user={user} path={path.enabled || path.bypass ? path : null} meaningName={meaningName} />
+                {selectedView === 'progress' && (
+                  <ProgressView topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} languageCode={selectedLanguage} user={user} path={path.enabled || path.bypass ? path : null} meaningName={meaningName} />
                 )}
               </>
             )}
@@ -6191,7 +6192,7 @@
           {path.celebration && (
             <CelebrationModal topic={path.celebration.topic} next={path.celebration.next} fontClass={fontClassApp}
               onClose={path.dismissCelebration}
-              onOpen={() => { const n = path.celebration.next; path.dismissCelebration(); if (n) { setActiveTopic(n.id); setActiveView('chart'); } }} />
+              onOpen={() => { const n = path.celebration.next; path.dismissCelebration(); if (n && window.KGLearnerAccess.canView(policy, 'chart')) { setActiveTopic(n.id); setActiveView('chart'); } }} />
           )}
 
           <footer className="bg-gray-800 text-white py-6 px-4">
