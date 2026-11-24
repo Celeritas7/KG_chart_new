@@ -3434,11 +3434,12 @@
       );
     }
 
-    function QuizModeToggle({ mode, onChange }) {
+    function QuizModeToggle({ mode, onChange, allowedModes }) {
       return (
-        // Six modes: two rows of three on a phone, one row from sm up
+        // U3C1: only modes selected for THIS learner appear in the menu.
         <div className="grid grid-cols-3 sm:flex gap-1 bg-gray-100 rounded-2xl p-1 mb-6">
-          {[['words', '🔤', 'Words'], ['sentences', '💬', 'Sentences'], ['typing', '⌨️', 'Typing'], ['speak', '🗣️', 'Speak'], ['say', '🎙️', 'Say'], ['colours', '🎨', 'Colours']].map(([id, icon, label]) => (
+          {[['words', '🔤', 'Words'], ['sentences', '💬', 'Sentences'], ['typing', '⌨️', 'Typing'], ['speak', '🗣️', 'Speak'], ['say', '🎙️', 'Say'], ['colours', '🎨', 'Colours']]
+            .filter(([id]) => allowedModes.includes(id)).map(([id, icon, label]) => (
             <button key={id} onClick={() => onChange(id)}
               className={`sm:flex-1 min-w-0 py-2 px-1 rounded-xl font-medium transition-all ${mode === id ? 'bg-white shadow text-jade-700' : 'text-gray-500 hover:text-gray-700'}`}>
               <span className="block sm:inline">{icon}</span> <span className="text-xs sm:text-base">{label}</span>
@@ -3449,14 +3450,25 @@
     }
 
     function QuizView(props) {
-      const [mode, setMode] = useState(() => { const m = loadFromStorage(QUIZ_MODE_KEY, 'words'); return ['sentences', 'typing', 'speak', 'say', 'colours'].includes(m) ? m : 'words'; });
-      useEffect(() => { saveToStorage(QUIZ_MODE_KEY, mode); }, [mode]);
-      const toggle = <QuizModeToggle mode={mode} onChange={setMode} />;
-      if (mode === 'colours') return <ColourQuizView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
-      if (mode === 'say') return <SayItView topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
-      if (mode === 'speak') return <SpeakView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
-      if (mode === 'typing') return <TypingView key={props.languageCode} topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
-      return mode === 'sentences'
+      const [mode, setMode] = useState(() => {
+        const saved = loadFromStorage(QUIZ_MODE_KEY, 'words');
+        return ['sentences', 'typing', 'speak', 'say', 'colours'].includes(saved) ? saved : 'words';
+      });
+      const allowedModes = window.KGLearnerAccess.visibleQuizModes(props.accessPolicy);
+      const currentMode = window.KGLearnerAccess.chooseQuizMode(props.accessPolicy, mode);
+      useEffect(() => {
+        if (currentMode && mode !== currentMode) setMode(currentMode);
+      }, [mode, currentMode]);
+      useEffect(() => { if (currentMode) saveToStorage(QUIZ_MODE_KEY, currentMode); }, [currentMode]);
+      if (!currentMode) return <div role="alert" className="p-6 text-center text-gray-600">
+        No quiz modes are assigned to this learner.</div>;
+      const toggle = <QuizModeToggle mode={currentMode} allowedModes={allowedModes}
+        onChange={next => { if (allowedModes.includes(next)) setMode(next); }} />;
+      if (currentMode === 'colours') return <ColourQuizView languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
+      if (currentMode === 'say') return <SayItView topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} modeToggle={toggle} />;
+      if (currentMode === 'speak') return <SpeakView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />;
+      if (currentMode === 'typing') return <TypingView key={props.languageCode} topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} accessPolicy={props.accessPolicy} />;
+      return currentMode === 'sentences'
         ? <SentenceQuizView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} />
         : <WordQuizView {...props} modeToggle={toggle}
             topics={props.topics.filter(t => t.id !== 'friends_names')}
