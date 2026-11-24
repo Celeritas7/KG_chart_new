@@ -1,0 +1,78 @@
+name: KG Chart U3C2 - sentence group permissions and media context (synthetic)
+
+on:
+  pull_request:
+    paths:
+      - 'sql/kg-chart-u3c2-sentence-topic-mapping.sql'
+      - 'tools/tests/u3c2-*'
+      - 'js/kg-sentence-access.js'
+      - 'js/kg-protected-media-context.mjs'
+      - 'js/kg-learner-access.js'
+      - 'index.html'
+      - 'tools/build-offline.mjs'
+      - 'docs/U3C2-SENTENCE-MEDIA-REVIEW.md'
+      - '.github/workflows/kg-u3c2-sentence-access.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-group-mapping-and-media:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test group parser, UI gating and protected resource requests
+        run: |
+          set -euo pipefail
+          node --check js/kg-sentence-access.js
+          node --check js/kg-protected-media-context.mjs
+          node --test tools/tests/u3c2-sentence-access.test.mjs tools/tests/u3c2-protected-media-context.test.mjs
+      - name: Start disposable PostgreSQL 17 with disabled network
+        run: |
+          set -euo pipefail
+          docker run -d --name kg-u3c2-test-db \
+            --network none \
+            -e POSTGRES_PASSWORD=synthetic-ci-only \
+            -e POSTGRES_DB=kg_u3c2_fixture postgres:17-alpine
+          for i in {1..50}; do
+            if docker exec kg-u3c2-test-db psql -X -At -v ON_ERROR_STOP=1 \
+               -U postgres -d kg_u3c2_fixture -c 'SELECT 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'Synthetic database not ready' >&2
+          exit 1
+      - name: Test RLS/group/topic grants against invented learner data
+        run: |
+          set -euo pipefail
+          pgfixture() {
+            docker exec -i kg-u3c2-test-db psql -X -v ON_ERROR_STOP=1 \
+              -U postgres -d kg_u3c2_fixture
+          }
+          pgfixture < tools/tests/u1-access-fixture.sql
+          pgfixture < sql/kg-chart-u1-access-foundation.sql
+          pgfixture < tools/tests/u3a-access-fixture.sql
+          pgfixture < tools/tests/u3b1-content-fixture.sql
+          pgfixture < sql/kg-chart-u3b1-restrictive-content-rls.sql
+          pgfixture < tools/tests/u3b2-write-fixture.sql
+          pgfixture < sql/kg-chart-u3b2-write-rpc-guards.sql
+          pgfixture < sql/kg-chart-u3b3a-private-records.sql
+          pgfixture < tools/tests/u3b3a-private-fixture.sql
+          pgfixture < sql/kg-chart-u3b3b1-legacy-private-write-rpc.sql
+          pgfixture < sql/kg-chart-u3b3b2-private-media-registry.sql
+          pgfixture < tools/tests/u3b3b2-private-media-fixture.sql
+          pgfixture < sql/kg-chart-u3c2-sentence-topic-mapping.sql
+          pgfixture < sql/kg-chart-u3c2-sentence-topic-mapping.sql
+          pgfixture < tools/tests/u3c2-sentence-fixture.sql
+          pgfixture < tools/tests/u3c2-sentence-assertions.sql
+      - name: Destroy synthetic database
+        if: always()
+        run: docker rm -f kg-u3c2-test-db || true
+
+# No production keys, real sentence contents, Storage objects, browser
+# profiles, public/private buckets or live student permission changes.

@@ -53,17 +53,22 @@
   const canFeature=(policy,feature)=>!!ready(policy)&&(
     isLegacy(policy)||policy.features.includes(feature));
   const viewFeature=(v)=>FEATURE[v]||null;
-  // Sentence groups currently lack a full topic-level mapping. Even when
-  // admin grants a sentence/speak feature, a restricted learner must not see
-  // unrelated groups until U3D proves a source-to-topic authorization link.
+  // Sentence and Speak have NO automatic topic mapping. Restricted users
+  // may see either only when a separate verified, server-enforced group/topic
+  // snapshot includes at least one authorized group. Missing/legacy metadata
+  // never grants these modes to a restricted user.
   const RESTRICTED_TOPIC_SAFE_MODES=new Set(['words','typing','say','colours']);
-  const visibleQuizModes=(policy)=>QUIZ_MODES.filter(m=>
+  const verifiedSentenceGroups=scope=>scope?.state==='restricted'&&
+    scope.serverEnforced===true&&Array.isArray(scope.groups)&&scope.groups.length>0;
+  const visibleQuizModes=(policy,sentenceScope)=>QUIZ_MODES.filter(m=>
     canFeature(policy,FEATURE[m]) &&
-    (isLegacy(policy)||RESTRICTED_TOPIC_SAFE_MODES.has(m)));
-  const canView=(policy,view)=>VIEWS.includes(view)&&(
-    view==='quiz'?visibleQuizModes(policy).length>0:
+    (isLegacy(policy)||RESTRICTED_TOPIC_SAFE_MODES.has(m)||
+      ((m==='sentences'||m==='speak')&&verifiedSentenceGroups(sentenceScope))));
+  const canView=(policy,view,sentenceScope)=>VIEWS.includes(view)&&(
+    view==='quiz'?visibleQuizModes(policy,sentenceScope).length>0:
       canFeature(policy,FEATURE[view]));
-  const visibleViews=(policy)=>VIEWS.filter(v=>canView(policy,v));
+  const visibleViews=(policy,sentenceScope)=>
+    VIEWS.filter(v=>canView(policy,v,sentenceScope));
   function visibleLanguages(policy,languages){
     return ready(policy)?(languages||[]).filter(l=>l?.is_active!==false&&canLanguage(policy,l.code)):[];
   }
@@ -78,12 +83,12 @@
     const codes=visibleLanguages(policy,languages).map(l=>l.code);
     return codes.includes(saved)?saved:(codes[0]||null);
   }
-  function chooseView(policy,saved){
-    const candidates=visibleViews(policy);
+  function chooseView(policy,saved,sentenceScope){
+    const candidates=visibleViews(policy,sentenceScope);
     return candidates.includes(saved)?saved:(candidates[0]||null);
   }
-  function chooseQuizMode(policy,saved){
-    const candidates=visibleQuizModes(policy);
+  function chooseQuizMode(policy,saved,sentenceScope){
+    const candidates=visibleQuizModes(policy,sentenceScope);
     return candidates.includes(saved)?saved:(candidates[0]||null);
   }
   root.KGLearnerAccess={

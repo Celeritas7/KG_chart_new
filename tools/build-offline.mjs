@@ -114,6 +114,7 @@ for (const [from, to] of [
   ['js/image-store.js', 'js/image-store.js'], ['js/kg-audio.js', 'js/kg-audio.js'],
   ['js/kg-shared.js', 'js/kg-shared.js'],
   ['js/kg-learner-access.js', 'js/kg-learner-access.js'],
+  ['js/kg-sentence-access.js', 'js/kg-sentence-access.js'],
   ['offline/pictures.js', 'js/offline-pictures.js'], ['offline/startup.js', 'js/startup.js'], ['offline/runtime.js', 'js/offline-runtime.js'], ['offline/install.js', 'js/offline-install.js'],
   ['offline/offline.css', 'assets/offline.css'],
   ['icons/kg-brand.svg', 'icons/kg-brand.svg'],
