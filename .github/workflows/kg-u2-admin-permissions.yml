@@ -1,0 +1,65 @@
+name: KG Chart U2 - admin access draft contracts (no production)
+
+on:
+  pull_request:
+    paths:
+      - 'sql/kg-chart-u2-access-draft.sql'
+      - 'tools/tests/u2-access-*'
+      - 'js/kg-admin-access-*.js'
+      - 'kg-chart-admin.html'
+      - 'docs/U2-ADMIN-PERMISSIONS-STUDIO.md'
+      - '.github/workflows/kg-u2-admin-permissions.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  u2-draft-ui-and-isolated-database:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Verify JavaScript syntax and pure U2 interface tests
+        run: |
+          node --check js/kg-admin-access-core.js
+          node --check js/kg-admin-access-ui.js
+          node --test tools/tests/u2-access-ui.test.mjs
+      - name: Start isolated PostgreSQL with no network connectivity
+        run: |
+          set -euo pipefail
+          docker run -d --name kg-u2-contract-db \
+            --network none \
+            -e POSTGRES_PASSWORD=ci-only-not-a-production-credential \
+            -e POSTGRES_DB=kg_u2_fixture \
+            postgres:17-alpine
+          for i in {1..40}; do
+            if docker exec kg-u2-contract-db psql -X -At -v ON_ERROR_STOP=1 -U postgres -d kg_u2_fixture -c 'SELECT 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'Fictional database did not become queryable' >&2
+          exit 1
+      - name: Run U1 foundation and U2 atomic draft tests against fictional accounts
+        run: |
+          set -euo pipefail
+          run_psql() {
+            docker exec -i kg-u2-contract-db psql -X -v ON_ERROR_STOP=1 \
+              -U postgres -d kg_u2_fixture
+          }
+          run_psql < tools/tests/u1-access-fixture.sql
+          run_psql < sql/kg-chart-u1-access-foundation.sql
+          run_psql < tools/tests/u2-access-fixture.sql
+          run_psql < sql/kg-chart-u2-access-draft.sql
+          run_psql < sql/kg-chart-u2-access-draft.sql
+          run_psql < tools/tests/u2-access-assertions.sql
+      - name: Destroy fictional Postgres
+        if: always()
+        run: docker rm -f kg-u2-contract-db || true
+
+# U2 workflow has NO Supabase, Cloudflare, or release keys. All source files
+# are subject to review; production schema is not changed by this action.
