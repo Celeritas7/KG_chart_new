@@ -386,5 +386,5 @@ test('Static production gate: restricted ACK is conditional KV+outbox transactio
  assert.match(source,/await syncRestrictedQueue\(\);guard\(\);return/);
  assert.match(source,/const U3D3A_OUTBOX_HOLD_ENABLED = false/);
  assert(build.includes("'offline/restricted-sync.js', 'js/offline-restricted-sync.js'"));
- assert(build.includes('<script src="./js/offline-restricted-sync.js"></script><script src="./js/offline-runtime.js"></script>'));
+ assert(build.includes('<script src="./js/offline-restricted-sync.js"></script><script src="./js/offline-device-acceptance.js"></script><script src="./js/offline-runtime.js"></script>'));
 });
