@@ -2813,7 +2813,7 @@
       const pictureOptions = ['native_to_image', 'devanagari_to_image', 'listen_to_image'].includes(quizType);
       const imageItems = pictureOptions ? options : quizType === 'image_to_native' ? [currentQuestion] : [];
       const requiredWordImages = imageItems.filter(item => item && !item.extra_data?.colorCode &&
-        !item.image_filename?.startsWith('emoji:'));
+        (!protectedQuizPictures || !item.image_filename?.startsWith('emoji:')));
       // For ordinary legacy learners, retain the existing saved public-media
       // preloader exactly. For restricted learners, fetch only authorized
       // source-bound pictures and render ephemeral in-memory URLs.
