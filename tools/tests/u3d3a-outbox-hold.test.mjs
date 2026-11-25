@@ -96,7 +96,7 @@ test('Missing, wrong-owner, stale or forged snapshots always hold all queued wor
   const out=api.analyzeOutbox({ownerId:UID,policyRecord,events:examples,checkedAt:NOW+1000});
   assert.equal(out.reason,'unverified_policy');
   assert.equal(out.held,examples.length);
-  assert.equal(out.reasonCounts.unverified_policy,examples.length-1); // one untagged event still labeled before policy?
+  assert.equal(out.reasonCounts.unverified_policy,examples.length);
  }
  const expired=api.analyzeOutbox({ownerId:UID,policyRecord:record,events:examples,checkedAt:NOW+25*3600*1000});
  assert.equal(expired.held,examples.length);
@@ -165,7 +165,7 @@ test('Source-only rollout guard: all legacy gates and U3D3A are OFF, DB/outbox s
  assert.match(runtime,/window\.KGAccessOutbox\?\.analyzeOutbox/);
  assert.match(runtime,/permissionRevision:policyRevision/);
  assert.match(runtime,/syncError='Permission review:/);
- assert.match(runtime,/no syncEvent/);
+ assert.match(runtime,/No syncEvent/);
  assert(build.includes("'offline/access-outbox.js', 'js/offline-access-outbox.js'"));
  assert(build.includes('<script src="./js/offline-access-outbox.js"></script><script src="./js/offline-runtime.js"></script>'));
  const unsafe=['indexedDB.deleteDatabase','caches.deleteAll','serviceWorker.unregister','DELETE FROM'];
