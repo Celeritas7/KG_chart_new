@@ -5,6 +5,7 @@ Never accepts a connection string, host, password or arbitrary container name.
 """
 import subprocess
 import time
+import argparse
 
 CMD = ["docker", "exec", "-i", "kg-u4b2-test-db", "psql", "-X", "-qAt",
        "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "kg_u4b2_fixture"]
@@ -40,6 +41,9 @@ def wait_lock():
     raise RuntimeError("Writer did not reach deterministic barrier")
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--require-rejection', action='store_true')
+    args = parser.parse_args()
     # Disposable fixture sentinel; never connect to hosted infrastructure.
     assert value("SELECT current_database();") == "kg_u4b2_fixture"
     query(f"""UPDATE public.kg_chart_access_profiles SET mode='restricted',revision=30
@@ -84,8 +88,10 @@ def main():
         persisted = value(f"SELECT count(*) FROM public.kg_chart_quiz_sessions WHERE id='{SID}';")
         if writer.returncode == 0 and persisted == "1":
             print("U4B2B_RACE_REPRODUCED: stale transaction committed after revocation")
+            if args.require_rejection:
+                raise RuntimeError("Prototype failed to reject stale transaction")
         elif writer.returncode != 0 and persisted == "0" and (
-            "row-level security" in err.lower() or "could not serialize" in err.lower()
+            "row-level security" in err.lower() or "could not serialize" in err.lower() or "revoked quiz authorization" in err.lower()
         ):
             print("U4B2B_RACE_REJECTED: tested stale transaction denied")
         else:
@@ -93,10 +99,13 @@ def main():
         # Fresh transactions must deny the same topic immediately.
         denied = query(IDENTITY + f"""INSERT INTO public.kg_chart_quiz_sessions(user_id,language_code,topic_id,quiz_type)
           VALUES (auth.uid(),'my','food','native_to_image');""", check=False)
-        if denied.returncode == 0 or "row-level security" not in denied.stderr.lower():
+        if denied.returncode == 0 or not any(message in denied.stderr.lower() for message in ("row-level security", "revoked quiz authorization")):
             raise RuntimeError("Fresh revoked write was not rejected by RLS")
         print("U4B2B_FRESH_REVOCATION_PASS")
-        print("U4B2B_RELEASE_NO_GO: concurrency characterization only")
+        print("U4B2B_RELEASE_NO_GO: narrow existing-profile quiz experiment only")
+        query(f"""DELETE FROM public.kg_chart_quiz_sessions WHERE id='{SID}';
+          DELETE FROM public.kg_chart_access_features WHERE email='{EMAIL}' AND feature_key='quiz.words';
+          DELETE FROM public.kg_chart_access_languages WHERE email='{EMAIL}' AND language_code='my';""")
     finally:
         for proc in (writer, blocker):
             if proc is not None and proc.poll() is None:
