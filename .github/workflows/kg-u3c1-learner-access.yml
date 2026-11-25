@@ -34,9 +34,15 @@ jobs:
           set -euo pipefail
           BASE=$(git merge-base origin/main HEAD)
           git diff --name-only "$BASE" HEAD | tee /tmp/u3c-changes.txt
-          if grep -Eq '^(supabase/|offline/runtime.js|offline/sw.js)' /tmp/u3c-changes.txt; then
-            echo 'U3C1/C2 must not alter Edge, PWA runtime or Storage.'
+          if grep -Eq '^(supabase/|offline/sw.js)' /tmp/u3c-changes.txt; then
+            echo 'U3C1/C2 must not alter Edge, offline service worker or Storage.'
             exit 1
+          fi
+          # Permit ONLY the separately reviewed source-disabled U3D1 offline
+          # policy bridge. Re-run its contract tests if this runtime is edited.
+          if grep -Fxq 'offline/runtime.js' /tmp/u3c-changes.txt; then
+            grep -Fq 'const U3D1_OFFLINE_ACCESS_ENABLED = false;' offline/runtime.js
+            node --test tools/tests/u3d1-offline-policy.test.mjs
           fi
           if grep '^sql/' /tmp/u3c-changes.txt | grep -Ev '^sql/kg-chart-u3c2-sentence-topic-mapping[.]sql$'; then
             echo 'Only the reviewed U3C2 sentence mapping SQL is allowed in this stage.'
