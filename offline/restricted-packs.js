@@ -115,7 +115,7 @@
       if(w.image_filename!=null &&
          (typeof w.image_filename!=='string'||!w.image_filename.startsWith('emoji:')||
           w.image_filename.length>50||
-          !/^[\\p{Emoji_Presentation}\\p{Emoji}\\u200d\\ufe0f ]{1,30}$/u.test(w.image_filename.slice(6))))
+          !/^[\p{Emoji_Presentation}\p{Emoji}\u200d\ufe0f ]{1,30}$/u.test(w.image_filename.slice(6))))
         fail('public or invalid picture filename in restricted pack');
       if(w.extra_data!=null && (!isObj(w.extra_data)||
          Object.keys(w.extra_data).some(k=>!['colorCode','content_type'].includes(k))))
@@ -154,7 +154,7 @@
          (c.picture!=null &&
            (typeof c.picture!=='string' ||
             !( /^#[0-9a-f]{6}$/i.test(c.picture) ||
-              /^[\\p{Emoji_Presentation}\\p{Emoji}\\u200d\\ufe0f ]{1,30}$/u.test(
+              /^[\p{Emoji_Presentation}\p{Emoji}\u200d\ufe0f ]{1,30}$/u.test(
                 c.picture.startsWith('emoji:')?c.picture.slice(6):c.picture)))))
         fail('ungranted colour phrase or remote picture');
       seenColours.add(c.id);
