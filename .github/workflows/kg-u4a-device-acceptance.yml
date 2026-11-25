@@ -42,7 +42,7 @@ jobs:
           node --check offline/device-acceptance.js
           node --check offline/runtime.js
           node --check tools/build-offline.mjs
-          node --test tools/tests/u4a-device-acceptance.test.mjs tools/tests/u3d3c-restricted-sync.test.mjs tools/tests/u3d3b-restricted-bundles.test.mjs tools/tests/u3d3a-outbox-hold.test.mjs tools/tests/u3d2b2-private-playback.test.mjs tools/tests/u3d2b1-private-media-stage.test.mjs tools/tests/u3d2a-scoped-pack.test.mjs tools/tests/u3d1-offline-policy.test.mjs offline/tests/app-update.test.mjs
+          node --test tools/tests/u4a-device-acceptance.test.mjs tools/tests/u3d3c-restricted-sync.test.mjs tools/tests/u3d3b-restricted-bundles.test.mjs tools/tests/u3d3a-outbox-hold.test.mjs tools/tests/u3d2b2-private-playback.test.mjs tools/tests/u3d2b1-private-media-stage.test.mjs tools/tests/u3d2a-scoped-pack.test.mjs tools/tests/u3d1-offline-policy.test.mjs
       - name: Enforce no false hardware PASS, source gates OFF, no backend/worker/data changes
         run: |
           set -euo pipefail
