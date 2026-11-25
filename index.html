@@ -2312,7 +2312,7 @@
                 <div className="w-24 h-24 rounded-xl shadow-lg mx-auto" style={{ backgroundColor: item.extra_data.colorCode }} />
               ) : (
                 <div className="w-40 h-40 mx-auto flex items-center justify-center">
-                  <img src={getImageUrl(item.topic_id, item.image_filename)} alt="" onError={() => setImgFailed(true)} className="max-w-full max-h-full object-contain" />
+                  <ProtectedWordImage item={item} topicId={item.topic_id} languageCode={languageCode} alt="" onError={() => setImgFailed(true)} className="max-w-full max-h-full object-contain" />
                 </div>
               )
             ) : (
@@ -2520,7 +2520,7 @@
                 <div className="w-24 h-24 rounded-xl shadow-lg mx-auto" style={{ backgroundColor: item.extra_data.colorCode }} />
               ) : (
                 <div className="w-40 h-40 mx-auto flex items-center justify-center">
-                  <img src={getImageUrl(item.topic_id, item.image_filename)} alt="" onError={() => setImgFailed(true)} className="max-w-full max-h-full object-contain" />
+                  <ProtectedWordImage item={item} topicId={item.topic_id} languageCode={languageCode} alt="" onError={() => setImgFailed(true)} className="max-w-full max-h-full object-contain" />
                 </div>
               )
             ) : (
@@ -3429,11 +3429,11 @@
       { id: 'recall', icon: '🖼️', label: 'From the picture', help: 'See the picture and meaning, say the word from memory. Peek only if stuck.' },
       { id: 'read', icon: '👀', label: 'Read it aloud', help: 'See the word, say it. Just pronunciation.' },
     ];
-    function SayPicture({ item }) {
+    function SayPicture({ item, languageCode }) {
       const [failed, setFailed] = useState(false);
       if (item.extra_data?.colorCode) return <div className="w-24 h-24 rounded-xl shadow-lg mx-auto" style={{ backgroundColor: item.extra_data.colorCode }} />;
       if (!item.image_filename || failed) return null;
-      return <div className="w-36 h-36 mx-auto flex items-center justify-center"><img src={getImageUrl(item.topic_id, item.image_filename)} alt="" onError={() => setFailed(true)} className="max-w-full max-h-full object-contain" /></div>;
+      return <div className="w-36 h-36 mx-auto flex items-center justify-center"><ProtectedWordImage item={item} topicId={item.topic_id} languageCode={languageCode} alt="" onError={() => setFailed(true)} className="max-w-full max-h-full object-contain" /></div>;
     }
 
     function SayItView({ topics, vocabulary, languageCode, user, modeToggle }) {
@@ -3563,7 +3563,7 @@
           </div>
           <div className="w-full bg-gray-200 rounded-full h-2 mb-4"><div className="bg-jade-500 h-2 rounded-full transition-all" style={{ width: `${(idx / items.length) * 100}%` }} /></div>
           <div data-say-card className="bg-white rounded-3xl shadow-xl p-6 text-center">
-            <SayPicture item={item} />
+            <SayPicture item={item} languageCode={languageCode} />
             <div className="text-xl text-gray-600 mt-3">{item.display_text}</div>
             {shown ? (
               <div className="mt-3">
@@ -5405,7 +5405,7 @@
                 {item.kind === 'w' && (item.v.extra_data?.colorCode || item.v.image_filename) && (
                   <div className="w-28 h-28 mx-auto flex items-center justify-center mb-3">
                     {item.v.extra_data?.colorCode ? <div className="w-24 h-24 rounded-xl shadow-lg" style={{ backgroundColor: item.v.extra_data.colorCode }} />
-                      : item.v.image_filename ? <img src={getImageUrl(item.v.topic_id, item.v.image_filename)} alt="" className="max-w-full max-h-full object-contain" /> : null}
+                      : item.v.image_filename ? <ProtectedWordImage item={item.v} topicId={item.v.topic_id} languageCode={languageCode} alt="" className="max-w-full max-h-full object-contain" /> : null}
                   </div>
                 )}
                 <div className="text-2xl font-bold text-gray-800">{item.meaning}</div>
@@ -5669,7 +5669,7 @@
                       {current.extra_data?.colorCode ? (
                         <div className="w-24 h-24 rounded-xl shadow-lg" style={{ backgroundColor: current.extra_data.colorCode }} />
                       ) : (
-                        <img src={getImageUrl(current.topic_id, current.image_filename)} alt="" draggable="false" className="max-w-full max-h-full object-contain pointer-events-none" />
+                        <ProtectedWordImage item={current} topicId={current.topic_id} languageCode={languageCode} alt="" draggable="false" className="max-w-full max-h-full object-contain pointer-events-none" />
                       )}
                     </div>
                     <div className="text-3xl font-bold text-gray-800 text-center">{current.display_text}</div>
@@ -6195,7 +6195,13 @@
       const [auto, setAuto] = useState(() => api?.autoEnabled() || false);
       const [wifiOnly, setWifiOnly] = useState(() => api?.wifiOnly() || false);
       const [error, setError] = useState('');
-      const urls = useMemo(() => api ? api.normalize(vocabulary.filter(v => !v.extra_data?.colorCode).map(v => getImageUrl(v.topic_id, v.image_filename))) : [], [vocabulary]);
+      // Restricted account packs and private pictures require U3D entitlement.
+      // Never feed public Storage URLs into the legacy auto-downloader.
+      const publicPictureAllowed = window.KGAudio.canUsePublicMedia();
+      const urls = useMemo(() => api && publicPictureAllowed
+        ? api.normalize(vocabulary.filter(v => !v.extra_data?.colorCode)
+          .map(v => getImageUrl(v.topic_id, v.image_filename)).filter(Boolean))
+        : [], [vocabulary, publicPictureAllowed]);
       const signature = JSON.stringify(urls);
       useEffect(() => api?.subscribe(setProgress), []);
       useEffect(() => {
@@ -6205,13 +6211,13 @@
         return () => { cancelled = true; };
       }, [signature, progress.busy]);
       useEffect(() => {
-        if (!api || loading) return;
+        if (!api || loading || !publicPictureAllowed) return;
         const run = () => api.auto(urls).catch(() => {});
         run(); const interval = setInterval(run, 60000); window.addEventListener('online', run); document.addEventListener('visibilitychange', run);
         navigator.connection?.addEventListener?.('change', run);
         return () => { clearInterval(interval); window.removeEventListener('online', run); document.removeEventListener('visibilitychange', run); navigator.connection?.removeEventListener?.('change', run); };
-      }, [signature, auto, wifiOnly, loading]);
-      if (!api) return null;
+      }, [signature, auto, wifiOnly, loading, publicPictureAllowed]);
+      if (!api || !publicPictureAllowed) return null;
       return <details className="max-w-5xl mx-auto my-3 bg-white border border-jade-200 rounded-xl p-4">
         <summary className="font-bold text-jade-800 cursor-pointer">↓ {progress.busy ? `Saving pictures · ${progress.done || 0}/${progress.total || 0}` : `Pictures on this device · ${saved.saved}/${saved.total} saved`}</summary>
         <p className="text-sm text-gray-600 mt-3">Pictures download automatically while this app is open, using Wi-Fi or mobile data. Saved pictures load directly from your device. Keep the app open until downloading finishes.</p>
