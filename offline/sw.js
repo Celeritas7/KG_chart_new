@@ -3,6 +3,11 @@ importScripts('./js/offline-pictures.js');
 const SHELL_CACHE_PREFIX = 'kg-offline-shell-';
 const MEDIA_PREFIX = 'kg-offline-pack-';
 const CLIENT_OWNERS = new Map();
+// U3D2B2: deny restricted/unknown clients the legacy public-media fallback.
+// This is a client cooperative guard, not server-side authorization; current
+// public CDN URLs remain public and cannot be revoked while offline.
+const CLIENT_RESTRICTED_MEDIA = new Set();
+const PRIVATE_MEDIA_PATH = '/__kg_private_media_v1__/';
 const CURRENT_SHELL = SHELL_CACHE_PREFIX + 'APP_REVISION';
 async function network(request) {
   const controller=new AbortController();
@@ -111,10 +116,17 @@ async function ownerFor(clientId) {
     channel.port1.onmessage=e=>{
       clearTimeout(timer);channel.port1.close();
       const value=e.data;
+      if(value?.restrictedMedia===true){
+        CLIENT_OWNERS.delete(clientId);
+        CLIENT_RESTRICTED_MEDIA.add(clientId);
+        return resolve(null);
+      }
       try {
         const root=new URL(value?.mediaRoot);
         if(!/^[\da-f-]{36}$/i.test(value?.id||'') || root.protocol!=='https:' || !root.hostname.endsWith('.supabase.co') || root.pathname!=='/storage/v1/object/public/vocabulary-assets/' || root.search || root.hash) return resolve(null);
-        const owner={owner:value.id,mediaRoot:root.href};CLIENT_OWNERS.set(clientId,owner);resolve(owner);
+        const owner={owner:value.id,mediaRoot:root.href};
+        CLIENT_RESTRICTED_MEDIA.delete(clientId);
+        CLIENT_OWNERS.set(clientId,owner);resolve(owner);
       } catch (_) {resolve(null);}
     };
     client.postMessage({type:'KG_OFFLINE_REQUEST_OWNER'},[channel.port2]);
@@ -154,10 +166,17 @@ self.addEventListener('message', event => {
       // never hard-code a production project or serve another arbitrary origin.
       if (root.protocol === 'https:' && root.hostname.endsWith('.supabase.co') &&
           root.pathname === '/storage/v1/object/public/vocabulary-assets/' && !root.search && !root.hash)
-        CLIENT_OWNERS.set(event.source.id,{owner:event.data.id,mediaRoot:root.href});
+        {
+          CLIENT_RESTRICTED_MEDIA.delete(event.source.id);
+          CLIENT_OWNERS.set(event.source.id,{owner:event.data.id,mediaRoot:root.href});
+        }
     } catch (_) { /* Malformed or missing Storage root must not unlock media. */ }
   }
-  if (event.data?.type === 'KG_OFFLINE_LOCK') CLIENT_OWNERS.delete(event.source.id);
+  if (event.data?.type === 'KG_OFFLINE_LOCK') CLIENT_OWNERS.delete(event.source?.id);
+  if (event.data?.type === 'KG_OFFLINE_RESTRICTED_MEDIA' && event.source?.id) {
+    CLIENT_OWNERS.delete(event.source.id);
+    CLIENT_RESTRICTED_MEDIA.add(event.source.id);
+  }
   if (event.data?.type === 'KG_OFFLINE_CHECK_SHELL') {
     event.waitUntil(verifyShell().then(
       ()=>event.source?.postMessage({type:'KG_OFFLINE_SHELL_READY',revision:'APP_REVISION',sharedPictures:1}),
@@ -227,6 +246,16 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   const ownOrigin = url.origin === self.location.origin;
+  // Private CacheStorage bytes are only read directly by the verified owner
+  // page and re-exposed through revocable blob: URLs. An HTTP request must
+  // NEVER retrieve a synthetic private key, cached shell, or network fallback.
+  if (ownOrigin && url.pathname.includes(PRIVATE_MEDIA_PATH)) {
+    event.respondWith(new Response('Private media is not available over HTTP',{
+      status:403,headers:{'Content-Type':'text/plain; charset=utf-8',
+        'Cache-Control':'no-store'}
+    }));
+    return;
+  }
   const client=CLIENT_OWNERS.get(event.clientId);
   const isMedia = (client && url.href.startsWith(client.mediaRoot)) || (url.protocol==='https:' && url.hostname.endsWith('.supabase.co') && url.pathname.startsWith('/storage/v1/object/public/vocabulary-assets/'));
   if (isMedia) {
@@ -234,6 +263,10 @@ self.addEventListener('fetch', event => {
       // Per-client owner; never search another account's packs or unvalidated staging caches.
       try {
         const resolved=client || await ownerFor(event.clientId);
+        if (CLIENT_RESTRICTED_MEDIA.has(event.clientId))
+          return new Response('Restricted client cannot use public media',{
+            status:403,headers:{'Cache-Control':'no-store'}
+          });
         const cached = resolved && url.href.startsWith(resolved.mediaRoot) ? await localMedia(event.request, resolved.owner) : null;
         if (cached) return audioRange(cached,event.request);
       } catch (_) {

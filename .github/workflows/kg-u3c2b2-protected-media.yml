@@ -6,6 +6,9 @@ on:
       - 'index.html'
       - 'js/kg-audio.js'
       - 'js/kg-protected-image.mjs'
+      - 'offline/sw.js'
+      - 'js/kg-private-offline-playback.mjs'
+      - '.github/workflows/kg-u3d2b2-private-playback.yml'
       - 'js/kg-protected-player.mjs'
       - 'tools/build-offline.mjs'
       - 'tools/tests/u3c2b2-protected-media.test.mjs'
@@ -39,9 +42,13 @@ jobs:
           grep -Fq 'const U3C1_SCOPED_UI_ENABLED = false;' index.html
           BASE=$(git merge-base origin/main HEAD)
           git diff --name-only "$BASE" HEAD | tee /tmp/u3c2b2-files.txt
-          if grep -Eq '^(sql/|supabase/|offline/sw.js|offline/audio-manifest.js)' /tmp/u3c2b2-files.txt; then
+          if grep -Eq '^(sql/|supabase/|offline/audio-manifest.js)' /tmp/u3c2b2-files.txt; then
             echo 'Unexpected SQL/Edge or installed PWA worker/media change'
             exit 1
+          fi
+          if grep -Fxq 'offline/sw.js' /tmp/u3c2b2-files.txt; then
+            grep -Fq 'const U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED = false;' offline/runtime.js
+            node --test tools/tests/u3d2b2-private-playback.test.mjs
           fi
           if grep -Fxq 'offline/runtime.js' /tmp/u3c2b2-files.txt; then
             grep -Fq 'const U3D1_OFFLINE_ACCESS_ENABLED = false;' offline/runtime.js

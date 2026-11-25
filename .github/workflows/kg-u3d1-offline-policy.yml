@@ -6,6 +6,14 @@ on:
       - 'offline/access-policy.js'
       - 'offline/scoped-pack.js'
       - 'js/kg-private-offline-media.mjs'
+      - 'js/kg-private-offline-playback.mjs'
+      - 'js/kg-audio.js'
+      - 'js/kg-protected-image.mjs'
+      - 'offline/sw.js'
+      - 'tools/tests/u3d2b2-private-playback.test.mjs'
+      - 'tools/tests/u3c2b2-protected-media.test.mjs'
+      - '.github/workflows/kg-u3d2b2-private-playback.yml'
+      - 'docs/U3D2B2-PRIVATE-OFFLINE-REVIEW.md'
       - 'tools/tests/u3d2b1-private-media-stage.test.mjs'
       - 'docs/U3D2B1-PRIVATE-MEDIA-REVIEW.md'
       - '.github/workflows/kg-u3d2b1-private-media-stage.yml'
@@ -41,21 +49,23 @@ jobs:
           node --check offline/access-policy.js
           node --check offline/scoped-pack.js
           node --check js/kg-private-offline-media.mjs
+          node --check js/kg-private-offline-playback.mjs
           node --check offline/runtime.js
-          node --test tools/tests/u3d1-offline-policy.test.mjs tools/tests/u3d2a-scoped-pack.test.mjs tools/tests/u3d2b1-private-media-stage.test.mjs offline/tests/private-lesson-privacy.test.mjs
+          node --test tools/tests/u3d1-offline-policy.test.mjs tools/tests/u3d2a-scoped-pack.test.mjs tools/tests/u3d2b1-private-media-stage.test.mjs offline/tests/private-lesson-privacy.test.mjs tools/tests/u3d2b2-private-playback.test.mjs tools/tests/u3c2b2-protected-media.test.mjs
       - name: Verify staged/off by default, no SQL/media/worker/production changes
         run: |
           set -euo pipefail
           grep -Fq 'const U3D1_OFFLINE_ACCESS_ENABLED = false;' offline/runtime.js
           grep -Fq 'const U3D2_SCOPED_PACK_PREVIEW_ENABLED = false;' offline/runtime.js
           grep -Fq 'const U3D2B1_PRIVATE_MEDIA_STAGE_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED = false;' offline/runtime.js
           grep -Fq 'const U3C1_SCOPED_UI_ENABLED = false;' index.html
           BASE=$(git merge-base origin/main HEAD)
           git diff --name-only "$BASE" HEAD | tee /tmp/u3d1-reviewed-files.txt
           # Explicit allowlist for U3D1 and the separately reviewed U3D2A source-disabled candidate.
           while IFS= read -r path; do
             case "$path" in
-              offline/access-policy.js|offline/runtime.js|offline/scoped-pack.js|js/kg-private-offline-media.mjs|tools/build-offline.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d2b1-private-media-stage.test.mjs|offline/tests/private-lesson-privacy.test.mjs|docs/U3D1-OFFLINE-ACCESS-REVIEW.md|docs/U3D2A-SCOPED-PACK-REVIEW.md|docs/U3D2B1-PRIVATE-MEDIA-REVIEW.md|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3c1-learner-access.yml|.github/workflows/kg-u3c2b1-protected-player.yml|.github/workflows/kg-u3c2b2-protected-media.yml)
+              offline/access-policy.js|offline/runtime.js|offline/scoped-pack.js|js/kg-private-offline-media.mjs|js/kg-private-offline-playback.mjs|js/kg-audio.js|js/kg-protected-image.mjs|offline/sw.js|tools/tests/u3d2b2-private-playback.test.mjs|tools/tests/u3c2b2-protected-media.test.mjs|docs/U3D2B2-PRIVATE-OFFLINE-REVIEW.md|.github/workflows/kg-u3d2b2-private-playback.yml|tools/build-offline.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d2b1-private-media-stage.test.mjs|offline/tests/private-lesson-privacy.test.mjs|docs/U3D1-OFFLINE-ACCESS-REVIEW.md|docs/U3D2A-SCOPED-PACK-REVIEW.md|docs/U3D2B1-PRIVATE-MEDIA-REVIEW.md|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3c1-learner-access.yml|.github/workflows/kg-u3c2b1-protected-player.yml|.github/workflows/kg-u3c2b2-protected-media.yml)
                 ;;
               *)
                 echo "Unreviewed U3D1 file: $path"
@@ -63,7 +73,7 @@ jobs:
                 ;;
             esac
           done < /tmp/u3d1-reviewed-files.txt
-          if grep -Eq '^(sql/|supabase/|offline/sw.js|offline/pictures.js|offline/audio-manifest.js|index.html|js/kg-audio.js)' /tmp/u3d1-reviewed-files.txt; then
+          if grep -Eq '^(sql/|supabase/|offline/pictures.js|offline/audio-manifest.js|index.html)' /tmp/u3d1-reviewed-files.txt; then
             echo 'Unexpected backend, learner, service-worker, or media modification'
             exit 1
           fi

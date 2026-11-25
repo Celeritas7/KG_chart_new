@@ -57,6 +57,11 @@
   // owner's isolated cache only. NEVER activates the stage or writes pack
   // pointers. The live switch stays OFF through B2/U3D3 device acceptance.
   const U3D2B1_PRIVATE_MEDIA_STAGE_ENABLED = false;
+  // U3D2B2: owner-only private media pointer + blob playback, NOT a
+  // downloadable restricted lesson pack. Requires U3D3 and real devices.
+  const U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED = false;
+  const privateMediaKey=(id,lang)=>'active-private-media:'+id+':'+lang;
+  const previousPrivateMediaKey=(id,lang)=>'previous-private-media:'+id+':'+lang;
   let cachedAccessRecord=null;
   let accessView={state:'blocked',reason:'unverified',revision:null};
   const policyKey=id=>'offline-access-policy:'+id;
@@ -533,14 +538,14 @@
     assertCurrent();
     const appOrigin=location.origin;
     const projectUrl=new URL(mediaBase()).origin;
-    const module=await import('./kg-private-offline-media.mjs');
+    const module=await import(new URL('./js/kg-private-offline-media.mjs',document.baseURI).href);
     assertCurrent();
     const args={
       ownerId:ownerAtStart,language:lang,policyRecord,
       appOrigin,offlineAccess:window.KGOfflineAccess,
       learnerAccess:window.KGLearnerAccess,cacheStorage:caches,
     };
-    let descriptor;
+    let descriptor,activated=false;
     try{
       descriptor=await module.stagePrivateMedia({
         ...args,mediaPlan:candidate.mediaPlan,sentenceScope,
@@ -555,15 +560,98 @@
         throw Error('Permissions changed; the staged private media cannot be activated.');
       const verified=await module.inspectPrivateMediaStage({...args,descriptor});
       assertCurrent();
-      return {...verified,stagedOnly:true,
+      if(!U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED)
+        return {...verified,stagedOnly:true,
+          readyToInstall:false,cacheName:descriptor.cacheName};
+      // A "media-only" pointer is NOT an active restricted content pack.
+      const playback=await import(new URL('./js/kg-private-offline-playback.mjs',document.baseURI).href);
+      const pointer=await playback.preparePrivateMediaActivation({
+        ...args,descriptor,authorizedPlan:candidate.mediaPlan,
+        sentenceScope,assertCurrent,
+      });
+      assertCurrent();
+      // Reverify against live Auth/RLS before writing a pointer. A changed
+      // revision invalidates this stage and leaves old offline data intact.
+      const fresh=await refreshVerifiedAccess();guard();
+      if(fresh.state!=='restricted_pending' ||
+         JSON.stringify(cachedAccessRecord.snapshot)!==snapshot)
+        throw Error('Permissions changed before private media activation.');
+      const key=privateMediaKey(ownerAtStart,lang);
+      const previousKey=previousPrivateMediaKey(ownerAtStart,lang);
+      await transact(['kv'],tx=>{
+        const kv=tx.objectStore('kv');
+        const req=kv.get(key);
+        req.onsuccess=()=>{
+          try{assertCurrent();}
+          catch(_){tx.abort();return;}
+          if(req.result)kv.put(req.result,previousKey);
+          kv.put(pointer,key);
+        };
+      });
+      activated=true;
+      return {...verified,stagedOnly:false,mediaOnly:true,
         readyToInstall:false,cacheName:descriptor.cacheName};
     }catch(error){
-      if(descriptor)
+      if(descriptor && !activated)
         await module.discardPrivateMediaStage({...args,descriptor}).catch(()=>{});
       throw error;
     }
   }
 
+  async function readPrivateMedia(resource) {
+    // A reader on a device without network must never attempt the public
+    // Storage hash path or retry a signed token. Null means "not available".
+    if(!U3D1_OFFLINE_ACCESS_ENABLED || !U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED ||
+       !currentEnrollment() || effectiveAccess().state!=='restricted_pending' ||
+       !resource || typeof resource.language!=='string')
+      return null;
+    const guard=accountGuard();
+    const id=owner,lang=resource.language;
+    const pointer=await get(privateMediaKey(id,lang));guard();
+    if(!pointer)return null;
+    const record=cachedAccessRecord;
+    const playback=await import(new URL('./js/kg-private-offline-playback.mjs',document.baseURI).href);guard();
+    let lease=null;
+    try{
+      lease=await playback.readPrivateOfflineMedia({
+        pointer,resource,ownerId:id,language:lang,policyRecord:record,
+        appOrigin:location.origin,offlineAccess:window.KGOfflineAccess,
+        learnerAccess:window.KGLearnerAccess,
+        cacheStorage:caches,cryptoApi:crypto,assertCurrent:guard,
+      });
+      guard();
+      return lease;
+    }catch(error){
+      lease?.release();
+      // Denial never makes a request to the public media CDN.
+      throw error;
+    }
+  }
+
+  async function restorePreviousPrivateMedia(lang) {
+    if(!U3D1_OFFLINE_ACCESS_ENABLED || !U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED ||
+       !currentEnrollment() || effectiveAccess().state!=='restricted_pending')
+      throw Error('Restricted offline media rollback is not approved.');
+    const guard=accountGuard();
+    const id=owner,record=cachedAccessRecord;
+    const candidate=await get(previousPrivateMediaKey(id,lang));guard();
+    if(!candidate||candidate.ownerId!==id||candidate.language!==lang||
+       candidate.revision!==record?.snapshot?.revision||
+       candidate.grants!==JSON.stringify(record.snapshot))
+      throw Error('No compatible same-account, same-grant private stage to restore.');
+    const module=await import(new URL('./js/kg-private-offline-media.mjs',document.baseURI).href);guard();
+    await module.inspectPrivateMediaStage({
+      descriptor:candidate.descriptor,ownerId:id,language:lang,
+      policyRecord:{...record,checkedAt:candidate.checkedAt},
+      appOrigin:location.origin,offlineAccess:window.KGOfflineAccess,
+      learnerAccess:window.KGLearnerAccess,cacheStorage:caches,
+    });
+    guard();
+    await put(privateMediaKey(id,lang),candidate);guard();
+    // No previous or new stage is deleted; reversible until U3D3 policy
+    // reconciliation and explicit owner approval for cleanup.
+    return {restored:true,language:lang,mediaOnly:true};
+  }
 
   function requiredMedia(data,lang) {
     const root = mediaBase();
@@ -1317,8 +1405,11 @@
     const worker=navigator.serviceWorker?.controller;
     if(currentEnrollment() && mediaRoot && legacyAccessReady())
       worker?.postMessage({type:'KG_OFFLINE_OWNER',id:owner,mediaRoot});
-    else if(U3D1_OFFLINE_ACCESS_ENABLED)
-      worker?.postMessage({type:'KG_OFFLINE_LOCK'});
+    else if(U3D1_OFFLINE_ACCESS_ENABLED) {
+      // A restricted/unknown session must not use the legacy worker's
+      // public-media fallback or another owner's saved public packs.
+      worker?.postMessage({type:'KG_OFFLINE_RESTRICTED_MEDIA'});
+    }
     worker?.postMessage({type:'KG_OFFLINE_CHECK_SHELL'});
   }
 
@@ -1530,7 +1621,10 @@
         activeWorkerVersion=event.data.revision;notify();
       }
       if(event.data?.type==='KG_OFFLINE_REQUEST_OWNER') {
-        event.ports?.[0]?.postMessage(currentEnrollment() && mediaRoot && legacyAccessReady()
+        event.ports?.[0]?.postMessage(
+          U3D1_OFFLINE_ACCESS_ENABLED && !legacyAccessReady() ?
+          {restrictedMedia:true} :
+          currentEnrollment() && mediaRoot && legacyAccessReady()
           ? {id:owner,mediaRoot} : null);
       }
       if(event.data?.type==='KG_OFFLINE_SHELL_INCOMPLETE') {
@@ -1571,6 +1665,7 @@
     openSettings,
     ready:bounded(init(), 'Opening saved lessons', 20000).catch(e=>{fatal(e);throw e;}), wrapClient,afterVerified,downloadPack,
     previewRestrictedPack,stageRestrictedPrivateMedia,
+    readPrivateMedia,restorePreviousPrivateMedia,
     setLanguage:value=>{studyLanguage=value;},
     pause:()=>{pauseRequested=true;},sync,exportRecovery,importRecovery,
     setQuizBusy:value=>{if(quizBusy!==!!value){quizBusy=!!value;notify();}},

@@ -128,6 +128,7 @@ test('Learner media calls identify real word, topic, sentence and colour records
   assert.match(html,/<ProtectedWordImage item=\{current\}/);
   assert.match(js,/p\.retries === 0/);
   assert.match(js,/startProtectedPlayback\(p, position\)/);
-  assert.match(js,/if \(mediaGate && audio\.src/);
+  assert.match(js,/if \(mediaGate && \(audio\.src/);
+  assert.match(js,/offlineLease\?\.release\?/);
   assert(builder.includes("'js/kg-protected-image.mjs', 'js/kg-protected-image.mjs'"));
 });

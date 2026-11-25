@@ -5,6 +5,9 @@ on:
     paths:
       - 'index.html'
       - 'js/kg-audio.js'
+      - 'offline/sw.js'
+      - 'js/kg-private-offline-playback.mjs'
+      - '.github/workflows/kg-u3d2b2-private-playback.yml'
       - 'js/kg-protected-player.mjs'
       - 'js/kg-protected-media-context.mjs'
       - 'js/kg-private-media-client.mjs'
@@ -42,9 +45,13 @@ jobs:
           grep -Fq 'const U3C1_SCOPED_UI_ENABLED = false;' index.html
           BASE=$(git merge-base origin/main HEAD)
           git diff --name-only "$BASE" HEAD | tee /tmp/u3c2b1-changes.txt
-          if grep -Eq '^(sql/|supabase/|offline/sw.js)' /tmp/u3c2b1-changes.txt; then
+          if grep -Eq '^(sql/|supabase/)' /tmp/u3c2b1-changes.txt; then
             echo 'U3C2B1 must not migrate production or mutate the offline worker'
             exit 1
+          fi
+          if grep -Fxq 'offline/sw.js' /tmp/u3c2b1-changes.txt; then
+            grep -Fq 'const U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED = false;' offline/runtime.js
+            node --test tools/tests/u3d2b2-private-playback.test.mjs
           fi
           if grep -Fxq 'offline/runtime.js' /tmp/u3c2b1-changes.txt; then
             grep -Fq 'const U3D1_OFFLINE_ACCESS_ENABLED = false;' offline/runtime.js
