@@ -11,7 +11,7 @@ for(const path of ['js/kg-learner-access.js','js/kg-sentence-access.js',
   'offline/access-policy.js','offline/scoped-pack.js',
   'offline/restricted-packs.js']){
   vm.runInNewContext(await fs.readFile(new URL('../../'+path,import.meta.url),'utf8'),
-    {window:root,crypto:webcrypto});
+    {window:root,crypto:webcrypto,TextEncoder});
 }
 const T=1795500000000;
 const OWNER='10000000-0000-4000-8000-000000000001';
