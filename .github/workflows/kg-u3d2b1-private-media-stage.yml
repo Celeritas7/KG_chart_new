@@ -54,7 +54,7 @@ jobs:
           git diff --name-only "$BASE" HEAD | tee /tmp/u3d2b1-files.txt
           while IFS= read -r path; do
             case "$path" in
-              js/kg-private-offline-media.mjs|offline/runtime.js|js/kg-private-offline-playback.mjs|js/kg-audio.js|js/kg-protected-image.mjs|offline/sw.js|tools/tests/u3d2b2-private-playback.test.mjs|tools/tests/u3c2b2-protected-media.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|docs/U3D2B2-PRIVATE-OFFLINE-REVIEW.md|.github/workflows/kg-u3d2b2-private-playback.yml|tools/build-offline.mjs|tools/tests/u3d2b1-private-media-stage.test.mjs|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|docs/U3D2B1-PRIVATE-MEDIA-REVIEW.md)
+              js/kg-private-offline-media.mjs|offline/runtime.js|js/kg-private-offline-playback.mjs|js/kg-audio.js|js/kg-protected-image.mjs|offline/sw.js|tools/tests/u3d2b2-private-playback.test.mjs|tools/tests/u3c2b2-protected-media.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|docs/U3D2B2-PRIVATE-OFFLINE-REVIEW.md|.github/workflows/kg-u3d2b2-private-playback.yml|.github/workflows/kg-u3c1-learner-access.yml|.github/workflows/kg-u3c2b1-protected-player.yml|.github/workflows/kg-u3c2b2-protected-media.yml|tools/build-offline.mjs|tools/tests/u3d2b1-private-media-stage.test.mjs|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|docs/U3D2B1-PRIVATE-MEDIA-REVIEW.md)
                 ;;
               *)
                 echo "Unreviewed U3D2B1 path: $path"
