@@ -16,6 +16,7 @@ on:
       - '.github/workflows/kg-u3d3a-outbox-hold.yml'
       - 'tools/tests/u3d1-offline-policy.test.mjs'
       - 'tools/tests/u3d2a-scoped-pack.test.mjs'
+      - 'tools/tests/u3d3a-outbox-hold.test.mjs'
   workflow_dispatch:
 
 permissions:
@@ -52,7 +53,7 @@ jobs:
           git diff --name-only "$BASE" HEAD | tee /tmp/u3d3b-changed.txt
           while IFS= read -r path; do
             case "$path" in
-              offline/restricted-packs.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|docs/U3D3B-RESTRICTED-BUNDLES-REVIEW.md|.github/workflows/kg-u3d3b-restricted-bundles.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d2b2-private-playback.yml|.github/workflows/kg-u3d3a-outbox-hold.yml|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs)
+              offline/restricted-packs.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|docs/U3D3B-RESTRICTED-BUNDLES-REVIEW.md|.github/workflows/kg-u3d3b-restricted-bundles.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d2b2-private-playback.yml|.github/workflows/kg-u3d3a-outbox-hold.yml|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d3a-outbox-hold.test.mjs)
                 ;;
               *)
                 echo "Unexpected U3D3B change: $path"
