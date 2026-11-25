@@ -119,8 +119,9 @@ function safeDescriptor(descriptor,{ownerId,language,policyRecord,appOrigin}){
      descriptor.kind!=='kg-protected-staged-media'||
      descriptor.ownerId!==ownerId||descriptor.language!==language||
      descriptor.revision!==policyRecord.snapshot.revision||
-     !/^kg-private-stage-v1-[a-f0-9-]+$/.test(descriptor.cacheName)||
+     typeof descriptor.cacheName!=='string'||
      !descriptor.cacheName.startsWith(CACHE_PREFIX+ownerId+'-'+language+'-'+descriptor.revision+'-')||
+     !UUID.test(descriptor.cacheName.slice((CACHE_PREFIX+ownerId+'-'+language+'-'+descriptor.revision+'-').length))||
      descriptor.manifestUrl!==manifestUrl(appOrigin,ownerId,language,descriptor.revision)||
      !/^[0-9a-f]{64}$/.test(descriptor.manifestSha256||''))
     failure('staged media manifest is not bound to this account');
