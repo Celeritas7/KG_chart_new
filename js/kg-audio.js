@@ -28,6 +28,7 @@
   // media under that gate; restricted requests must carry a real source ID.
   let mediaGate = false, verifiedMediaAccess = null, protectedAttempt = 0;
   let protectedPlayback = null;
+  let offlineLease = null;
   function canUsePublicMedia() {
     return !mediaGate || verifiedMediaAccess?.policy?.state === 'legacy';
   }
@@ -137,6 +138,7 @@
     return isProtectedMedia() ? base + '|' + JSON.stringify([
       resource?.type, resource?.language, resource?.id || null,
       resource?.topicId || null, resource?.groupName || null,
+      resource?.voice || null,
     ]) : base;
   };
   const setCurrent = (c) => { current = c; emit(); };
@@ -146,7 +148,9 @@
   audio.addEventListener('error', () => {
     if (!current) return;
     const p = protectedPlayback;
-    if (isProtectedMedia() && p && p.key === current.key && p.retries === 0) {
+    if (isProtectedMedia() && p && p.key === current.key && p.retries === 0 &&
+        !(typeof navigator !== 'undefined' && navigator.onLine === false) &&
+        !offlineLease) {
       // Audio elements may perform a later byte-range request after a 30 s
       // signed token expires. Reauthorize this exact source ONE time only.
       p.retries = 1;
@@ -161,15 +165,34 @@
 
   function startProtectedPlayback(context, resumeAt = 0) {
     const { attempt, key, resource, access, slow, silent } = context;
-    import('./kg-protected-player.mjs')
-      .then(({acquireProtectedMedia}) => {
-        if (attempt !== protectedAttempt || current?.key !== key) return null;
-        return acquireProtectedMedia({
-          kind: 'audio', resource, policy: access.policy,
-          sentenceScope: access.sentenceScope, supabase: access.supabase,
-          projectUrl: access.projectUrl,
-        });
-      })
+    const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+    // Private offline media is never requested through a URL to the worker.
+    // It comes from the account-verified CacheStorage reader as a blob lease.
+    async function locate() {
+      if (attempt !== protectedAttempt || current?.key !== key) return null;
+      if (offline) {
+        const read = window.KGOffline?.readPrivateMedia;
+        if (typeof read !== 'function') return null; // NO public fallback
+        const lease = await read(resource);
+        if (attempt !== protectedAttempt || current?.key !== key) {
+          lease?.release?.();return null;
+        }
+        if (!lease || lease.contentType !== 'audio/mpeg' ||
+            typeof lease.url !== 'string' || !lease.url.startsWith('blob:')) {
+          lease?.release?.();return null;
+        }
+        offlineLease = lease;
+        return lease.url;
+      }
+      const { acquireProtectedMedia } = await import('./kg-protected-player.mjs');
+      if (attempt !== protectedAttempt || current?.key !== key) return null;
+      return acquireProtectedMedia({
+        kind: 'audio', resource, policy: access.policy,
+        sentenceScope: access.sentenceScope, supabase: access.supabase,
+        projectUrl: access.projectUrl,
+      });
+    }
+    Promise.resolve().then(locate)
       .then(url => {
         if (attempt !== protectedAttempt || current?.key !== key) return;
         if (!url) {
@@ -186,7 +209,6 @@
         if (playback?.catch) playback.catch(error => {
           if (attempt !== protectedAttempt || error?.name === 'AbortError') return;
           stop();
-          // Async signing can lose a user gesture on some mobile browsers.
           if (error?.name === 'NotAllowedError')
             toast('Tap 🔊 again to start protected audio');
           else if (!silent) toast("Couldn't play protected audio");
@@ -245,10 +267,13 @@
     ++protectedAttempt;
     protectedPlayback = null;
     audio.pause();
-    if (mediaGate && audio.src?.includes('/object/sign/kg-chart-private-media/')) {
+    if (mediaGate && (audio.src?.startsWith('blob:') ||
+        audio.src?.includes('/object/sign/kg-chart-private-media/'))) {
       audio.removeAttribute('src');
       audio.load();
     }
+    offlineLease?.release?.();
+    offlineLease = null;
     setCurrent(null);
   }
   function stateOf(text, lang, slow, resource) {
