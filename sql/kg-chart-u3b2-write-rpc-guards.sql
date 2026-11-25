@@ -320,7 +320,7 @@ GRANT EXECUTE ON FUNCTION public.kg_chart_u3b2_can_pronounce(text,text,uuid,uuid
 DROP POLICY IF EXISTS kg_u3b2_write ON public.kg_chart_quiz_sessions;
 CREATE POLICY kg_u3b2_write ON public.kg_chart_quiz_sessions
   AS RESTRICTIVE FOR INSERT TO authenticated
-  WITH CHECK (public.kg_chart_u3b2_can_quiz_session(
+  WITH CHECK (user_id = (SELECT auth.uid()) AND public.kg_chart_u3b2_can_quiz_session(
     language_code::text,topic_id::text,quiz_type::text));
 
 DROP POLICY IF EXISTS kg_u3b2_write ON public.kg_chart_quiz_answers;
@@ -332,32 +332,32 @@ CREATE POLICY kg_u3b2_write ON public.kg_chart_quiz_answers
 DROP POLICY IF EXISTS kg_u3b2_insert ON public.kg_chart_user_ratings;
 CREATE POLICY kg_u3b2_insert ON public.kg_chart_user_ratings
   AS RESTRICTIVE FOR INSERT TO authenticated
-  WITH CHECK (public.kg_chart_u3b2_can_rating(
+  WITH CHECK (user_id = (SELECT auth.uid()) AND public.kg_chart_u3b2_can_rating(
     language_code::text,vocabulary_id));
 
 DROP POLICY IF EXISTS kg_u3b2_update ON public.kg_chart_user_ratings;
 CREATE POLICY kg_u3b2_update ON public.kg_chart_user_ratings
   AS RESTRICTIVE FOR UPDATE TO authenticated
-  USING (public.kg_chart_u3b2_can_rating(language_code::text,vocabulary_id))
-  WITH CHECK (public.kg_chart_u3b2_can_rating(
+  USING (user_id = (SELECT auth.uid()) AND public.kg_chart_u3b2_can_rating(language_code::text,vocabulary_id))
+  WITH CHECK (user_id = (SELECT auth.uid()) AND public.kg_chart_u3b2_can_rating(
     language_code::text,vocabulary_id));
 
 DROP POLICY IF EXISTS kg_u3b2_delete ON public.kg_chart_user_ratings;
 CREATE POLICY kg_u3b2_delete ON public.kg_chart_user_ratings
   AS RESTRICTIVE FOR DELETE TO authenticated
-  USING (public.kg_chart_u3b2_can_rating(language_code::text,vocabulary_id));
+  USING (user_id = (SELECT auth.uid()) AND public.kg_chart_u3b2_can_rating(language_code::text,vocabulary_id));
 
 DROP POLICY IF EXISTS kg_u3b2_insert ON public.kg_chart_topic_completions;
 CREATE POLICY kg_u3b2_insert ON public.kg_chart_topic_completions
   AS RESTRICTIVE FOR INSERT TO authenticated
-  WITH CHECK (public.kg_chart_u3b2_can_completion(
+  WITH CHECK (user_id = (SELECT auth.uid()) AND public.kg_chart_u3b2_can_completion(
     language_code,topic_id));
 
 DROP POLICY IF EXISTS kg_u3b2_update ON public.kg_chart_topic_completions;
 CREATE POLICY kg_u3b2_update ON public.kg_chart_topic_completions
   AS RESTRICTIVE FOR UPDATE TO authenticated
-  USING (public.kg_chart_u3b2_can_completion(language_code,topic_id))
-  WITH CHECK (public.kg_chart_u3b2_can_completion(language_code,topic_id));
+  USING (user_id = (SELECT auth.uid()) AND public.kg_chart_u3b2_can_completion(language_code,topic_id))
+  WITH CHECK (user_id = (SELECT auth.uid()) AND public.kg_chart_u3b2_can_completion(language_code,topic_id));
 
 DROP POLICY IF EXISTS kg_u3b2_insert ON public.kg_chart_flags;
 CREATE POLICY kg_u3b2_insert ON public.kg_chart_flags
