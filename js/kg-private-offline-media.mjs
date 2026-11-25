@@ -329,7 +329,9 @@ export async function inspectPrivateMediaStage({
        saved.headers.get('X-KG-Private-SHA256')!==entry.sha256||
        saved.headers.get('X-KG-Private-Bytes')!==String(entry.bytes))
       failure('staged private media missing or metadata corrupt');
-    const bytes=asBytes(await saved.arrayBuffer());
+    const limit=entry.contentType==='audio/mpeg'?MAX_AUDIO:MAX_IMAGE;
+    if(entry.bytes>limit)failure('staged private media exceeds source size limit');
+    const bytes=asBytes(await readBounded(saved,limit));
     if(bytes.byteLength!==entry.bytes||!magicOK(entry.contentType,bytes)||
        await sha256(bytes,cryptoApi)!==entry.sha256)
       failure('private media changed after staging');
