@@ -131,7 +131,7 @@ test('All U3D1 runtime controls are source-disabled and preserve original DB/out
 
 test('Both offline and unified shells bundle policy parser before runtime without changing source UI',()=>{
   assert(build.includes("'offline/access-policy.js', 'js/offline-policy.js'"));
-  assert(build.includes('<script src="./js/offline-policy.js"></script><script src="./js/offline-scoped-pack.js"></script><script src="./js/offline-access-outbox.js"></script><script src="./js/offline-runtime.js"></script>'));
+  assert(build.includes('<script src="./js/offline-policy.js"></script><script src="./js/offline-scoped-pack.js"></script><script src="./js/offline-access-outbox.js"></script><script src="./js/offline-restricted-packs.js"></script><script src="./js/offline-runtime.js"></script>'));
   assert(build.indexOf("'offline/access-policy.js'")<build.indexOf("'offline/runtime.js'"));
   assert.equal((runtime.match(/const U3D1_OFFLINE_ACCESS_ENABLED = false/g)||[]).length,1);
 });
