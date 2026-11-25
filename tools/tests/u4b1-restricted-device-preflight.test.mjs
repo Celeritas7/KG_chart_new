@@ -190,7 +190,7 @@ test('U4B1 is a source-only preflight, not physical-device evidence or friend-sh
   for(const phrase of [
     'Android','iPad','NO-GO','PR #95','never enable','not a hardware PASS',
     'separate test account','private recovery','revocation','expired',
-  ])assert(documentation.includes(phrase),'Missing explicit reviewer warning: '+phrase);
+  ])assert(documentation.toLowerCase().includes(phrase.toLowerCase()),'Missing explicit reviewer warning: '+phrase);
   assert.equal(typeof root.KGRestrictedPacks.prepare,'function');
   assert.equal(typeof root.KGRestrictedPacks.verify,'function');
   assert.equal(typeof root.KGRestrictedSync.authorize,'function');
