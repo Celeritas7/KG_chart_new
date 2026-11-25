@@ -423,6 +423,19 @@
     // AUDIO (Phase 9): engine lives in js/kg-audio.js
     // ==========================================
     const useAudioState = () => React.useSyncExternalStore(window.KGAudio.subscribe, window.KGAudio.getVersion);
+    // U3C2B2: audio authorization is attached to the real resource, never to
+    // text, a shared hash or a cached screenshot. Server-side checks remain
+    // the only authorization boundary.
+    const wordAudioResource = (word, lang) => word && ({
+      type: 'word_audio', id: word.id, topicId: word.topic_id, language: lang,
+    });
+    const sentenceAudioResource = (sentence, lang) => sentence && ({
+      type: 'sentence_audio', id: sentence.id,
+      groupName: sentence.group_name, language: lang,
+    });
+    const colourAudioResource = (phrase, lang) => phrase && ({
+      type: 'colour_audio', id: phrase.id, language: lang,
+    });
 
     // U3C2B1 — source-bound picture integration for chart cards and details.
     // Remaining quiz/flashcard picture surfaces require the separate U3C2B2
@@ -443,18 +456,25 @@
         setSigned({ key, url: null });
         // Resolve relative to the document: online Pages uses a /repo/ path
         // while separate-offline and unified editions use their own root.
-        import(new URL('./js/kg-protected-player.mjs', document.baseURI).href)
-          .then(({ acquireProtectedMedia }) => acquireProtectedMedia({
-            kind: 'image',
+        const controller = new AbortController();
+        let lease = null;
+        import(new URL('./js/kg-protected-image.mjs', document.baseURI).href)
+          .then(({loadProtectedWordPicture}) => loadProtectedWordPicture({
             resource: {
               type: 'word_image', id: item.id, topicId, language: languageCode,
             },
             policy: media.policy, sentenceScope: media.sentenceScope,
-            supabase, projectUrl: SUPABASE_URL,
+            supabase, projectUrl: SUPABASE_URL, signal: controller.signal,
           }))
-          .then(url => { if (!cancelled) setSigned({ key, url }); })
+          .then(result => {
+            if (cancelled) { result?.release(); return; }
+            lease = result;
+            setSigned({ key, url: result?.url || null });
+          })
           .catch(() => { if (!cancelled) setSigned({ key, url: null }); });
-        return () => { cancelled = true; };
+        return () => {
+          cancelled = true; controller.abort(); lease?.release();
+        };
       }, [restricted, isEmoji, key]);
       const src = isEmoji ? getImageUrl(topicId, item.image_filename)
         : restricted ? (signed.key === key ? signed.url : null)
