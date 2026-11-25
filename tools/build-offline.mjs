@@ -87,7 +87,7 @@ let html = source
   .replace(/<script src="https:\/\/unpkg\.com\/react-dom@18\/umd\/react-dom\.production\.min\.js"><\/script>/, '<script src="./assets/react-dom.production.min.js"></script>')
   .replace(/<script src="https:\/\/unpkg\.com\/@babel\/standalone\/babel\.min\.js"><\/script>/, '')
   .replace(/<script src="https:\/\/unpkg\.com\/@supabase\/supabase-js@2"><\/script>/, '<script src="./assets/supabase.js"></script>')
-  .replace(/<script src="\.\/js\/image-downloads\.js"><\/script>/, '<script src="./js/offline-pictures.js"></script><script src="./js/offline-policy.js"></script><script src="./js/offline-scoped-pack.js"></script><script src="./js/offline-access-outbox.js"></script><script src="./js/offline-restricted-packs.js"></script><script src="./js/offline-restricted-sync.js"></script><script src="./js/offline-runtime.js"></script>')
+  .replace(/<script src="\.\/js\/image-downloads\.js"><\/script>/, '<script src="./js/offline-pictures.js"></script><script src="./js/offline-policy.js"></script><script src="./js/offline-scoped-pack.js"></script><script src="./js/offline-access-outbox.js"></script><script src="./js/offline-restricted-packs.js"></script><script src="./js/offline-restricted-sync.js"></script><script src="./js/offline-device-acceptance.js"></script><script src="./js/offline-runtime.js"></script>')
   // The policy parser consumes KGLearnerAccess. Load the source-qualified
   // core ahead of the runtime, even during a very fast offline cold start.
   .replace('<script src="./js/kg-learner-access.js"></script>', '')
@@ -127,7 +127,7 @@ for (const [from, to] of [
   ['js/kg-protected-image.mjs', 'js/kg-protected-image.mjs'],
   ['js/kg-private-offline-media.mjs', 'js/kg-private-offline-media.mjs'],
   ['js/kg-private-offline-playback.mjs', 'js/kg-private-offline-playback.mjs'],
-  ['offline/pictures.js', 'js/offline-pictures.js'], ['offline/access-policy.js', 'js/offline-policy.js'], ['offline/scoped-pack.js', 'js/offline-scoped-pack.js'], ['offline/access-outbox.js', 'js/offline-access-outbox.js'], ['offline/restricted-packs.js', 'js/offline-restricted-packs.js'], ['offline/restricted-sync.js', 'js/offline-restricted-sync.js'], ['offline/startup.js', 'js/startup.js'], ['offline/runtime.js', 'js/offline-runtime.js'], ['offline/install.js', 'js/offline-install.js'],
+  ['offline/pictures.js', 'js/offline-pictures.js'], ['offline/access-policy.js', 'js/offline-policy.js'], ['offline/scoped-pack.js', 'js/offline-scoped-pack.js'], ['offline/access-outbox.js', 'js/offline-access-outbox.js'], ['offline/restricted-packs.js', 'js/offline-restricted-packs.js'], ['offline/restricted-sync.js', 'js/offline-restricted-sync.js'], ['offline/device-acceptance.js', 'js/offline-device-acceptance.js'], ['offline/startup.js', 'js/startup.js'], ['offline/runtime.js', 'js/offline-runtime.js'], ['offline/install.js', 'js/offline-install.js'],
   ['offline/offline.css', 'assets/offline.css'],
   ['icons/kg-brand.svg', 'icons/kg-brand.svg'],
   ['icons/icon-192.png', 'icons/icon-192.png'], ['icons/apple-touch-icon.png', 'icons/apple-touch-icon.png'],
