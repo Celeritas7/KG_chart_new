@@ -299,3 +299,83 @@ test('Source flags OFF; no restricted pack promotion, app migration, or public-w
   assert.match(runtime,/const DB_NAME = 'kg-chart-offline-v1'/);
   assert.match(runtime,/const DB_VERSION = 1/);
 });
+
+test('Shared KGAudio actually plays offline private blob and revokes it on stop without a network fallback',async()=>{
+  const source=await fs.readFile(new URL('../../js/kg-audio.js',import.meta.url),'utf8');
+  let lastAudio,reads=0,released=0;
+  class FakeAudio{
+    constructor(){lastAudio=this;this.src='';this.currentTime=0;this.playCalls=0;}
+    addEventListener(){}
+    pause(){}
+    load(){}
+    removeAttribute(n){if(n==='src')this.src='';}
+    play(){this.playCalls++;return Promise.resolve();}
+  }
+  const local={getItem:()=>null};
+  const client={
+    KGOffline:{async readPrivateMedia(request){
+      reads++;assert.equal(request.id,WORD);
+      return {url:'blob:synthetic-audio',contentType:'audio/mpeg',
+        release(){released++;}};
+    }},
+  };
+  vm.runInNewContext(source,{
+    window:client,navigator:{onLine:false},Audio:FakeAudio,
+    TextEncoder,localStorage:local,document:{},
+    setTimeout,clearTimeout,console,
+  });
+  const A=client.KGAudio;
+  A.requireVerifiedMediaPolicy(true);
+  A.setVerifiedMediaPolicy({
+    ownerId:OWNER,policy:learner.parseSnapshot(snapshot),
+    sentenceScope,supabase:{},projectUrl:PROJECT,
+  });
+  assert.equal(A.play('rice','my',{silent:true,resource:audio}),true);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(reads,1);
+  assert.equal(lastAudio.src,'blob:synthetic-audio');
+  assert.equal(lastAudio.playCalls,1);
+  A.stop();
+  assert.equal(lastAudio.src,'');
+  assert.equal(released,1);
+  client.KGOffline.readPrivateMedia=async()=>{reads++;return null;};
+  A.play('rice','my',{silent:true,resource:audio});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(reads,2);
+  assert.equal(lastAudio.playCalls,1,'a denied offline read cannot play a legacy public clip');
+  assert.equal(released,1);
+});
+
+test('New worker instance recovers restricted status from owning page before public-media fallback',async()=>{
+  const sw=await fs.readFile(new URL('../../offline/sw.js',import.meta.url),'utf8');
+  const origin='https://offline.example.invalid',scope=origin+'/';
+  const handlers={};
+  let networkRequests=0;
+  const ownerPage={
+    url:scope+'index.html',
+    postMessage(message,ports){
+      assert.equal(message.type,'KG_OFFLINE_REQUEST_OWNER');
+      ports[0].postMessage({restrictedMedia:true});
+    },
+  };
+  vm.runInNewContext(sw,{
+    self:{location:{origin},registration:{scope},
+      clients:{get:async()=>ownerPage},
+      addEventListener(type,handler){handlers[type]=handler;},
+    },
+    importScripts(){},
+    URL,Map,Set,Response,Request,Headers,AbortController,MessageChannel,
+    fetch:async()=>{networkRequests++;return new Response('public');},
+    caches:{open:async()=>({match:async()=>null})},
+    setTimeout,clearTimeout,console,
+  });
+  let pending;
+  handlers.fetch({
+    request:new Request(PROJECT+'/storage/v1/object/public/vocabulary-assets/food/a.jpg'),
+    clientId:'reopened-restricted',
+    respondWith(promise){pending=Promise.resolve(promise);},
+  });
+  const reply=await pending;
+  assert.equal(reply.status,403);
+  assert.equal(networkRequests,0,'worker restart must not escape to public media CDN');
+});
