@@ -118,6 +118,7 @@ for (const [from, to] of [
   ['js/kg-private-media-client.mjs', 'js/kg-private-media-client.mjs'],
   ['js/kg-protected-media-context.mjs', 'js/kg-protected-media-context.mjs'],
   ['js/kg-protected-player.mjs', 'js/kg-protected-player.mjs'],
+  ['js/kg-protected-image.mjs', 'js/kg-protected-image.mjs'],
   ['offline/pictures.js', 'js/offline-pictures.js'], ['offline/startup.js', 'js/startup.js'], ['offline/runtime.js', 'js/offline-runtime.js'], ['offline/install.js', 'js/offline-install.js'],
   ['offline/offline.css', 'assets/offline.css'],
   ['icons/kg-brand.svg', 'icons/kg-brand.svg'],
