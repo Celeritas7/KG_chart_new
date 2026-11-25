@@ -89,7 +89,12 @@
   const safePictureName=value=>{
     if(value==null||value==='')return null;
     if(typeof value!=='string'||value.length>180)forbid('unsafe picture filename');
-    if(value.startsWith('emoji:'))return value;
+    if(value.startsWith('emoji:')){
+      const emoji=value.slice(6);
+      if(!emoji || !/^[\\p{Emoji_Presentation}\\p{Emoji}\\u200d\\ufe0f ]{1,30}$/u.test(emoji))
+        forbid('invalid local emoji picture');
+      return value;
+    }
     // Do NOT persist public paths/URLs in a restricted offline candidate.
     // U3D2B must store separately verified source-bound private media bytes.
     return null;
