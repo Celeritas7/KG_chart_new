@@ -183,7 +183,8 @@
        mediaPointer.ownerId!==record.ownerId||mediaPointer.language!==language||
        mediaPointer.revision!==policy.revision||
        mediaPointer.grants!==canonical(record.snapshot)||
-       mediaPointer.checkedAt!==record.checkedAt||
+       !Number.isSafeInteger(mediaPointer.checkedAt)||
+       mediaPointer.checkedAt<=0||mediaPointer.checkedAt>record.checkedAt||
        !Array.isArray(mediaPointer.sourceKeys))
       fail('private media pointer does not match lesson grant');
     const keys=new Set();
