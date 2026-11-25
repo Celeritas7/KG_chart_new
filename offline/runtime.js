@@ -202,6 +202,9 @@
     // Read-only count inventory; ALL restricted events remain locally held.
     if(!U3D3A_OUTBOX_HOLD_ENABLED || !U3D1_OFFLINE_ACCESS_ENABLED ||
        !currentEnrollment()) return null;
+    if(effectiveAccess().state==='legacy') {
+      heldOutboxReview=null;return null;
+    }
     const guard=accountGuard(),events=await outbox();guard();
     const report=window.KGAccessOutbox?.analyzeOutbox({
       ownerId:owner,policyRecord:cachedAccessRecord,events,checkedAt:Date.now(),
@@ -386,7 +389,11 @@
     });
     channel?.postMessage({type:'changed',owner});
     await updatePending();
-    if(U3D3A_OUTBOX_HOLD_ENABLED)await auditRestrictedQueue();
+    if(U3D3A_OUTBOX_HOLD_ENABLED)await auditRestrictedQueue().catch(e=>{
+      // The IDB write already succeeded. An audit failure must NOT turn
+      // an acknowledged local write into a misleading "save failed" result.
+      syncError='Queued work saved; permission review needs retry: '+e.message;notify();
+    });
     return shape ? (created[0]||null) : (created.length?created:null);
   }
 
