@@ -59,6 +59,8 @@ jobs:
           pgfixture < tools/tests/u3c2-sentence-fixture.sql
           pgfixture < tools/tests/u3c2-sentence-assertions.sql
           pgfixture < tools/tests/u4b2-backend-assertions.sql
+      - name: Characterize concurrent revocation (not release approval)
+        run: timeout 60s python3 tools/tests/u4b2b-revocation-race.py
       - name: Destroy synthetic database
         if: always()
         run: docker rm -f kg-u4b2-test-db || true
