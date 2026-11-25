@@ -74,7 +74,9 @@ function checkPointer(pointer,{ownerId,language,policyRecord,appOrigin}){
   if(!pointer||pointer.contract!==1||pointer.kind!=='kg-private-offline-active-media'||
      pointer.ownerId!==ownerId||pointer.language!==language||
      pointer.revision!==policyRecord?.snapshot?.revision||
-     pointer.checkedAt!==policyRecord?.checkedAt||
+     !Number.isSafeInteger(pointer.checkedAt)||pointer.checkedAt<=0||
+     pointer.checkedAt>policyRecord?.checkedAt||
+     pointer.grants!==JSON.stringify(policyRecord?.snapshot)||
      pointer.appOrigin!==origin(appOrigin)||
      pointer.descriptor?.ownerId!==ownerId||
      pointer.descriptor?.language!==language||
@@ -151,8 +153,9 @@ export async function preparePrivateMediaActivation({
   if(!inspection.verified||inspection.assetCount!==keys.length)deny('unverified staged asset inventory');
   const pointer={contract:1,kind:'kg-private-offline-active-media',
     ownerId,language,revision:policy.revision,
-    checkedAt:policyRecord.checkedAt,appOrigin:origin(appOrigin),
-    sourceKeys:keys,sentenceScope:scope,descriptor:{...descriptor}};
+    checkedAt:policyRecord.checkedAt,grants:JSON.stringify(policyRecord.snapshot),
+    appOrigin:origin(appOrigin),sourceKeys:keys,
+    sentenceScope:scope,descriptor:{...descriptor}};
   checkPointer(pointer,{ownerId,language,policyRecord,appOrigin});
   await readManifest(pointer,cacheStorage,cryptoApi);
   assertCurrent?.();
