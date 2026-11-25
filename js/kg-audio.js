@@ -138,7 +138,6 @@
     return isProtectedMedia() ? base + '|' + JSON.stringify([
       resource?.type, resource?.language, resource?.id || null,
       resource?.topicId || null, resource?.groupName || null,
-      resource?.voice || null,
     ]) : base;
   };
   const setCurrent = (c) => { current = c; emit(); };
