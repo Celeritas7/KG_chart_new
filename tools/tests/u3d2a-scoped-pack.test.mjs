@@ -213,7 +213,7 @@ test('The preview is default-OFF, reads only scoped server queries, never promot
  for(const mutation of ['cache.put(',"kv.put(pack",'caches.delete(', 'audioFiles(', 'requiredMedia(', 'downloadPack(', 'outbox.put('])
    assert(!preview.includes(mutation),mutation+' must not be invoked by preview');
  assert(build.includes("'offline/scoped-pack.js', 'js/offline-scoped-pack.js'"));
- assert(build.includes('<script src="./js/offline-scoped-pack.js"></script><script src="./js/offline-access-outbox.js"></script><script src="./js/offline-restricted-packs.js"></script><script src="./js/offline-restricted-sync.js"></script><script src="./js/offline-runtime.js"></script>'));
+ assert(build.includes('<script src="./js/offline-scoped-pack.js"></script><script src="./js/offline-access-outbox.js"></script><script src="./js/offline-restricted-packs.js"></script><script src="./js/offline-restricted-sync.js"></script><script src="./js/offline-device-acceptance.js"></script><script src="./js/offline-runtime.js"></script>'));
  assert(build.indexOf("'offline/scoped-pack.js'")<build.indexOf("'offline/runtime.js'"));
 });
 
