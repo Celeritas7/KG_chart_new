@@ -42,9 +42,13 @@ jobs:
           grep -Fq 'const U3C1_SCOPED_UI_ENABLED = false;' index.html
           BASE=$(git merge-base origin/main HEAD)
           git diff --name-only "$BASE" HEAD | tee /tmp/u3c2b1-changes.txt
-          if grep -Eq '^(sql/|supabase/|offline/runtime.js|offline/sw.js)' /tmp/u3c2b1-changes.txt; then
-            echo 'U3C2B1 must not migrate production or mutate the offline runtime'
+          if grep -Eq '^(sql/|supabase/|offline/sw.js)' /tmp/u3c2b1-changes.txt; then
+            echo 'U3C2B1 must not migrate production or mutate the offline worker'
             exit 1
+          fi
+          if grep -Fxq 'offline/runtime.js' /tmp/u3c2b1-changes.txt; then
+            grep -Fq 'const U3D1_OFFLINE_ACCESS_ENABLED = false;' offline/runtime.js
+            node --test tools/tests/u3d1-offline-policy.test.mjs
           fi
 
 # Existing dual-edition CI builds both PWAs and runs Chromium migrations.

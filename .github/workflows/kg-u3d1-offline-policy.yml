@@ -1,0 +1,62 @@
+name: KG Chart U3D1 - offline verified access snapshots (synthetic)
+
+on:
+  pull_request:
+    paths:
+      - 'offline/access-policy.js'
+      - 'offline/runtime.js'
+      - 'tools/build-offline.mjs'
+      - 'tools/tests/u3d1-offline-policy.test.mjs'
+      - 'offline/tests/private-lesson-privacy.test.mjs'
+      - '.github/workflows/kg-u3c1-learner-access.yml'
+      - '.github/workflows/kg-u3c2b1-protected-player.yml'
+      - '.github/workflows/kg-u3c2b2-protected-media.yml'
+      - 'docs/U3D1-OFFLINE-ACCESS-REVIEW.md'
+      - '.github/workflows/kg-u3d1-offline-policy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-account-policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test owner/revision/expiry/caller-bound policy contracts (no cloud)
+        run: |
+          set -euo pipefail
+          node --check offline/access-policy.js
+          node --check offline/runtime.js
+          node --test tools/tests/u3d1-offline-policy.test.mjs offline/tests/private-lesson-privacy.test.mjs
+      - name: Verify staged/off by default, no SQL/media/worker/production changes
+        run: |
+          set -euo pipefail
+          grep -Fq 'const U3D1_OFFLINE_ACCESS_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3C1_SCOPED_UI_ENABLED = false;' index.html
+          BASE=$(git merge-base origin/main HEAD)
+          git diff --name-only "$BASE" HEAD | tee /tmp/u3d1-reviewed-files.txt
+          # Explicit allowlist for THIS increment.
+          while IFS= read -r path; do
+            case "$path" in
+              offline/access-policy.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d1-offline-policy.test.mjs|offline/tests/private-lesson-privacy.test.mjs|docs/U3D1-OFFLINE-ACCESS-REVIEW.md|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3c1-learner-access.yml|.github/workflows/kg-u3c2b1-protected-player.yml|.github/workflows/kg-u3c2b2-protected-media.yml)
+                ;;
+              *)
+                echo "Unreviewed U3D1 file: $path"
+                exit 1
+                ;;
+            esac
+          done < /tmp/u3d1-reviewed-files.txt
+          if grep -Eq '^(sql/|supabase/|offline/sw.js|offline/pictures.js|offline/audio-manifest.js|index.html|js/kg-audio.js)' /tmp/u3d1-reviewed-files.txt; then
+            echo 'Unexpected backend, learner, service-worker, or media modification'
+            exit 1
+          fi
+
+# The existing dual-edition workflow independently verifies source-matched
+# builds, 82+ offline tests, 4 unified artifacts and network-isolated Chromium
+# separate->unified->compatible rollback without production credentials.
