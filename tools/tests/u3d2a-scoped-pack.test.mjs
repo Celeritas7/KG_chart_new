@@ -96,7 +96,7 @@ test('Granted food topic is copied, while hidden/private/other-language content 
  assert.deepEqual(body[tables.vocabularyTranslations].map(x=>x.vocabulary_id),[W1,W2]);
  assert.deepEqual(body[tables.sentences].map(x=>x.id),[S1]);
  assert.deepEqual(body[tables.colours].map(x=>x.id),[C1]);
- assert.deepEqual(body[tables.settings].map(x=>x.key),['kg_private_visibility:my']);
+ assert.deepEqual(plain(body[tables.settings].map(x=>x.key)),['kg_private_visibility:my']);
  assert.deepEqual(plain(body[tables.settings][0].value),{contract:1,topics:[],groups:[]});
  assert.equal(body[tables.vocabulary][0].image_filename,null);
  assert.equal(body[tables.vocabulary][1].image_filename,'emoji:🍲');
