@@ -1,0 +1,67 @@
+name: KG Chart U4B2 - isolated database authorization
+on:
+  pull_request:
+    paths:
+      - 'sql/**'
+      - 'tools/tests/u4b2-*'
+      - '.github/workflows/kg-u4b2-backend.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  isolated-database:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Recheck synthetic Edge authorization contracts
+        run: node --experimental-strip-types --test tools/tests/u3b3b2-private-delivery.test.mjs tools/tests/u3b2-pronounce-preflight.test.mjs
+      - name: Start disposable PostgreSQL 17 with disabled network
+        run: |
+          set -euo pipefail
+          docker run -d --name kg-u4b2-test-db \
+            --network none \
+            -e POSTGRES_PASSWORD=synthetic-ci-only \
+            -e POSTGRES_DB=kg_u4b2_fixture postgres:17-alpine
+          for i in {1..50}; do
+            if docker exec kg-u4b2-test-db psql -X -At -v ON_ERROR_STOP=1 \
+               -U postgres -d kg_u4b2_fixture -c 'SELECT 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'Synthetic database not ready' >&2
+          exit 1
+      - name: Test RLS/group/topic grants against invented learner data
+        run: |
+          set -euo pipefail
+          pgfixture() {
+            docker exec -i kg-u4b2-test-db psql -X -v ON_ERROR_STOP=1 \
+              -U postgres -d kg_u4b2_fixture
+          }
+          pgfixture < tools/tests/u1-access-fixture.sql
+          pgfixture < sql/kg-chart-u1-access-foundation.sql
+          pgfixture < tools/tests/u3a-access-fixture.sql
+          pgfixture < tools/tests/u3b1-content-fixture.sql
+          pgfixture < sql/kg-chart-u3a-access-snapshot.sql
+          pgfixture < sql/kg-chart-u3b1-restrictive-content-rls.sql
+          pgfixture < tools/tests/u3b2-write-fixture.sql
+          pgfixture < sql/kg-chart-u3b2-write-rpc-guards.sql
+          pgfixture < sql/kg-chart-u3b3a-private-records.sql
+          pgfixture < tools/tests/u3b3a-private-fixture.sql
+          pgfixture < sql/kg-chart-u3b3b1-legacy-private-write-rpc.sql
+          pgfixture < sql/kg-chart-u3b3b2-private-media-registry.sql
+          pgfixture < tools/tests/u3b3b2-private-media-fixture.sql
+          pgfixture < sql/kg-chart-u3c2-sentence-topic-mapping.sql
+          pgfixture < sql/kg-chart-u3c2-sentence-topic-mapping.sql
+          pgfixture < tools/tests/u3c2-sentence-fixture.sql
+          pgfixture < tools/tests/u3c2-sentence-assertions.sql
+          pgfixture < tools/tests/u4b2-backend-assertions.sql
+      - name: Destroy synthetic database
+        if: always()
+        run: docker rm -f kg-u4b2-test-db || true
+
+# No production keys, real sentence contents, Storage objects, browser
+# profiles, public/private buckets or live student permission changes.
