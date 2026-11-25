@@ -88,6 +88,12 @@ let html = source
   .replace(/<script src="https:\/\/unpkg\.com\/@babel\/standalone\/babel\.min\.js"><\/script>/, '')
   .replace(/<script src="https:\/\/unpkg\.com\/@supabase\/supabase-js@2"><\/script>/, '<script src="./assets/supabase.js"></script>')
   .replace(/<script src="\.\/js\/image-downloads\.js"><\/script>/, '<script src="./js/offline-pictures.js"></script><script src="./js/offline-policy.js"></script><script src="./js/offline-runtime.js"></script>')
+  // The policy parser consumes KGLearnerAccess. Load the source-qualified
+  // core ahead of the runtime, even during a very fast offline cold start.
+  .replace('<script src="./js/kg-learner-access.js"></script>', '')
+  .replace('<script src="./js/kg-sentence-access.js"></script>', '')
+  .replace('<script src="./js/offline-policy.js"></script>',
+    '<script src="./js/kg-learner-access.js"></script><script src="./js/kg-sentence-access.js"></script><script src="./js/offline-policy.js"></script>')
   .replace(/<link rel="preconnect" href="https:\/\/fonts\.googleapis\.com">/, '')
   .replace(/<link rel="preconnect" href="https:\/\/fonts\.gstatic\.com" crossorigin>/, '')
   .replace(/<link href="https:\/\/fonts\.googleapis\.com\/css2\?[^>]+>/, '<link rel="stylesheet" href="./assets/fonts.css">')
