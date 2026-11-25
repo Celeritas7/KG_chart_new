@@ -7,6 +7,8 @@ on:
       - 'offline/runtime.js'
       - 'tools/build-offline.mjs'
       - 'tools/tests/u3d3a-outbox-hold.test.mjs'
+      - 'tools/tests/u3d1-offline-policy.test.mjs'
+      - 'tools/tests/u3d2a-scoped-pack.test.mjs'
       - 'docs/U3D3A-OUTBOX-REVIEW.md'
       - '.github/workflows/kg-u3d3a-outbox-hold.yml'
       - '.github/workflows/kg-u3d1-offline-policy.yml'
@@ -47,7 +49,7 @@ jobs:
           git diff --name-only "$BASE" HEAD | tee /tmp/u3d3a-files.txt
           while IFS= read -r path; do
             case "$path" in
-              offline/access-outbox.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|docs/U3D3A-OUTBOX-REVIEW.md|.github/workflows/kg-u3d3a-outbox-hold.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d2b2-private-playback.yml)
+              offline/access-outbox.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|docs/U3D3A-OUTBOX-REVIEW.md|.github/workflows/kg-u3d3a-outbox-hold.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d2b2-private-playback.yml)
                 ;;
               *)
                 echo "Unreviewed U3D3A file: $path"
