@@ -183,3 +183,36 @@ test('The scoped compiler is non-mutating and rejects missing source tables rath
  const missing=plain(source);delete missing[tables.vocabularyTranslations];
  assert.throws(()=>compile({data:missing}),/Restricted offline candidate refused/);
 });
+
+test('The preview is default-OFF, reads only scoped server queries, never promotes an old pack or queues media',async()=>{
+ const rt=await fs.readFile(new URL('offline/runtime.js',base),'utf8');
+ const build=await fs.readFile(new URL('tools/build-offline.mjs',base),'utf8');
+ const html=await fs.readFile(new URL('index.html',base),'utf8');
+ assert.match(rt,/const U3D1_OFFLINE_ACCESS_ENABLED = false/);
+ assert.match(rt,/const U3D2_SCOPED_PACK_PREVIEW_ENABLED = false/);
+ assert.match(html,/const U3C1_SCOPED_UI_ENABLED = false/);
+ assert.match(rt,/async function previewRestrictedPack\(lang\)/);
+ assert.match(rt,/await refreshVerifiedAccess\(\);guard\(\)/);
+ assert.match(rt,/live\.rpc\('kg_chart_my_private_lesson_visibility',\{p_language:lang\}\)/);
+ assert.match(rt,/live\.rpc\('kg_chart_u3c2_my_sentence_groups',\{p_language:lang\}\)/);
+ assert.match(rt,/pagedIds\(TABLES\.vocabulary,'topic_id',topicIds\)/);
+ assert.match(rt,/pagedIds\(TABLES\.vocabularyTranslations,'vocabulary_id',wordIds/);
+ assert.match(rt,/pagedIds\(TABLES\.sentences,'group_name',sentenceScope\.groups/);
+ assert.match(rt,/if\(!candidate\)throw Error\('Restricted content validator is unavailable\.'\)/);
+ assert.match(rt,/previewOnly:true,downloadable:false/);
+ assert.match(rt,/await previewRestrictedPack\(lang\); \/\/ read-only: returns NO media\/pack/);
+ const preview=rt.slice(rt.indexOf('  async function previewRestrictedPack(lang) {'),rt.indexOf('  function requiredMedia(',rt.indexOf('  async function previewRestrictedPack(lang) {')));
+ for(const mutation of ['cache.put(',"kv.put(pack",'caches.delete(', 'audioFiles(', 'requiredMedia(', 'downloadPack(', 'outbox.put('])
+   assert(!preview.includes(mutation),mutation+' must not be invoked by preview');
+ assert(build.includes("'offline/scoped-pack.js', 'js/offline-scoped-pack.js'"));
+ assert(build.includes('<script src="./js/offline-scoped-pack.js"></script><script src="./js/offline-runtime.js"></script>'));
+ assert(build.indexOf("'offline/scoped-pack.js'")<build.indexOf("'offline/runtime.js'"));
+});
+
+test('Empty or unverified topic translations and private-topic exclusion cannot be silently published',()=>{
+ const without=plain(source);
+ without[tables.topicTranslations]=without[tables.topicTranslations].filter(t=>t.topic_id!=='food'||t.language_code==='ja');
+ assert.throws(()=>compile({data:without}),/Restricted offline candidate refused/);
+ const denyAll={contract:1,topics:['food','friends_names'],groups:[]};
+ assert.throws(()=>compile({privateVisibility:denyAll}),/Restricted offline candidate refused/);
+});
