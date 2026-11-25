@@ -1,0 +1,67 @@
+name: KG Chart U3D3A - revision-aware restricted outbox hold (synthetic)
+
+on:
+  pull_request:
+    paths:
+      - 'offline/access-outbox.js'
+      - 'offline/runtime.js'
+      - 'tools/build-offline.mjs'
+      - 'tools/tests/u3d3a-outbox-hold.test.mjs'
+      - 'tools/tests/u3d1-offline-policy.test.mjs'
+      - 'tools/tests/u3d2a-scoped-pack.test.mjs'
+      - 'docs/U3D3A-OUTBOX-REVIEW.md'
+      - '.github/workflows/kg-u3d3a-outbox-hold.yml'
+      - '.github/workflows/kg-u3d1-offline-policy.yml'
+      - '.github/workflows/kg-u3d2a-scoped-pack.yml'
+      - '.github/workflows/kg-u3d2b1-private-media-stage.yml'
+      - '.github/workflows/kg-u3d2b2-private-playback.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restricted-outbox-no-upload:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test account/revision/legacy/denied queue preservation with fake data
+        run: |
+          set -euo pipefail
+          node --check offline/access-outbox.js
+          node --check offline/runtime.js
+          node --test tools/tests/u3d3a-outbox-hold.test.mjs tools/tests/u3d1-offline-policy.test.mjs tools/tests/u3d2a-scoped-pack.test.mjs tools/tests/u3d2b1-private-media-stage.test.mjs tools/tests/u3d2b2-private-playback.test.mjs offline/tests/private-lesson-privacy.test.mjs
+      - name: Verify default-OFF gate and exact review file boundary
+        run: |
+          set -euo pipefail
+          grep -Fq 'const U3C1_SCOPED_UI_ENABLED = false;' index.html
+          grep -Fq 'const U3D1_OFFLINE_ACCESS_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D2_SCOPED_PACK_PREVIEW_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D2B1_PRIVATE_MEDIA_STAGE_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D3A_OUTBOX_HOLD_ENABLED = false;' offline/runtime.js
+          BASE=$(git merge-base origin/main HEAD)
+          git diff --name-only "$BASE" HEAD | tee /tmp/u3d3a-files.txt
+          while IFS= read -r path; do
+            case "$path" in
+              offline/access-outbox.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|docs/U3D3A-OUTBOX-REVIEW.md|.github/workflows/kg-u3d3a-outbox-hold.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d2b2-private-playback.yml)
+                ;;
+              *)
+                echo "Unreviewed U3D3A file: $path"
+                exit 1
+                ;;
+            esac
+          done < /tmp/u3d3a-files.txt
+          if grep -Eq '^(sql/|supabase/|offline/sw.js|offline/pictures.js|offline/audio-manifest.js|index.html|js/kg-audio.js|js/kg-protected-image.mjs)' /tmp/u3d3a-files.txt; then
+            echo 'Production authorization, installed worker and public media are out of scope'
+            exit 1
+          fi
+
+# Does not contact live Supabase, OAuth, Cloudflare or user data. Both-edition
+# CI separately verifies no-network Chromium migration/rollback and preserved
+# original account packs, offline media and queued progress.
