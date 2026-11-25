@@ -109,7 +109,7 @@ function expectedType(signed){
   let ext,path='';
   try{
     path=new URL(signed).pathname;
-    ext=path.match(/\.[a-z]+$/i)?.[0]?.toLowerCase();
+    ext=path.match(/\.[a-z0-9]+$/i)?.[0]?.toLowerCase();
   }catch(_){failure('signed media location is not a valid URL');}
   for(const [type,suffix] of MIME_EXT)if(ext===suffix)return type;
   failure('unexpected private asset extension ('+String(ext)+', path ending '+path.slice(-8)+')');
