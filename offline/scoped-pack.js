@@ -105,7 +105,12 @@
     if(value.startsWith('https:')||value.startsWith('http:')||value.startsWith('/')||
        value.includes('url(')||value.includes('data:')||value.includes('blob:'))
       forbid('remote or embedded colour picture');
-    if(value.startsWith('emoji:'))return value;
+    if(value.startsWith('emoji:')){
+      const emoji=value.slice(6);
+      if(!emoji || !/^[\p{Emoji_Presentation}\p{Emoji}\u200d\ufe0f ]{1,30}$/u.test(emoji))
+        forbid('invalid local colour emoji');
+      return value;
+    }
     if(/^#[0-9a-f]{6}$/i.test(value))return value;
     if(/^[\p{Emoji_Presentation}\p{Emoji}\u200d\ufe0f ]{1,30}$/u.test(value))
       return value;
