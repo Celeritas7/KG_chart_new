@@ -27,6 +27,7 @@
   // production gate is deliberately enabled. Unknown policy = no public
   // media under that gate; restricted requests must carry a real source ID.
   let mediaGate = false, verifiedMediaAccess = null, protectedAttempt = 0;
+  let protectedPlayback = null;
   function canUsePublicMedia() {
     return !mediaGate || verifiedMediaAccess?.policy?.state === 'legacy';
   }
@@ -97,8 +98,30 @@
   function has(text, lang, resource) {
     if (!canUsePublicMedia()) {
       // No public hash-manifest lookup under a restricted/unknown policy.
-      return isProtectedMedia() && resource?.language === lang &&
-        !!resource?.type && !!norm(text) ? true : false;
+      // Client-side filtering improves UX only; the live signer and database
+      // always reauthorize the actual source before delivering bytes.
+      if (!isProtectedMedia() || !norm(text) || resource?.language !== lang)
+        return false;
+      const p = verifiedMediaAccess.policy;
+      if (!p?.languages?.includes(lang)) return false;
+      if (resource.type === 'word_audio' || resource.type === 'topic_audio') {
+        if (!p.topics?.includes(lang + '|' + resource.topicId)) return false;
+        if (resource.type === 'word_audio' &&
+            !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(String(resource.id || '')))
+          return false;
+        return true;
+      }
+      if (resource.type === 'sentence_audio') {
+        return /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(String(resource.id || '')) &&
+          verifiedMediaAccess.sentenceScope?.state === 'restricted' &&
+          verifiedMediaAccess.sentenceScope.serverEnforced === true &&
+          verifiedMediaAccess.sentenceScope.groups?.includes(resource.groupName);
+      }
+      if (resource.type === 'colour_audio') {
+        return p.features?.includes('quiz.colours') &&
+          /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(String(resource.id || ''));
+      }
+      return false;
     }
     const m = manifests[lang];
     if (m === undefined || m === 'loading') return 'loading';
@@ -118,9 +141,63 @@
   };
   const setCurrent = (c) => { current = c; emit(); };
   audio.addEventListener('playing', () => { if (current) setCurrent({ ...current, state: 'playing' }); });
-  audio.addEventListener('ended', () => setCurrent(null));
+  audio.addEventListener('ended', () => { if (isProtectedMedia()) stop(); else setCurrent(null); });
   audio.addEventListener('pause', () => { if (current && current.state === 'playing') setCurrent(null); });
-  audio.addEventListener('error', () => { if (current) { setCurrent(null); toast("Couldn't play this clip"); } });
+  audio.addEventListener('error', () => {
+    if (!current) return;
+    const p = protectedPlayback;
+    if (isProtectedMedia() && p && p.key === current.key && p.retries === 0) {
+      // Audio elements may perform a later byte-range request after a 30 s
+      // signed token expires. Reauthorize this exact source ONE time only.
+      p.retries = 1;
+      const position = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+      setCurrent({ key: p.key, state: 'loading' });
+      startProtectedPlayback(p, position);
+      return;
+    }
+    if (isProtectedMedia()) { stop(); toast('Protected audio unavailable. Tap to try again.'); }
+    else { setCurrent(null); toast("Couldn't play this clip"); }
+  });
+
+  function startProtectedPlayback(context, resumeAt = 0) {
+    const { attempt, key, resource, access, slow, silent } = context;
+    import('./kg-protected-player.mjs')
+      .then(({acquireProtectedMedia}) => {
+        if (attempt !== protectedAttempt || current?.key !== key) return null;
+        return acquireProtectedMedia({
+          kind: 'audio', resource, policy: access.policy,
+          sentenceScope: access.sentenceScope, supabase: access.supabase,
+          projectUrl: access.projectUrl,
+        });
+      })
+      .then(url => {
+        if (attempt !== protectedAttempt || current?.key !== key) return;
+        if (!url) {
+          stop();
+          if (!silent) toast('Protected audio unavailable');
+          return;
+        }
+        audio.src = url;
+        audio.playbackRate = slow ? SLOW_RATE : 1;
+        audio.defaultPlaybackRate = audio.playbackRate;
+        if ('preservesPitch' in audio) audio.preservesPitch = true;
+        try { audio.currentTime = resumeAt; } catch (_) {}
+        const playback = audio.play();
+        if (playback?.catch) playback.catch(error => {
+          if (attempt !== protectedAttempt || error?.name === 'AbortError') return;
+          stop();
+          // Async signing can lose a user gesture on some mobile browsers.
+          if (error?.name === 'NotAllowedError')
+            toast('Tap 🔊 again to start protected audio');
+          else if (!silent) toast("Couldn't play protected audio");
+        });
+      })
+      .catch(() => {
+        if (attempt !== protectedAttempt) return;
+        stop();
+        if (!silent) toast('Protected audio unavailable');
+      });
+  }
 
   function play(text, lang, opts) {
     const slow = !!(opts && opts.slow);
@@ -138,44 +215,11 @@
       stop();
       const attempt = ++protectedAttempt;
       setCurrent({ key, state: 'loading' });
-      // Dynamic import only while deliberately gated ON. The separate offline
-      // shell does not load this module during its ordinary legacy startup.
-      import('./kg-protected-player.mjs')
-        .then(({acquireProtectedMedia}) => {
-          // A stop, language switch or policy revision may win before the
-          // ESM module loads. In that case do not even contact the signer.
-          if (attempt !== protectedAttempt || current?.key !== key) return null;
-          return acquireProtectedMedia({
-            kind: 'audio', resource, policy: access.policy,
-            sentenceScope: access.sentenceScope, supabase: access.supabase,
-            projectUrl: access.projectUrl,
-          });
-        })
-        .then(url => {
-          if (attempt !== protectedAttempt || current?.key !== key) return;
-          if (!url) {
-            setCurrent(null);
-            if (!opts?.silent) toast('Protected audio unavailable');
-            return;
-          }
-          audio.src = url;
-          audio.currentTime = 0;
-          audio.playbackRate = slow ? SLOW_RATE : 1;
-          audio.defaultPlaybackRate = audio.playbackRate;
-          if ('preservesPitch' in audio) audio.preservesPitch = true;
-          const playback = audio.play();
-          if (playback?.catch) playback.catch(error => {
-            if (attempt === protectedAttempt && error?.name !== 'AbortError') {
-              setCurrent(null);
-              if (!opts?.silent) toast("Couldn't play protected audio");
-            }
-          });
-        })
-        .catch(() => {
-          if (attempt !== protectedAttempt) return;
-          setCurrent(null);
-          if (!opts?.silent) toast('Protected audio unavailable');
-        });
+      // Signed URLs are never cached. A late or revoked request cannot resume
+      // playback after switching language, identity or access revision.
+      protectedPlayback = { attempt, key, resource, access, slow,
+        silent: !!opts?.silent, retries: 0 };
+      startProtectedPlayback(protectedPlayback);
       return true;
     }
     const url = resolve(text, lang, opts && opts.voice);
@@ -199,6 +243,7 @@
   }
   function stop() {
     ++protectedAttempt;
+    protectedPlayback = null;
     audio.pause();
     if (mediaGate && audio.src?.includes('/object/sign/kg-chart-private-media/')) {
       audio.removeAttribute('src');

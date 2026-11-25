@@ -1,0 +1,49 @@
+name: KG Chart U3C2B2 - protected media complete-callsite contract (synthetic)
+
+on:
+  pull_request:
+    paths:
+      - 'index.html'
+      - 'js/kg-audio.js'
+      - 'js/kg-protected-image.mjs'
+      - 'js/kg-protected-player.mjs'
+      - 'tools/build-offline.mjs'
+      - 'tools/tests/u3c2b2-protected-media.test.mjs'
+      - 'docs/U3C2B2-PROTECTED-MEDIA-REVIEW.md'
+      - '.github/workflows/kg-u3c2b2-protected-media.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-bound-media:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Static checks and fake-source media/security contracts
+        run: |
+          set -euo pipefail
+          node --check js/kg-audio.js
+          node --check js/kg-protected-player.mjs
+          node --check js/kg-protected-image.mjs
+          node --test tools/tests/u3c2b2-protected-media.test.mjs tools/tests/u3c2b1-protected-player.test.mjs tools/tests/u3c2-protected-media-context.test.mjs
+      - name: Confirm feature gate remains off and no production routes changed
+        run: |
+          set -euo pipefail
+          grep -Fq 'const U3C1_SCOPED_UI_ENABLED = false;' index.html
+          BASE=$(git merge-base origin/main HEAD)
+          git diff --name-only "$BASE" HEAD | tee /tmp/u3c2b2-files.txt
+          if grep -Eq '^(sql/|supabase/|offline/runtime.js|offline/sw.js|offline/audio-manifest.js)' /tmp/u3c2b2-files.txt; then
+            echo 'Unexpected SQL/Edge or installed PWA runtime/worker change'
+            exit 1
+          fi
+
+# The full dual-edition workflow separately checks offline/unified artifacts
+# and network-isolated Chromium same-origin migration/compatible rollback.
+# This job does not contact or alter production Supabase/Cloudflare.

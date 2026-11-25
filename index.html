@@ -423,6 +423,19 @@
     // AUDIO (Phase 9): engine lives in js/kg-audio.js
     // ==========================================
     const useAudioState = () => React.useSyncExternalStore(window.KGAudio.subscribe, window.KGAudio.getVersion);
+    // U3C2B2: audio authorization is attached to the real resource, never to
+    // text, a shared hash or a cached screenshot. Server-side checks remain
+    // the only authorization boundary.
+    const wordAudioResource = (word, lang) => word && ({
+      type: 'word_audio', id: word.id, topicId: word.topic_id, language: lang,
+    });
+    const sentenceAudioResource = (sentence, lang) => sentence && ({
+      type: 'sentence_audio', id: sentence.id,
+      groupName: sentence.group_name, language: lang,
+    });
+    const colourAudioResource = (phrase, lang) => phrase && ({
+      type: 'colour_audio', id: phrase.id, language: lang,
+    });
 
     // U3C2B1 — source-bound picture integration for chart cards and details.
     // Remaining quiz/flashcard picture surfaces require the separate U3C2B2
@@ -436,6 +449,8 @@
         media?.ownerId, media?.policy?.revision, item?.id, item?.image_filename, topicId, languageCode,
       ]);
       const [signed, setSigned] = useState({ key: null, url: null });
+      const errorRef = React.useRef(onError);
+      errorRef.current = onError;
       useEffect(() => {
         if (!restricted || isEmoji || !media?.ownerId || !item?.id ||
             !topicId || !languageCode) return;
@@ -443,18 +458,31 @@
         setSigned({ key, url: null });
         // Resolve relative to the document: online Pages uses a /repo/ path
         // while separate-offline and unified editions use their own root.
-        import(new URL('./js/kg-protected-player.mjs', document.baseURI).href)
-          .then(({ acquireProtectedMedia }) => acquireProtectedMedia({
-            kind: 'image',
+        const controller = new AbortController();
+        let lease = null;
+        import(new URL('./js/kg-protected-image.mjs', document.baseURI).href)
+          .then(({loadProtectedWordPicture}) => loadProtectedWordPicture({
             resource: {
               type: 'word_image', id: item.id, topicId, language: languageCode,
             },
             policy: media.policy, sentenceScope: media.sentenceScope,
-            supabase, projectUrl: SUPABASE_URL,
+            supabase, projectUrl: SUPABASE_URL, signal: controller.signal,
           }))
-          .then(url => { if (!cancelled) setSigned({ key, url }); })
-          .catch(() => { if (!cancelled) setSigned({ key, url: null }); });
-        return () => { cancelled = true; };
+          .then(result => {
+            if (cancelled) { result?.release(); return; }
+            lease = result;
+            setSigned({ key, url: result?.url || null });
+            if (!result) errorRef.current?.(Error('Protected picture unavailable'));
+          })
+          .catch(() => {
+            if (!cancelled) {
+              setSigned({ key, url: null });
+              errorRef.current?.(Error('Protected picture unavailable'));
+            }
+          });
+        return () => {
+          cancelled = true; controller.abort(); lease?.release();
+        };
       }, [restricted, isEmoji, key]);
       const src = isEmoji ? getImageUrl(topicId, item.image_filename)
         : restricted ? (signed.key === key ? signed.url : null)
@@ -1330,7 +1358,7 @@
               </h2>
               <div className="mb-3 flex flex-wrap justify-center items-center gap-2">
                 <SpeakButton text={item.translation?.native_text} lang={languageCode} slow size="lg" resource={{ type: "word_audio", id: item.id, topicId, language: languageCode }} />
-                <PronounceCheck text={item.translation?.native_text} lang={languageCode} fontClass={fontClass} vocabularyId={item.id} source="word" compact />
+                <PronounceCheck text={item.translation?.native_text} lang={languageCode} fontClass={fontClass} vocabularyId={item.id} resource={wordAudioResource(item, languageCode)} source="word" compact />
               </div>
 
               {editingDev ? (
@@ -1796,7 +1824,7 @@
         const text = item.translation?.native_text;
         // KGAudio.play() toggles a clip OFF when that same clip is already playing (e.g. the card's own 🔊 was tapped): stop first so it always restarts
         window.KGAudio.stop();
-        const ok = !!text && window.KGAudio.play(text, languageCode, { slow: settingsRef.current.slow, silent: true });
+        const ok = !!text && window.KGAudio.play(text, languageCode, { slow: settingsRef.current.slow, silent: true, resource: wordAudioResource(item, languageCode) });
         if (!ok) advance(AUTOPLAY_NO_CLIP_MS);
       }, [playing, pos.n]);
 
@@ -1805,7 +1833,7 @@
         if (!playing) return;
         const text = items[pos.idx]?.translation?.native_text;
         if (!text) return;
-        if (window.KGAudio.stateOf(text, languageCode, settingsRef.current.slow)) { started.current = true; return; }
+        if (window.KGAudio.stateOf(text, languageCode, settingsRef.current.slow, wordAudioResource(items[pos.idx], languageCode))) { started.current = true; return; }
         if (started.current) {
           started.current = false;
           advance(pos.rep + 1 < settingsRef.current.times ? AUTOPLAY_GAP_MS : AUTOPLAY_NEXT_MS);
@@ -2049,7 +2077,7 @@
       try { return new Intl.DisplayNames(['en'], { type: 'language' }).of(langCode) || langCode; } catch (e) { return langCode; }
     };
     // Listen quizzes play even when auto-play is muted, and never toast
-    const playListen = (text, lang, slow = false) => { if (text) window.KGAudio.play(text, lang, { slow, silent: true }); };
+    const playListen = (text, lang, slow = false, resource = null) => { if (text) window.KGAudio.play(text, lang, { slow, silent: true, resource }); };
 
     // Level state for one learner in one language: kg_chart_user_levels when kg-chart-levels.sql has been run,
     // otherwise this device only (same formula, checked here).
@@ -2218,7 +2246,7 @@
         const counted = correct && hintsUsed === 0;
         setResult({ correct: counted, solvedWithHints: correct && hintsUsed > 0 });
         onAnswered(counted, builtText);
-        window.KGAudio.autoPlay(nativeText, languageCode);
+        window.KGAudio.autoPlay(nativeText, languageCode, undefined, wordAudioResource(item, languageCode));
       };
 
       const place = (key) => {
@@ -2292,7 +2320,7 @@
                 <div className="w-24 h-24 rounded-xl shadow-lg mx-auto" style={{ backgroundColor: item.extra_data.colorCode }} />
               ) : (
                 <div className="w-40 h-40 mx-auto flex items-center justify-center">
-                  <img src={getImageUrl(item.topic_id, item.image_filename)} alt="" onError={() => setImgFailed(true)} className="max-w-full max-h-full object-contain" />
+                  <ProtectedWordImage item={item} topicId={item.topic_id} languageCode={languageCode} alt="" onError={() => setImgFailed(true)} className="max-w-full max-h-full object-contain" />
                 </div>
               )
             ) : (
@@ -2359,7 +2387,7 @@
               </div>
               {result.solvedWithHints && <div className="text-sm text-gray-500 -mt-2 mb-3">Counted as wrong because a hint was used.</div>}
               <div className={`text-4xl font-bold text-gray-800 ${fontClass}`}>{nativeText}</div>
-              <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>
+              <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" resource={wordAudioResource(item, languageCode)} /></div>
               {item.translation?.devanagari && <div className="text-xl text-blue-600 font-devanagari mt-1">{item.translation.devanagari}</div>}
               <div className="text-sm text-gray-500 mt-1">{item.display_text}</div>
               {(mistakes > 0 || hinted.length > 0) && (
@@ -2445,7 +2473,7 @@
         const counted = correct && hints === 0;
         setResult({ correct: counted, solvedWithHints: correct && hints > 0, typed: value });
         onAnswered(counted, value);
-        window.KGAudio.autoPlay(nativeText, languageCode);
+        window.KGAudio.autoPlay(nativeText, languageCode, undefined, wordAudioResource(item, languageCode));
       };
       const check = () => {
         if (practice === 'typing' || practice === 'wrong') { setPractice(isRight(value) ? 'ok' : 'wrong'); return; }
@@ -2481,7 +2509,7 @@
             <div className="text-sm text-gray-400 mb-3">Type this word:</div>
             <div className={`text-4xl font-bold text-gray-800 ${fontClass}`}>{nativeText}</div>
             {showDev && <div className="text-xl text-blue-600 font-devanagari mt-1">{devText}</div>}
-            <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>
+            <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" resource={wordAudioResource(item, languageCode)} /></div>
           </>
         );
         if (level === 'dev') return (
@@ -2489,7 +2517,7 @@
             <div className="text-sm text-gray-400 mb-3">Type it in {languageName(languageCode)} script:</div>
             {devText ? <div className="text-4xl font-bold text-blue-600 font-devanagari">{devText}</div> : <div className="text-3xl font-bold text-gray-800">{item.display_text}</div>}
             {devText && <div className="text-sm text-gray-500 mt-1">{item.display_text}</div>}
-            <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>
+            <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" resource={wordAudioResource(item, languageCode)} /></div>
           </>
         );
         return (
@@ -2500,13 +2528,13 @@
                 <div className="w-24 h-24 rounded-xl shadow-lg mx-auto" style={{ backgroundColor: item.extra_data.colorCode }} />
               ) : (
                 <div className="w-40 h-40 mx-auto flex items-center justify-center">
-                  <img src={getImageUrl(item.topic_id, item.image_filename)} alt="" onError={() => setImgFailed(true)} className="max-w-full max-h-full object-contain" />
+                  <ProtectedWordImage item={item} topicId={item.topic_id} languageCode={languageCode} alt="" onError={() => setImgFailed(true)} className="max-w-full max-h-full object-contain" />
                 </div>
               )
             ) : (
               <div className="text-3xl font-bold text-gray-800">{item.display_text}</div>
             )}
-            {settings.sound && <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>}
+            {settings.sound && <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" resource={wordAudioResource(item, languageCode)} /></div>}
           </>
         );
       };
@@ -2578,7 +2606,7 @@
                 </div>
               )}
               <div className={`text-4xl font-bold text-gray-800 ${fontClass}`}>{nativeText}</div>
-              <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" /></div>
+              <div className="mt-3"><SpeakButton text={nativeText} lang={languageCode} slow size="lg" resource={wordAudioResource(item, languageCode)} /></div>
               {showDev && <div className="text-xl text-blue-600 font-devanagari mt-1">{devText}</div>}
               <div className="text-sm text-gray-500 mt-1">{item.display_text}</div>
               {practice === 'ok' && <div className="text-green-600 font-medium mt-3">✓ Typed correctly. Practice only, the score stays.</div>}
@@ -2748,7 +2776,7 @@
         setQuizOptions(frozen);
         setQuizWords(selected);
         // Play inside the tap itself: phones block sound that doesn't start from a tap
-        if (isListen && selected[0]) playListen(selected[0].translation?.native_text, languageCode);
+        if (isListen && selected[0]) playListen(selected[0].translation?.native_text, languageCode, false, wordAudioResource(selected[0], languageCode));
         setCurrentWordIndex(0);
         setScore({ correct: 0, total: 0 });
         setQuizAnswers([]);
@@ -2779,55 +2807,125 @@
 
       const [imageRetry, setImageRetry] = useState(0);
       const [imageLoad, setImageLoad] = useState({ key: '', status: 'loading' });
-      const quizImageUrl = (item) => {
-        const url = getImageUrl(item.topic_id, item.image_filename);
-        return imageRetry ? url + (url.includes('?') ? '&' : '?') + 'kg_retry=' + imageRetry : url;
-      };
+      const [privateQuizImages, setPrivateQuizImages] = useState({ key: null, urls: {} });
+      const mediaScope = useContext(KGMediaScopeContext);
+      const protectedQuizPictures = U3C1_SCOPED_UI_ENABLED && mediaScope?.policy?.state === 'restricted';
       const pictureOptions = ['native_to_image', 'devanagari_to_image', 'listen_to_image'].includes(quizType);
       const imageItems = pictureOptions ? options : quizType === 'image_to_native' ? [currentQuestion] : [];
-      const requiredImages = [...new Set(imageItems.filter(item => item && !item.extra_data?.colorCode).map(quizImageUrl))];
-      const imageKey = JSON.stringify([currentWordIndex, currentQuestion?.id, imageRetry, requiredImages]);
+      const requiredWordImages = imageItems.filter(item => item && !item.extra_data?.colorCode &&
+        (!protectedQuizPictures || !item.image_filename?.startsWith('emoji:')));
+      // For ordinary legacy learners, retain the existing saved public-media
+      // preloader exactly. For restricted learners, fetch only authorized
+      // source-bound pictures and render ephemeral in-memory URLs.
+      const legacyQuizImageUrl = (item) => {
+        const url = getImageUrl(item?.topic_id, item?.image_filename);
+        return url && imageRetry ? url + (url.includes('?') ? '&' : '?') + 'kg_retry=' + imageRetry : url;
+      };
+      const publicRequired = protectedQuizPictures ? [] :
+        [...new Set(requiredWordImages.map(legacyQuizImageUrl))];
+      const imageKey = JSON.stringify([
+        currentWordIndex, currentQuestion?.id, imageRetry,
+        protectedQuizPictures
+          ? [mediaScope?.ownerId, mediaScope?.policy?.revision, languageCode,
+            requiredWordImages.map(w => [w.id, w.topic_id, w.image_filename])]
+          : publicRequired,
+      ]);
+      const quizImageUrl = (item) => {
+        if (!item) return null;
+        if (protectedQuizPictures && !item.image_filename?.startsWith('emoji:'))
+          return privateQuizImages.key === imageKey ? privateQuizImages.urls[item.id] || null : null;
+        return legacyQuizImageUrl(item);
+      };
+      const privateImagesReady = !protectedQuizPictures ||
+        (privateQuizImages.key === imageKey &&
+          requiredWordImages.every(w => !!privateQuizImages.urls[w.id]));
       const imagesReady = currentQuestion === quizWords[currentWordIndex] &&
-        (!requiredImages.length || (imageLoad.key === imageKey && imageLoad.status === 'ready'));
+        (!requiredWordImages.length ||
+          (imageLoad.key === imageKey && imageLoad.status === 'ready' && privateImagesReady));
       useEffect(() => {
         if (!quizStarted || quizCompleted || isTyped || !currentQuestion) return;
         let cancelled = false;
-        const pending = [];
+        const controller = new AbortController();
+        const pending = [], privateLeases = [];
         setImageLoad({ key: imageKey, status: 'loading' });
         const timeout = setTimeout(() => {
+          if (protectedQuizPictures) controller.abort();
           if (!cancelled) setImageLoad({ key: imageKey, status: 'error' });
         }, 15000);
-        Promise.all(requiredImages.map(url => new Promise((resolve, reject) => {
-          const img = new Image(); pending.push(img);
-          img.onload = () => {
-            const decoded = img.decode ? img.decode() : Promise.resolve();
-            decoded.then(() => img.naturalWidth ? resolve() : reject()).catch(reject);
-          };
-          img.onerror = reject; img.src = url;
-        }))).then(() => {
+        const completed = () => {
           clearTimeout(timeout);
           if (!cancelled) setImageLoad({ key: imageKey, status: 'ready' });
-        }).catch(() => {
+        };
+        const failed = () => {
           clearTimeout(timeout);
           if (!cancelled) setImageLoad({ key: imageKey, status: 'error' });
-        });
-        return () => { cancelled = true; clearTimeout(timeout); pending.forEach(img => { img.onload = null; img.onerror = null; }); };
-      }, [quizStarted, quizCompleted, isTyped, imageKey]);
-      // Warm the next question's image cache without affecting readiness or scoring.
+        };
+        if (protectedQuizPictures) {
+          import(new URL('./js/kg-protected-image.mjs', document.baseURI).href)
+            .then(({ loadProtectedWordPicture }) => Promise.all(requiredWordImages.map(async word => {
+              const lease = await loadProtectedWordPicture({
+                resource: { type: 'word_image', id: word.id,
+                  topicId: word.topic_id, language: languageCode },
+                policy: mediaScope.policy, sentenceScope: mediaScope.sentenceScope,
+                supabase, projectUrl: SUPABASE_URL, signal: controller.signal,
+              });
+              if (cancelled) { lease?.release(); throw Error('Picture request cancelled'); }
+              if (!lease) throw Error('Protected picture is not available');
+              privateLeases.push(lease);
+              // The clock must not start on a valid MIME header but corrupt
+              // image bytes. Decode each protected option before scoring.
+              await new Promise((resolve, reject) => {
+                const img = new Image(); pending.push(img);
+                img.onload = () => {
+                  const decoded = img.decode ? img.decode() : Promise.resolve();
+                  decoded.then(() => img.naturalWidth ? resolve() : reject(Error('Unrenderable picture')))
+                    .catch(reject);
+                };
+                img.onerror = reject;
+                img.src = lease.url;
+              });
+              if (cancelled || controller.signal.aborted) throw Error('Picture request cancelled');
+              return [word.id, lease.url];
+            })))
+            .then(rows => {
+              if (cancelled) return;
+              setPrivateQuizImages({ key: imageKey, urls: Object.fromEntries(rows) });
+              completed();
+            }).catch(failed);
+        } else {
+          Promise.all(publicRequired.map(url => new Promise((resolve, reject) => {
+            if (!url) { reject(Error('Missing published picture')); return; }
+            const img = new Image(); pending.push(img);
+            img.onload = () => {
+              const decoded = img.decode ? img.decode() : Promise.resolve();
+              decoded.then(() => img.naturalWidth ? resolve() : reject()).catch(reject);
+            };
+            img.onerror = reject; img.src = url;
+          }))).then(completed).catch(failed);
+        }
+        return () => {
+          cancelled = true; controller.abort(); clearTimeout(timeout);
+          pending.forEach(img => { img.onload = null; img.onerror = null; });
+          privateLeases.forEach(lease => lease.release());
+        };
+      }, [quizStarted, quizCompleted, isTyped, imageKey, protectedQuizPictures]);
+      // Signed URLs expire quickly. Never warm private pictures for later
+      // questions using public cache entries or soon-to-expire signatures.
       useEffect(() => {
-        if (!quizStarted || quizCompleted || isTyped) return;
+        if (protectedQuizPictures || !quizStarted || quizCompleted || isTyped) return;
         const next = quizWords[currentWordIndex + 1];
         const items = pictureOptions ? (quizOptions[currentWordIndex + 1] || []) : quizType === 'image_to_native' && next ? [next] : [];
         items.filter(item => !item.extra_data?.colorCode).forEach(item => {
-          const image = new Image(); image.src = getImageUrl(item.topic_id, item.image_filename);
+          const url = getImageUrl(item.topic_id, item.image_filename);
+          if (url) { const image = new Image(); image.src = url; }
         });
-      }, [quizStarted, quizCompleted, isTyped, quizWords, quizOptions, currentWordIndex, quizType]);
+      }, [protectedQuizPictures, quizStarted, quizCompleted, isTyped, quizWords, quizOptions, currentWordIndex, quizType]);
 
       const handleAnswer = (item) => {
         if (showResult || !imagesReady) return;
         setSelectedAnswer(item);
         setShowResult(true);
-        window.KGAudio.autoPlay(currentQuestion.translation?.native_text, languageCode);
+        window.KGAudio.autoPlay(currentQuestion.translation?.native_text, languageCode, undefined, wordAudioResource(currentQuestion, languageCode));
         const isCorrect = item.id === currentQuestion.id;
         setScore(prev => ({ correct: prev.correct + (isCorrect ? 1 : 0), total: prev.total + 1 }));
         // Track answer for session persistence
@@ -2848,7 +2946,7 @@
         if (showResult || !currentQuestion || !imagesReady) return;
         setSelectedAnswer({ id: '__timeout', timeout: true });
         setShowResult(true);
-        window.KGAudio.autoPlay(currentQuestion.translation?.native_text, languageCode);
+        window.KGAudio.autoPlay(currentQuestion.translation?.native_text, languageCode, undefined, wordAudioResource(currentQuestion, languageCode));
         setScore(prev => ({ correct: prev.correct, total: prev.total + 1 }));
         setQuizAnswers(prev => [...prev, {
           vocabulary_id: currentQuestion.id,
@@ -2896,7 +2994,7 @@
 
       const nextQuestion = () => {
         if (currentWordIndex + 1 >= quizWords.length) { setQuizCompleted(true); return; }
-        if (isListen) playListen(quizWords[currentWordIndex + 1]?.translation?.native_text, languageCode);
+        if (isListen) playListen(quizWords[currentWordIndex + 1]?.translation?.native_text, languageCode, false, wordAudioResource(quizWords[currentWordIndex + 1], languageCode));
         setCurrentWordIndex(prev => prev + 1);
       };
 
@@ -2917,7 +3015,7 @@
             const num = parseInt(e.key);
             if (num >= 1 && num <= options.length && options[num - 1]) handleAnswer(options[num - 1]);
           }
-          if ((e.key === 'r' || e.key === 'R') && isListen && currentQuestion) playListen(currentQuestion.translation?.native_text, languageCode);
+          if ((e.key === 'r' || e.key === 'R') && isListen && currentQuestion) playListen(currentQuestion.translation?.native_text, languageCode, false, wordAudioResource(currentQuestion, languageCode));
         };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
@@ -3024,7 +3122,7 @@
 
                 {isListen && (() => {
                   const sample = playableVocab.find(v => v.translation?.native_text);
-                  const avail = sample ? window.KGAudio.has(sample.translation.native_text, languageCode) : false;
+                  const avail = sample ? window.KGAudio.has(sample.translation.native_text, languageCode, wordAudioResource(sample, languageCode)) : false;
                   return avail === false ? (
                     <div className="bg-yellow-50 text-yellow-800 rounded-2xl p-4 text-sm">
                       No recordings for {languageName(languageCode)} yet, so you'll {quizType === 'listen_to_image' ? 'read the word' : 'see the English word or picture'} instead of hearing it. Answers still count.
@@ -3233,7 +3331,7 @@
               <>
                 <div className={`text-4xl font-bold text-gray-800 mb-2 ${fontClass}`}>{currentQuestion.translation?.native_text}</div>
                 {showHint && hintLine(currentQuestion, 'text-xl')}
-                <div className="mt-4"><SpeakButton text={currentQuestion.translation?.native_text} lang={languageCode} slow size="lg" /></div>
+                <div className="mt-4"><SpeakButton text={currentQuestion.translation?.native_text} lang={languageCode} slow size="lg" resource={wordAudioResource(currentQuestion, languageCode)} /></div>
               </>
             )}
             {quizType === 'image_to_native' && (
@@ -3250,7 +3348,7 @@
             )}
             {isListen && (() => {
               const text = currentQuestion.translation?.native_text;
-              const avail = window.KGAudio.has(text, languageCode);
+              const avail = window.KGAudio.has(text, languageCode, wordAudioResource(currentQuestion, languageCode));
               if (avail === false) {
                 // No clip yet: show something else to answer from; the answer still counts
                 return quizType === 'listen_to_image' ? (
@@ -3273,13 +3371,13 @@
                   </>
                 );
               }
-              const st = window.KGAudio.stateOf(text, languageCode, false);
+              const st = window.KGAudio.stateOf(text, languageCode, false, wordAudioResource(currentQuestion, languageCode));
               return (
                 <>
                   <div className="flex items-center justify-center gap-4">
-                    <button onClick={() => playListen(text, languageCode)} title="Play (R)" disabled={avail === 'loading'}
+                    <button onClick={() => playListen(text, languageCode, false, wordAudioResource(currentQuestion, languageCode))} title="Play (R)" disabled={avail === 'loading'}
                       className={`w-20 h-20 rounded-full text-white text-3xl shadow-lg active:scale-95 transition-all ${st === 'playing' ? 'bg-jade-700 scale-105' : 'bg-jade-600 hover:bg-jade-700'} ${avail === 'loading' ? 'opacity-50 animate-pulse' : ''}`}>🔊</button>
-                    <button onClick={() => playListen(text, languageCode, true)} title="Play slowly" disabled={avail === 'loading'}
+                    <button onClick={() => playListen(text, languageCode, true, wordAudioResource(currentQuestion, languageCode))} title="Play slowly" disabled={avail === 'loading'}
                       className="w-14 h-14 rounded-full bg-gray-100 text-2xl hover:bg-gray-200 active:scale-95 transition-transform">🐢</button>
                   </div>
                   <div className="text-xs text-gray-400 mt-3">Tap 🔊 to hear it again<span className="hidden sm:inline"> (R)</span></div>
@@ -3324,7 +3422,7 @@
                     <>
                       <div className={`text-lg font-semibold text-gray-800 ${fontClass}`}>{opt.translation?.native_text}</div>
                       {showHint && <div className="text-sm text-blue-600 font-devanagari mt-1">{opt.translation?.devanagari}</div>}
-                      {(quizType !== 'listen_to_native' || showResult) && <div className="mt-2 flex justify-center"><SpeakButton text={opt.translation?.native_text} lang={languageCode} size="sm" /></div>}
+                      {(quizType !== 'listen_to_native' || showResult) && <div className="mt-2 flex justify-center"><SpeakButton text={opt.translation?.native_text} lang={languageCode} size="sm" resource={wordAudioResource(opt, languageCode)} /></div>}
                     </>
                   )}
                 </button>
@@ -3343,7 +3441,7 @@
               </div>
               <div className="flex items-center justify-center gap-3 mb-1">
                 <span className={`text-2xl font-semibold text-gray-800 ${fontClass}`}>{currentQuestion.translation?.native_text}</span>
-                <SpeakButton text={currentQuestion.translation?.native_text} lang={languageCode} slow />
+                <SpeakButton text={currentQuestion.translation?.native_text} lang={languageCode} slow resource={wordAudioResource(currentQuestion, languageCode)} />
               </div>
               <div className="flex items-center justify-center gap-2 mb-4 min-h-[2rem]">
                 {currentQuestion.translation?.devanagari && <span className="text-lg text-blue-600 font-devanagari">{currentQuestion.translation.devanagari}</span>}
@@ -3409,11 +3507,11 @@
       { id: 'recall', icon: '🖼️', label: 'From the picture', help: 'See the picture and meaning, say the word from memory. Peek only if stuck.' },
       { id: 'read', icon: '👀', label: 'Read it aloud', help: 'See the word, say it. Just pronunciation.' },
     ];
-    function SayPicture({ item }) {
+    function SayPicture({ item, languageCode }) {
       const [failed, setFailed] = useState(false);
       if (item.extra_data?.colorCode) return <div className="w-24 h-24 rounded-xl shadow-lg mx-auto" style={{ backgroundColor: item.extra_data.colorCode }} />;
       if (!item.image_filename || failed) return null;
-      return <div className="w-36 h-36 mx-auto flex items-center justify-center"><img src={getImageUrl(item.topic_id, item.image_filename)} alt="" onError={() => setFailed(true)} className="max-w-full max-h-full object-contain" /></div>;
+      return <div className="w-36 h-36 mx-auto flex items-center justify-center"><ProtectedWordImage item={item} topicId={item.topic_id} languageCode={languageCode} alt="" onError={() => setFailed(true)} className="max-w-full max-h-full object-contain" /></div>;
     }
 
     function SayItView({ topics, vocabulary, languageCode, user, modeToggle }) {
@@ -3543,19 +3641,19 @@
           </div>
           <div className="w-full bg-gray-200 rounded-full h-2 mb-4"><div className="bg-jade-500 h-2 rounded-full transition-all" style={{ width: `${(idx / items.length) * 100}%` }} /></div>
           <div data-say-card className="bg-white rounded-3xl shadow-xl p-6 text-center">
-            <SayPicture item={item} />
+            <SayPicture item={item} languageCode={languageCode} />
             <div className="text-xl text-gray-600 mt-3">{item.display_text}</div>
             {shown ? (
               <div className="mt-3">
                 <div className={`text-3xl font-bold text-gray-800 ${fontClass}`}>{item.translation.native_text}</div>
                 {item.translation.devanagari && item.translation.devanagari !== item.translation.native_text && <div className="text-lg text-blue-600 font-devanagari">{item.translation.devanagari}</div>}
-                {(peek || res) && <div className="mt-2 flex justify-center"><SpeakButton text={item.translation.native_text} lang={languageCode} slow size="sm" /></div>}
+                {(peek || res) && <div className="mt-2 flex justify-center"><SpeakButton text={item.translation.native_text} lang={languageCode} slow size="sm" resource={wordAudioResource(item, languageCode)} /></div>}
               </div>
             ) : (
               <button onClick={() => setPeek(true)} className="mt-3 px-4 py-2 rounded-full bg-gray-100 text-gray-600 text-sm hover:bg-gray-200">👀 Show the word</button>
             )}
             <div className="mt-5">
-              <PronounceCheck key={item.id} text={item.translation.native_text} lang={languageCode} fontClass={fontClass} vocabularyId={item.id} source="word"
+              <PronounceCheck key={item.id} text={item.translation.native_text} lang={languageCode} fontClass={fontClass} vocabularyId={item.id} resource={wordAudioResource(item, languageCode)} source="word"
                 onResult={(r) => setResults(m => ({ ...m, [item.id]: { score: r.score, peeked: style === 'recall' && peek } }))} />
             </div>
           </div>
@@ -3748,7 +3846,7 @@
         if (showResult || !item) return;
         setSelected(opt);
         setShowResult(true);
-        window.KGAudio.autoPlay(item.s.native_text, languageCode);
+        window.KGAudio.autoPlay(item.s.native_text, languageCode, undefined, sentenceAudioResource(item.s, languageCode));
         record(opt.id === item.s.id, opt.id, sType === 'sentence_to_meaning' ? opt.display_text : opt.native_text);
       };
 
@@ -3760,14 +3858,14 @@
         const built = placedText();
         const ok = built.length === item.pieces.length && built.every((t, i) => t === item.pieces[i]);
         setShowResult(true);
-        window.KGAudio.autoPlay(item.s.native_text, languageCode);
+        window.KGAudio.autoPlay(item.s.native_text, languageCode, undefined, sentenceAudioResource(item.s, languageCode));
         record(ok, ok ? item.s.id : null, joinSentence(built, languageCode));
       };
       const giveUp = () => {
         if (showResult || !item) return;
         setGaveUp(true);
         setShowResult(true);
-        window.KGAudio.autoPlay(item.s.native_text, languageCode);
+        window.KGAudio.autoPlay(item.s.native_text, languageCode, undefined, sentenceAudioResource(item.s, languageCode));
         record(false, null, joinSentence(placedText(), languageCode));
       };
 
@@ -3802,8 +3900,8 @@
       }, [started, completed, item, showResult, placed, isBuild]);
 
       // 🔊 only when this sentence has a clip (run tools/gen_kg_audio.py after adding sentences)
-      const SpeakBtn = ({ text, small }) => (window.KGAudio.has(text, languageCode) === true
-        ? <SpeakButton text={text} lang={languageCode} slow={!small} size={small ? 'sm' : 'lg'} />
+      const SpeakBtn = ({ sentence, small }) => (window.KGAudio.has(sentence?.native_text, languageCode, sentenceAudioResource(sentence, languageCode)) === true
+        ? <SpeakButton text={sentence.native_text} lang={languageCode} slow={!small} size={small ? 'sm' : 'lg'} resource={sentenceAudioResource(sentence, languageCode)} />
         : null);
 
       // flag = the sentence: a 🚩 next to the blue line, so it can be flagged before answering too
@@ -3971,7 +4069,7 @@
               <>
                 <div className="text-sm text-gray-400 mb-4">What does this mean?</div>
                 <NativeLine text={s.native_text} size="text-3xl" flag={s} />
-                <div className="mt-3"><SpeakBtn text={s.native_text} /></div>
+                <div className="mt-3"><SpeakBtn sentence={s} /></div>
               </>
             ) : (
               <>
@@ -4041,7 +4139,7 @@
               <div className="bg-white rounded-2xl shadow p-4 mb-4 inline-block max-w-full">
                 <div className="flex items-center justify-center gap-3">
                   <div><NativeLine text={s.native_text} size="text-2xl" /></div>
-                  <SpeakBtn text={s.native_text} small />
+                  <SpeakBtn sentence={s} small />
                 </div>
                 <div className="text-gray-600 mt-2">{s.display_text}</div>
                 {s.notes && <div className="text-xs text-gray-400 mt-2">📝 {s.notes}</div>}
@@ -4136,7 +4234,7 @@
     }
 
     // The score card (one design for every language)
-    function PronResult({ result, text, lang, fontClass, voice, onAgain }) {
+    function PronResult({ result, text, lang, fontClass, voice, resource, onAgain }) {
       const L = pronLabel(result.score);
       const chip = (w) => {
         if (w.error === 'Omission') return 'border-2 border-red-300 text-red-700 bg-white';
@@ -4164,7 +4262,7 @@
           )}
           <div className="text-[11px] text-gray-400 mt-2">Green = good · amber = close · red = said differently · outlined = missed</div>
           <div className="flex flex-wrap gap-2 mt-3">
-            <button onClick={() => window.KGAudio.play(text, lang, { voice })} className="px-3 py-1.5 rounded-full bg-white border text-sm hover:bg-gray-50">🔊 Hear it</button>
+            <button onClick={() => window.KGAudio.play(text, lang, { voice, resource })} className="px-3 py-1.5 rounded-full bg-white border text-sm hover:bg-gray-50">🔊 Hear it</button>
             <button onClick={onAgain} className="px-3 py-1.5 rounded-full bg-white border text-sm hover:bg-gray-50">↺ Again</button>
             {result.limit ? <span className="text-[11px] text-gray-400 self-center ml-auto">{result.used}/{result.limit} today</span> : null}
           </div>
@@ -4173,7 +4271,7 @@
     }
 
     // 🎙️ button + recording + checking + card. Hidden when signed out or the browser can't record.
-    function PronounceCheck({ text, lang, fontClass, vocabularyId, sentenceId, source = 'word', voice, label = '🎙️ Say it', compact = false, onResult }) {
+    function PronounceCheck({ text, lang, fontClass, vocabularyId, sentenceId, source = 'word', voice, resource, label = '🎙️ Say it', compact = false, onResult }) {
       const { user } = useAuth();
       const [state, setState] = useState('idle'); // idle | recording | checking | result | error
       const [result, setResult] = useState(null);
@@ -4250,7 +4348,7 @@
           ) : null}
           {state === 'idle' && !noticeSeen && <p className="text-[11px] text-gray-400 mt-1">Your recording is sent to Microsoft Azure to be checked and is not saved.</p>}
           {state === 'error' && <p role="alert" className="text-sm text-red-600 mt-2">{message}</p>}
-          {state === 'result' && result && <div className="mt-2"><PronResult result={result} text={text} lang={lang} fontClass={fontClass} voice={voice} onAgain={again} /></div>}
+          {state === 'result' && result && <div className="mt-2"><PronResult result={result} text={text} lang={lang} fontClass={fontClass} voice={voice} resource={resource} onAgain={again} /></div>}
         </div>
       );
     }
@@ -4501,11 +4599,11 @@
         if (!line) { setPlaying(-1); return; }
         playStarted.current = false;
         // No clip yet: pause about as long as the line takes to say, so the highlight still moves on
-        if (!window.KGAudio.play(line.native_text, languageCode, { silent: true, voice: speakerVoice(line) })) playNextIn(800 + 90 * line.native_text.length);
+        if (!window.KGAudio.play(line.native_text, languageCode, { silent: true, voice: speakerVoice(line), resource: sentenceAudioResource(line, languageCode) })) playNextIn(800 + 90 * line.native_text.length);
       }, [step, playing]);
       useEffect(() => {
         if (step !== 'listen' || playing < 0 || !lines[playing]) return;
-        if (window.KGAudio.stateOf(lines[playing].native_text, languageCode, false)) { playStarted.current = true; return; }
+        if (window.KGAudio.stateOf(lines[playing].native_text, languageCode, false, sentenceAudioResource(lines[playing], languageCode))) { playStarted.current = true; return; }
         if (playStarted.current) { playStarted.current = false; playNextIn(500); }
       }, [audioVersion]);
 
@@ -4540,7 +4638,7 @@
 
       // ---------- step 2: judge each line; a miss comes back at the end ----------
       const lineIdx = queue[0];
-      const reveal = () => { setRevealed(true); window.KGAudio.autoPlay(lines[lineIdx].native_text, languageCode, speakerVoice(lines[lineIdx])); };
+      const reveal = () => { setRevealed(true); window.KGAudio.autoPlay(lines[lineIdx].native_text, languageCode, speakerVoice(lines[lineIdx]), sentenceAudioResource(lines[lineIdx], languageCode)); };
       const judge = (ok) => {
         const ft = lineIdx in firstTry ? firstTry : { ...firstTry, [lineIdx]: ok };
         const next = ok ? queue.slice(1) : [...queue.slice(1), lineIdx];
@@ -4554,7 +4652,7 @@
       };
 
       // ---------- step 3 ----------
-      const peek = (i) => { setPeeked(p => new Set([...p, i])); window.KGAudio.autoPlay(lines[i].native_text, languageCode, speakerVoice(lines[i])); };
+      const peek = (i) => { setPeeked(p => new Set([...p, i])); window.KGAudio.autoPlay(lines[i].native_text, languageCode, speakerVoice(lines[i]), sentenceAudioResource(lines[i], languageCode)); };
 
       const LineText = ({ s, size = 'text-xl' }) => {
         const dev = sentenceHint(s.native_text, languageCode);
@@ -4672,7 +4770,7 @@
                       <LineText s={s} />
                       <div className="text-sm text-gray-500 mt-1"><Speaker s={s} />{s.display_text}</div>
                       <div className="flex gap-1 items-center mt-2">
-                        <SpeakButton text={s.native_text} lang={languageCode} slow size="sm" voice={speakerVoice(s)} />
+                        <SpeakButton text={s.native_text} lang={languageCode} slow size="sm" voice={speakerVoice(s)} resource={sentenceAudioResource(s, languageCode)} />
                         <FlagButton compact onClick={() => { stopAll(); setFlagLine(s); }} />
                       </div>
                     </div>
@@ -4703,9 +4801,9 @@
                 <div className="text-2xl font-semibold text-gray-800 mb-2"><Speaker s={s} />{s.display_text}</div>
                 <p className="text-sm text-gray-500 mb-4">Say it out loud{revealed ? '' : ', then check'}.</p>
                 <div className="flex justify-center gap-2 mb-4">
-                  <SpeakButton text={s.native_text} lang={languageCode} slow voice={speakerVoice(s)} />
+                  <SpeakButton text={s.native_text} lang={languageCode} slow voice={speakerVoice(s)} resource={sentenceAudioResource(s, languageCode)} />
                 </div>
-                <div className="mb-4"><PronounceCheck key={turn} text={s.native_text} lang={languageCode} fontClass={fontClass} sentenceId={s.id} source="speak_lines"
+                <div className="mb-4"><PronounceCheck key={turn} text={s.native_text} lang={languageCode} fontClass={fontClass} sentenceId={s.id} resource={sentenceAudioResource(s, languageCode)} source="speak_lines"
                   voice={speakerVoice(s)} label="🎙️ Check me" onResult={(r) => { setPronSuggest(r.score >= PRON_SUGGEST_RIGHT ? 'right' : 'again'); setRevealed(true); }} /></div>
                 <div className="mb-5"><VoiceRecorder key={turn} /></div>
                 {revealed ? (
@@ -4750,7 +4848,7 @@
                     </div>
                     <div className="shrink-0">
                       {open
-                        ? <SpeakButton text={s.native_text} lang={languageCode} size="sm" voice={speakerVoice(s)} />
+                        ? <SpeakButton text={s.native_text} lang={languageCode} size="sm" voice={speakerVoice(s)} resource={sentenceAudioResource(s, languageCode)} />
                         : <button onClick={() => peek(i)} title="Peek at this line" className="w-8 h-8 rounded-full bg-white border border-gray-200 hover:border-yellow-400">💡</button>}
                     </div>
                   </div>
@@ -4890,12 +4988,12 @@
         setPhase('run');
       };
       const item = items[idx];
-      useEffect(() => { if (phase === 'run' && item && isListen && !picked) window.KGAudio.play(item.p.native, languageCode, { silent: true }); }, [phase, idx]);
+      useEffect(() => { if (phase === 'run' && item && isListen && !picked) window.KGAudio.play(item.p.native, languageCode, { silent: true, resource: colourAudioResource(item.p, languageCode) }); }, [phase, idx]);
       const choose = (o) => {
         if (picked || !item) return;
         setPicked(o);
         setScore(s => ({ correct: s.correct + (o.id === item.p.id ? 1 : 0), total: s.total + 1 }));
-        window.KGAudio.autoPlay(item.p.native, languageCode);
+        window.KGAudio.autoPlay(item.p.native, languageCode, undefined, colourAudioResource(item.p, languageCode));
       };
       const next = async () => {
         if (idx + 1 < items.length) { setIdx(i => i + 1); setPicked(null); return; }
@@ -4916,7 +5014,7 @@
           if (picked) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); next(); } return; }
           const n = parseInt(e.key);
           if (n >= 1 && n <= (item?.options.length || 0)) choose(item.options[n - 1]);
-          if ((e.key === 'r' || e.key === 'R') && item) window.KGAudio.play(item.p.native, languageCode, { silent: true });
+          if ((e.key === 'r' || e.key === 'R') && item) window.KGAudio.play(item.p.native, languageCode, { silent: true, resource: colourAudioResource(item.p, languageCode) });
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
@@ -5009,11 +5107,11 @@
             {toText ? (
               <div className="w-40 h-40 mx-auto bg-slate-100 rounded-3xl p-3"><ColourPicture item={p} size="w-32 h-32" /></div>
             ) : isListen && !picked ? (
-              <button onClick={() => window.KGAudio.play(p.native, languageCode, { silent: true })} className="w-24 h-24 rounded-full bg-jade-600 text-white text-4xl shadow-lg hover:bg-jade-700" title="Play again (R)">🔊</button>
+              <button onClick={() => window.KGAudio.play(p.native, languageCode, { silent: true, resource: colourAudioResource(p, languageCode) })} className="w-24 h-24 rounded-full bg-jade-600 text-white text-4xl shadow-lg hover:bg-jade-700" title="Play again (R)">🔊</button>
             ) : (
               <>
                 <PhraseText p={p} />
-                <div className="mt-3 flex justify-center items-center gap-2"><SpeakButton text={p.native} lang={languageCode} slow /><FlagButton compact onClick={() => openFlag(p)} /></div>
+                <div className="mt-3 flex justify-center items-center gap-2"><SpeakButton text={p.native} lang={languageCode} slow resource={colourAudioResource(p, languageCode)} /><FlagButton compact onClick={() => openFlag(p)} /></div>
               </>
             )}
             <p className="text-sm text-gray-500 mt-4">{toText ? 'Which phrase is this?' : 'Which picture is it?'}</p>
@@ -5036,7 +5134,7 @@
               <div className="inline-block bg-white rounded-2xl shadow p-4 mb-4">
                 <PhraseText p={p} size="text-2xl" />
                 <div className="text-gray-500 text-sm mt-1">{p.meaning}</div>
-                <div className="mt-2 flex justify-center items-center gap-1"><SpeakButton text={p.native} lang={languageCode} size="sm" /><FlagButton compact onClick={() => openFlag(p)} /></div>
+                <div className="mt-2 flex justify-center items-center gap-1"><SpeakButton text={p.native} lang={languageCode} size="sm" resource={colourAudioResource(p, languageCode)} /><FlagButton compact onClick={() => openFlag(p)} /></div>
               </div>
               <div><button onClick={next} className="px-8 py-3 bg-blue-600 text-white rounded-full font-bold hover:bg-blue-700">{idx + 1 >= items.length ? 'See Results' : 'Next →'} <span className="text-blue-300 text-sm hidden sm:inline ml-1">↵</span></button></div>
             </div>
@@ -5385,7 +5483,7 @@
                 {item.kind === 'w' && (item.v.extra_data?.colorCode || item.v.image_filename) && (
                   <div className="w-28 h-28 mx-auto flex items-center justify-center mb-3">
                     {item.v.extra_data?.colorCode ? <div className="w-24 h-24 rounded-xl shadow-lg" style={{ backgroundColor: item.v.extra_data.colorCode }} />
-                      : item.v.image_filename ? <img src={getImageUrl(item.v.topic_id, item.v.image_filename)} alt="" className="max-w-full max-h-full object-contain" /> : null}
+                      : item.v.image_filename ? <ProtectedWordImage item={item.v} topicId={item.v.topic_id} languageCode={languageCode} alt="" className="max-w-full max-h-full object-contain" /> : null}
                   </div>
                 )}
                 <div className="text-2xl font-bold text-gray-800">{item.meaning}</div>
@@ -5649,7 +5747,7 @@
                       {current.extra_data?.colorCode ? (
                         <div className="w-24 h-24 rounded-xl shadow-lg" style={{ backgroundColor: current.extra_data.colorCode }} />
                       ) : (
-                        <img src={getImageUrl(current.topic_id, current.image_filename)} alt="" draggable="false" className="max-w-full max-h-full object-contain pointer-events-none" />
+                        <ProtectedWordImage item={current} topicId={current.topic_id} languageCode={languageCode} alt="" draggable="false" className="max-w-full max-h-full object-contain pointer-events-none" />
                       )}
                     </div>
                     <div className="text-3xl font-bold text-gray-800 text-center">{current.display_text}</div>
@@ -5658,7 +5756,7 @@
                 </div>
               </div>
               <div className="flex justify-center items-center gap-3 mb-3">
-                <SpeakButton text={current.translation?.native_text} lang={languageCode} slow size="lg" />
+                <SpeakButton text={current.translation?.native_text} lang={languageCode} slow size="lg" resource={wordAudioResource(current, languageCode)} />
                 <FlagButton onClick={() => setFlagCard(current)} />
                 <button onClick={() => advance(current.id)} className="px-4 py-2 bg-gray-100 rounded-full text-sm font-medium text-gray-600 hover:bg-gray-200">Skip → <span className="hidden sm:inline text-gray-400 text-xs">(→)</span></button>
               </div>
@@ -6037,7 +6135,7 @@
               </div>
             </div>
             <WordNote note={item.translation?.notes} languageCode={languageCode} className="-mt-2 mb-4" />
-            <div className="mb-4 flex justify-center"><PronounceCheck text={item.translation?.native_text} lang={languageCode} fontClass={fontClass} vocabularyId={item.id} source="word" /></div>
+            <div className="mb-4 flex justify-center"><PronounceCheck text={item.translation?.native_text} lang={languageCode} fontClass={fontClass} vocabularyId={item.id} resource={wordAudioResource(item, languageCode)} source="word" /></div>
             <div className="space-y-2">
               {(() => {
                 const last = pronList.slice(0, STRENGTH_WINDOW).reverse(); // oldest → newest, like the quiz rows
@@ -6175,7 +6273,13 @@
       const [auto, setAuto] = useState(() => api?.autoEnabled() || false);
       const [wifiOnly, setWifiOnly] = useState(() => api?.wifiOnly() || false);
       const [error, setError] = useState('');
-      const urls = useMemo(() => api ? api.normalize(vocabulary.filter(v => !v.extra_data?.colorCode).map(v => getImageUrl(v.topic_id, v.image_filename))) : [], [vocabulary]);
+      // Restricted account packs and private pictures require U3D entitlement.
+      // Never feed public Storage URLs into the legacy auto-downloader.
+      const publicPictureAllowed = window.KGAudio.canUsePublicMedia();
+      const urls = useMemo(() => api && publicPictureAllowed
+        ? api.normalize(vocabulary.filter(v => !v.extra_data?.colorCode)
+          .map(v => getImageUrl(v.topic_id, v.image_filename)).filter(Boolean))
+        : [], [vocabulary, publicPictureAllowed]);
       const signature = JSON.stringify(urls);
       useEffect(() => api?.subscribe(setProgress), []);
       useEffect(() => {
@@ -6185,13 +6289,13 @@
         return () => { cancelled = true; };
       }, [signature, progress.busy]);
       useEffect(() => {
-        if (!api || loading) return;
+        if (!api || loading || !publicPictureAllowed) return;
         const run = () => api.auto(urls).catch(() => {});
         run(); const interval = setInterval(run, 60000); window.addEventListener('online', run); document.addEventListener('visibilitychange', run);
         navigator.connection?.addEventListener?.('change', run);
         return () => { clearInterval(interval); window.removeEventListener('online', run); document.removeEventListener('visibilitychange', run); navigator.connection?.removeEventListener?.('change', run); };
-      }, [signature, auto, wifiOnly, loading]);
-      if (!api) return null;
+      }, [signature, auto, wifiOnly, loading, publicPictureAllowed]);
+      if (!api || !publicPictureAllowed) return null;
       return <details className="max-w-5xl mx-auto my-3 bg-white border border-jade-200 rounded-xl p-4">
         <summary className="font-bold text-jade-800 cursor-pointer">↓ {progress.busy ? `Saving pictures · ${progress.done || 0}/${progress.total || 0}` : `Pictures on this device · ${saved.saved}/${saved.total} saved`}</summary>
         <p className="text-sm text-gray-600 mt-3">Pictures download automatically while this app is open, using Wi-Fi or mobile data. Saved pictures load directly from your device. Keep the app open until downloading finishes.</p>
