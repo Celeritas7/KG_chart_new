@@ -45,7 +45,6 @@
   const isId=x=>typeof x==='string'&&UUID.test(x);
   const validRevision=x=>Number.isSafeInteger(x)&&x>=0;
   const hold=reason=>({approved:false,reason});
-  const err=e=>String(e?.message||'').slice(0,0); // never log backend details
   const sameSnapshot=(a,b)=>JSON.stringify(a?.snapshot)===JSON.stringify(b?.snapshot);
   function access({ownerId,policyRecord,clock=Date.now,offlineAccess=root.KGOfflineAccess,
     learnerAccess=root.KGLearnerAccess}){
@@ -246,7 +245,10 @@
       held:Array.isArray(events)?events.length:0,reasonCounts:{invalid_inventory:1},
       publishable:false};
     const reasons=Object.create(null);let checked=0,acknowledged=0;
+    const conflictedRatings=new Set();
     const add=reason=>{reasons[reason]=(reasons[reason]||0)+1;};
+    const ratingKey=event=>event?.table===TABLE.ratings && isObj(event.row)
+      ? [event.ownerId,event.row.language_code,event.row.vocabulary_id].join('|') : null;
     const cap=Math.min(Math.max(0,Math.floor(maxEvents)||LIMIT),LIMIT);
     const now=()=>clock();
     if(!compatible(policyRecord,ownerId,policyRecord,now,
@@ -258,9 +260,18 @@
     for(const event of events.slice(0,cap)){
       checked++;
       assertCurrent?.();
+      const key=ratingKey(event);
+      // A same-word later rating must never overtake an unresolved earlier
+      // rating, even if the later event appears independently authorized.
+      if(key&&conflictedRatings.has(key)){
+        add('later_rating_held_behind_conflict');continue;
+      }
       const v=await authorize({event,ownerId,policyRecord,client,clock,
         offlineAccess,learnerAccess,sentenceAccess,assertCurrent});
-      if(!v.approved){add(v.reason);continue;}
+      if(!v.approved){
+        if(key)conflictedRatings.add(key);
+        add(v.reason);continue;
+      }
       // Refresh Auth + server permission snapshot BEFORE the write.
       let fresh;
       try{fresh=await refresh();assertCurrent?.();}
@@ -271,7 +282,10 @@
       }
       try{
         await apply(event);assertCurrent?.();
-      }catch(_){add('server_write_not_acknowledged');continue;}
+      }catch(_){
+        if(key)conflictedRatings.add(key);
+        add('server_write_not_acknowledged');continue;
+      }
       // A server write may succeed while the policy changes. Never delete
       // local evidence until a SECOND live grant check passes.
       let after;
@@ -287,8 +301,9 @@
       }catch(_){add('local_ack_not_committed');break;}
     }
     const held=events.length-acknowledged;
-    if(checked<events.length && !Object.keys(reasons).length)
-      add('not_yet_reviewed');
+    if(checked<events.length)
+      reasons.not_yet_reviewed=(reasons.not_yet_reviewed||0)+
+        events.length-checked;
     return {contract:1,mode:'restricted_review',
       checked,acknowledged,held,
       reasonCounts:Object.fromEntries(Object.entries(reasons).sort()),
