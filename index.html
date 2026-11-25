@@ -449,6 +449,8 @@
         media?.ownerId, media?.policy?.revision, item?.id, item?.image_filename, topicId, languageCode,
       ]);
       const [signed, setSigned] = useState({ key: null, url: null });
+      const errorRef = React.useRef(onError);
+      errorRef.current = onError;
       useEffect(() => {
         if (!restricted || isEmoji || !media?.ownerId || !item?.id ||
             !topicId || !languageCode) return;
@@ -470,8 +472,14 @@
             if (cancelled) { result?.release(); return; }
             lease = result;
             setSigned({ key, url: result?.url || null });
+            if (!result) errorRef.current?.(Error('Protected picture unavailable'));
           })
-          .catch(() => { if (!cancelled) setSigned({ key, url: null }); });
+          .catch(() => {
+            if (!cancelled) {
+              setSigned({ key, url: null });
+              errorRef.current?.(Error('Protected picture unavailable'));
+            }
+          });
         return () => {
           cancelled = true; controller.abort(); lease?.release();
         };
@@ -2841,6 +2849,7 @@
         const pending = [], privateLeases = [];
         setImageLoad({ key: imageKey, status: 'loading' });
         const timeout = setTimeout(() => {
+          if (protectedQuizPictures) controller.abort();
           if (!cancelled) setImageLoad({ key: imageKey, status: 'error' });
         }, 15000);
         const completed = () => {
@@ -2863,6 +2872,19 @@
               if (cancelled) { lease?.release(); throw Error('Picture request cancelled'); }
               if (!lease) throw Error('Protected picture is not available');
               privateLeases.push(lease);
+              // The clock must not start on a valid MIME header but corrupt
+              // image bytes. Decode each protected option before scoring.
+              await new Promise((resolve, reject) => {
+                const img = new Image(); pending.push(img);
+                img.onload = () => {
+                  const decoded = img.decode ? img.decode() : Promise.resolve();
+                  decoded.then(() => img.naturalWidth ? resolve() : reject(Error('Unrenderable picture')))
+                    .catch(reject);
+                };
+                img.onerror = reject;
+                img.src = lease.url;
+              });
+              if (cancelled || controller.signal.aborted) throw Error('Picture request cancelled');
               return [word.id, lease.url];
             })))
             .then(rows => {
