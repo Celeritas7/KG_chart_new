@@ -167,6 +167,14 @@ test('Dangerous embedded picture URLs, malformed word colour, duplicated source 
   assert.throws(()=>compile({data:d}),/Restricted offline candidate refused/);
  }
  {
+  const d=clone();d[tables.vocabulary][1].image_filename='emoji:<script>';
+  assert.throws(()=>compile({data:d}),/Restricted offline candidate refused/);
+ }
+ {
+  const d=clone();d[tables.colours][0].picture='emoji:javascript:location.href';
+  assert.throws(()=>compile({data:d}),/Restricted offline candidate refused/);
+ }
+ {
   const d=clone();d[tables.vocabulary].push(plain(d[tables.vocabulary][0]));
   assert.throws(()=>compile({data:d}),/Restricted offline candidate refused/);
  }
