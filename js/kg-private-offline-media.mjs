@@ -109,7 +109,7 @@ function expectedType(signed){
   let ext;
   try{ext=new URL(signed).pathname.match(/\.[a-z]+$/i)?.[0].toLowerCase();}catch(_){}
   for(const [type,suffix] of MIME_EXT)if(ext===suffix)return type;
-  failure('unexpected private asset extension');
+  failure('unexpected private asset extension ('+String(ext)+')');
 }
 function safeDescriptor(descriptor,{ownerId,language,policyRecord,appOrigin}){
   if(!descriptor||descriptor.contract!==1||
