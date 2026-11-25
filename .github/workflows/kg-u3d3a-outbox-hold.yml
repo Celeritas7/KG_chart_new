@@ -11,6 +11,10 @@ on:
       - 'tools/tests/u3d2a-scoped-pack.test.mjs'
       - 'docs/U3D3A-OUTBOX-REVIEW.md'
       - '.github/workflows/kg-u3d3a-outbox-hold.yml'
+      - 'offline/restricted-packs.js'
+      - 'tools/tests/u3d3b-restricted-bundles.test.mjs'
+      - 'docs/U3D3B-RESTRICTED-BUNDLES-REVIEW.md'
+      - '.github/workflows/kg-u3d3b-restricted-bundles.yml'
       - '.github/workflows/kg-u3d1-offline-policy.yml'
       - '.github/workflows/kg-u3d2a-scoped-pack.yml'
       - '.github/workflows/kg-u3d2b1-private-media-stage.yml'
@@ -34,8 +38,9 @@ jobs:
         run: |
           set -euo pipefail
           node --check offline/access-outbox.js
+          node --check offline/restricted-packs.js
           node --check offline/runtime.js
-          node --test tools/tests/u3d3a-outbox-hold.test.mjs tools/tests/u3d1-offline-policy.test.mjs tools/tests/u3d2a-scoped-pack.test.mjs tools/tests/u3d2b1-private-media-stage.test.mjs tools/tests/u3d2b2-private-playback.test.mjs offline/tests/private-lesson-privacy.test.mjs
+          node --test tools/tests/u3d3a-outbox-hold.test.mjs tools/tests/u3d1-offline-policy.test.mjs tools/tests/u3d2a-scoped-pack.test.mjs tools/tests/u3d2b1-private-media-stage.test.mjs tools/tests/u3d2b2-private-playback.test.mjs offline/tests/private-lesson-privacy.test.mjs tools/tests/u3d3b-restricted-bundles.test.mjs
       - name: Verify default-OFF gate and exact review file boundary
         run: |
           set -euo pipefail
@@ -45,11 +50,12 @@ jobs:
           grep -Fq 'const U3D2B1_PRIVATE_MEDIA_STAGE_ENABLED = false;' offline/runtime.js
           grep -Fq 'const U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED = false;' offline/runtime.js
           grep -Fq 'const U3D3A_OUTBOX_HOLD_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D3B_RESTRICTED_PACKS_ENABLED = false;' offline/runtime.js
           BASE=$(git merge-base origin/main HEAD)
           git diff --name-only "$BASE" HEAD | tee /tmp/u3d3a-files.txt
           while IFS= read -r path; do
             case "$path" in
-              offline/access-outbox.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|docs/U3D3A-OUTBOX-REVIEW.md|.github/workflows/kg-u3d3a-outbox-hold.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d2b2-private-playback.yml)
+              offline/access-outbox.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|docs/U3D3A-OUTBOX-REVIEW.md|.github/workflows/kg-u3d3a-outbox-hold.yml|offline/restricted-packs.js|tools/tests/u3d3b-restricted-bundles.test.mjs|docs/U3D3B-RESTRICTED-BUNDLES-REVIEW.md|.github/workflows/kg-u3d3b-restricted-bundles.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d2b2-private-playback.yml)
                 ;;
               *)
                 echo "Unreviewed U3D3A file: $path"
