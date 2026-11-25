@@ -39,9 +39,13 @@ jobs:
           grep -Fq 'const U3C1_SCOPED_UI_ENABLED = false;' index.html
           BASE=$(git merge-base origin/main HEAD)
           git diff --name-only "$BASE" HEAD | tee /tmp/u3c2b2-files.txt
-          if grep -Eq '^(sql/|supabase/|offline/runtime.js|offline/sw.js|offline/audio-manifest.js)' /tmp/u3c2b2-files.txt; then
-            echo 'Unexpected SQL/Edge or installed PWA runtime/worker change'
+          if grep -Eq '^(sql/|supabase/|offline/sw.js|offline/audio-manifest.js)' /tmp/u3c2b2-files.txt; then
+            echo 'Unexpected SQL/Edge or installed PWA worker/media change'
             exit 1
+          fi
+          if grep -Fxq 'offline/runtime.js' /tmp/u3c2b2-files.txt; then
+            grep -Fq 'const U3D1_OFFLINE_ACCESS_ENABLED = false;' offline/runtime.js
+            node --test tools/tests/u3d1-offline-policy.test.mjs
           fi
 
 # The full dual-edition workflow separately checks offline/unified artifacts
