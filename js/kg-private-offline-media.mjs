@@ -130,7 +130,39 @@ function requireDependencies(cacheStorage,fetcher,cryptoApi){
      !cryptoApi?.subtle?.digest||typeof cryptoApi.randomUUID!=='function')
     failure('secure storage/transport is not supported');
 }
-async function validateDownloaded({signed,response,kind,cryptoApi}){
+async function readBounded(response,limit){
+  // Never buffer an untrusted unbounded response at once.
+  const reader=response.body?.getReader?.();
+  if(!reader)failure('private media stream unavailable');
+  const pieces=[];
+  let total=0;
+  try{
+    for(;;){
+      const {done,value}=await reader.read();
+      if(done)break;
+      if(!(value instanceof Uint8Array))failure('invalid media stream chunk');
+      total+=value.byteLength;
+      if(total>limit)failure('private media exceeds stream byte limit');
+      pieces.push(value);
+    }
+  }finally{try{reader.releaseLock();}catch(_){}}
+  const all=new Uint8Array(total);
+  let i=0;for(const piece of pieces){all.set(piece,i);i+=piece.byteLength;}
+  return all;
+}
+async function decodeWithBrowser({bytes,mime}){
+  if(typeof createImageBitmap!=='function')
+    failure('private image decoding is unsupported on this device');
+  let bitmap;
+  try{bitmap=await createImageBitmap(new Blob([bytes],{type:mime}));}
+  catch(_){failure('private image could not be decoded');}
+  try{
+    if(!Number.isFinite(bitmap.width)||!Number.isFinite(bitmap.height)||
+       bitmap.width<1||bitmap.height<1)
+      failure('private image has invalid dimensions');
+  }finally{bitmap.close?.();}
+}
+async function validateDownloaded({signed,response,kind,cryptoApi,decodeImage}){
   if(!response?.ok||response.type==='opaque'||response.redirected)
     failure('private media not available; redirects are not allowed');
   const expected=expectedType(signed),mime=mimeOf(response.headers);
@@ -143,11 +175,12 @@ async function validateDownloaded({signed,response,kind,cryptoApi}){
   if(rawLength!=null&&(!/^\d+$/.test(rawLength)||Number(rawLength)<1||
       Number(rawLength)>limit))
     failure('private media content length invalid');
-  const bytes=asBytes(await response.arrayBuffer());
+  const bytes=asBytes(await readBounded(response,limit));
   if(bytes.byteLength<1||bytes.byteLength>limit||
      (rawLength!=null&&Number(rawLength)!==bytes.byteLength))
     failure('private media bytes exceed limit or mismatch length');
   if(!magicOK(mime,bytes))failure('private media header is corrupt or disguised');
+  if(kind==='image')await (decodeImage||decodeWithBrowser)({bytes,mime});
   return {bytes,mime,digest:await sha256(bytes,cryptoApi)};
 }
 function current(assertCurrent,signal){
@@ -163,6 +196,7 @@ export async function stagePrivateMedia({
   cryptoApi=globalThis.crypto,projectUrl,appOrigin,
   supabase,signal,assertCurrent,clock=Date.now,
   resolve, // only for isolated tests, never a public-URL fallback
+  decodeImage, // optional isolated test decoder; production decodes real bytes
 }){
   requireDependencies(cacheStorage,fetcher,cryptoApi);
   const origin=originOf(appOrigin);
@@ -195,7 +229,7 @@ export async function stagePrivateMedia({
       }catch(_){failure('private media download unavailable');}
       current(assertCurrent,signal);
       const verified=await validateDownloaded({
-        signed,response,kind:item.kind,cryptoApi,
+        signed,response,kind:item.kind,cryptoApi,decodeImage,
       });
       current(assertCurrent,signal);
       bytesTotal+=verified.bytes.byteLength;
