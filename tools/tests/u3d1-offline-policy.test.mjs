@@ -124,7 +124,8 @@ test('All U3D1 runtime controls are source-disabled and preserve original DB/out
   assert(verified>=0&&snapshot>verified,'server-auth identity check must precede policy retrieval');
   assert.match(runtime,/!legacyAccessReady\(\)\)return \{data:null,error:accessDenied\(\)\}/);
   assert.match(runtime,/await refreshVerifiedAccess\(\);guard\(\)/);
-  assert.match(runtime,/worker\?\.postMessage\(\{type:'KG_OFFLINE_LOCK'\}\)/);
+  assert.match(runtime,/worker\?\.postMessage\(\{type:'KG_OFFLINE_RESTRICTED_MEDIA'\}\)/);
+  assert.match(runtime,/navigator\.serviceWorker\?\.controller\?\.postMessage\(\{type:'KG_OFFLINE_LOCK'\}\)/);
   assert.match(runtime,/restricted packs are not activated/);
 });
 
