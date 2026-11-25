@@ -180,7 +180,7 @@ test('U4A controls are opt-in, hidden until Settings opens, and do not change in
  assert.match(panel.innerHTML,/Disconnect Wi-Fi\/mobile data/);
  await assert.rejects(async()=>api.exportDeviceAcceptance(),/Sign in/);
 });
-test('Runtime acceptance methods never reset caches, uninstall workers or mutate quizzes',()=>{
+test('Runtime acceptance methods never reset caches, uninstall workers or mutate quizzes',async()=>{
  const begin=runtime.indexOf('  function deviceAcceptanceReport() {');
  const end=runtime.indexOf('\n  function tellWorker() {',begin);
  assert(begin>0&&end>begin);
