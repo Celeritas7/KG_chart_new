@@ -60,6 +60,9 @@
   // U3D2B2: owner-only private media pointer + blob playback, NOT a
   // downloadable restricted lesson pack. Requires U3D3 and real devices.
   const U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED = false;
+  // U3D3A is a restricted outbox REVIEW/HOLD gate, not upload permission.
+  const U3D3A_OUTBOX_HOLD_ENABLED = false;
+  let heldOutboxReview=null;
   const privateMediaKey=(id,lang)=>'active-private-media:'+id+':'+lang;
   const previousPrivateMediaKey=(id,lang)=>'previous-private-media:'+id+':'+lang;
   let cachedAccessRecord=null;
@@ -80,6 +83,7 @@
     'KG_OFFLINE_ACCESS_PENDING');
   function blockAccess(reason){
     if(!U3D1_OFFLINE_ACCESS_ENABLED)return;
+    heldOutboxReview=null;
     accessView={state:'blocked',reason,revision:null};
     tellWorker();notify();
   }
@@ -108,6 +112,7 @@
       await put(policyKey(owner),proposed.record);guard();
       cachedAccessRecord=proposed.record;
       accessView=proposed.view;
+      heldOutboxReview=null;
       tellWorker();notify();
       return effectiveAccess();
     }catch(error){
@@ -193,6 +198,19 @@
     .sort((a,b) => (a.sequence||0)-(b.sequence||0) || a.at.localeCompare(b.at) ||
       ((a.table===TABLES.sessions?-1:a.table===TABLES.answers?1:0)-(b.table===TABLES.sessions?-1:b.table===TABLES.answers?1:0)) ); }
   async function updatePending() { pendingCount = owner ? (await outbox()).length : 0; notify(); }
+  async function auditRestrictedQueue() {
+    // Read-only count inventory; ALL restricted events remain locally held.
+    if(!U3D3A_OUTBOX_HOLD_ENABLED || !U3D1_OFFLINE_ACCESS_ENABLED ||
+       !currentEnrollment()) return null;
+    const guard=accountGuard(),events=await outbox();guard();
+    const report=window.KGAccessOutbox?.analyzeOutbox({
+      ownerId:owner,policyRecord:cachedAccessRecord,events,checkedAt:Date.now(),
+    });
+    if(!report || report.publishable!==false || report.held!==events.length)
+      throw Error('Restricted outbox audit unavailable; queued work remains saved.');
+    guard();heldOutboxReview=report;notify();
+    return report;
+  }
   const accountKey = (table) => `rows:${owner}:${table}`;
   const currentEnrollment = () => enrollment && owner === enrollment.id && enrollment.unlocked === true;
   const canUseLocal = table => currentEnrollment() && (PERSONAL_TABLES.has(table) || CONTENT_TABLES.has(table));
@@ -323,6 +341,12 @@
       (row.user_id && row.user_id!==uid) ||
       (table===TABLES.levels && row.email?.toLowerCase()!==enrollment.email)))
       throw Error('Account mismatch: refusing to queue another user’s data');
+    // Stamp only future events created with a verified owner policy.
+    // Legacy rows never receive a guessed historical revision.
+    const policyRevision=U3D3A_OUTBOX_HOLD_ENABLED && U3D1_OFFLINE_ACCESS_ENABLED &&
+      cachedAccessRecord?.ownerId===uid &&
+      Number.isSafeInteger(cachedAccessRecord.snapshot?.revision)
+      ? cachedAccessRecord.snapshot.revision : null;
     let created=[];
     await transact(['kv','outbox'], tx => {
       const kv=tx.objectStore('kv'), out=tx.objectStore('outbox');
@@ -343,7 +367,8 @@
             const base=prior.find(p=>rowKey(p,PRIMARY[table]||['id'])===rowKey(row,PRIMARY[table]||['id']));
             const event={ id:crypto.randomUUID(), sequence:++sequence, ownerId:uid, table, kind, row:simplify(row),
               filters:simplify(filters), at:now(), baseUpdatedAt:base?.updated_at||base?.last_reviewed_at||null,
-              state:'pending' };
+              state:'pending',
+              ...(policyRevision===null?{}:{permissionRevision:policyRevision}) };
             out.put(event);
           }
           if(table===TABLES.sessions && created.length){
@@ -361,6 +386,7 @@
     });
     channel?.postMessage({type:'changed',owner});
     await updatePending();
+    if(U3D3A_OUTBOX_HOLD_ENABLED)await auditRestrictedQueue();
     return shape ? (created[0]||null) : (created.length?created:null);
   }
 
@@ -1105,7 +1131,16 @@
     try {
       if(U3D1_OFFLINE_ACCESS_ENABLED){
         await refreshVerifiedAccess();guard();
-        if(!legacyAccessReady())throw Error('Restricted queued changes await U3D3; nothing was discarded.');
+        if(!legacyAccessReady()){
+          if(U3D3A_OUTBOX_HOLD_ENABLED){
+            const review=await auditRestrictedQueue();guard();
+            // No syncEvent, outbox delete, level-up RPC or remote pull after this return.
+            syncError='Permission review: '+review.held+
+              ' pending change(s) retained locally. No restricted changes uploaded.';
+            return;
+          }
+          throw Error('Restricted queued changes await U3D3; nothing was discarded.');
+        }
       }else{await fetchOwner();guard();}
       for(const event of await outbox()) {
         guard();
@@ -1308,7 +1343,7 @@
 
   async function lockAccount() {
     // Sign-out never deletes outbox or existing content. It just revokes local presentation.
-    accountEpoch++;readinessReport=null;
+    accountEpoch++;readinessReport=null;heldOutboxReview=null;
     cachedAccessRecord=null;accessView={state:'blocked',reason:'signed_out',revision:null};
     const prev=owner;
     if(typeof Event==='function') window.dispatchEvent?.(new Event('kg-account-locked'));
@@ -1497,7 +1532,10 @@
     const offline= !navigator.onLine;
     const status=currentEnrollment() ? `Account: ${esc(enrollment.email)} · ${ready.length} packs · ${sizeOf(bytes)} · App shell ${shellReady?'verified':'not yet verified'}` : 'First-time setup: sign in to KG Chart while online.';
     const accessNotice=U3D1_OFFLINE_ACCESS_ENABLED && !legacyAccessReady()
-      ? 'Restricted or unverified offline learning is pending U3D2. Existing packs and queued work remain saved.'
+      ? 'Restricted or unverified offline learning is pending full U3D3 authorization. Existing packs and queued work remain saved.'
+      : '';
+    const heldNotice=U3D3A_OUTBOX_HOLD_ENABLED && heldOutboxReview?.held
+      ? heldOutboxReview.held+' queued change(s) held for permission review. Export recovery before resolving; nothing was discarded.'
       : '';
     const waiting=progress.remaining===null ? 'Remaining size not supplied by server' : sizeOf(progress.remaining)+' remaining';
     const complete=ready.length && shellReady ? 'App files and lessons are saved. Verify offline reopening on this device before relying on them.' :
@@ -1519,7 +1557,8 @@
         <span class="kg-offline-pill">${pendingCount?pendingCount+' pending':ready.length+' packs saved'}</span><span class="kg-offline-pill">${shellReady?'App files saved':'App files not verified'}</span></summary>
         <div class="kg-offline-body">
           <div class="kg-offline-description">${status}. ${complete} Shared picture content: ${sizeOf(pictureBytes)}. Older pack copies are retained for recovery.
-          ${accessNotice ? '<strong role="status">'+esc(accessNotice)+'</strong>' : ''}</div>
+          ${accessNotice ? '<strong role="status">'+esc(accessNotice)+'</strong>' : ''}
+          ${heldNotice ? '<strong role="status">'+esc(heldNotice)+'</strong>' : ''}</div>
           <div class="kg-offline-grid">
             <label>Language pack<select id="kg-pack-lang" ${!currentEnrollment()?'disabled':''}>${languageOptions.map(l=>`<option value="${esc(l.code)}" ${l.code===selectedLang?'selected':''}>${esc(l.flag_emoji||'')} ${esc(l.name_english||l.code)} ${ready.includes(l.code)?shellReady?'✓ ready offline':'✓ pack saved':''}</option>`).join('')}</select></label>
             <div class="kg-offline-actions">
@@ -1608,6 +1647,7 @@
       options={...options,...((await get('options:'+owner))||{})};
       knownLanguages=(await get('languages:'+owner))||[];
       pendingCount=(await outbox()).length;
+      if(U3D3A_OUTBOX_HOLD_ENABLED)await auditRestrictedQueue();
     }
     const build=await bounded(fetch('./offline-build.json',{cache:'only-if-cached',mode:'same-origin'}).then(r=>r.ok?r.json():null), 'Reading app version', 1500).catch(()=>null);
     appVersion=window.KG_APP_VERSION||build?.appVersion||'unknown';
@@ -1666,6 +1706,7 @@
     ready:bounded(init(), 'Opening saved lessons', 20000).catch(e=>{fatal(e);throw e;}), wrapClient,afterVerified,downloadPack,
     previewRestrictedPack,stageRestrictedPrivateMedia,
     readPrivateMedia,restorePreviousPrivateMedia,
+    auditRestrictedQueue,
     setLanguage:value=>{studyLanguage=value;},
     pause:()=>{pauseRequested=true;},sync,exportRecovery,importRecovery,
     setQuizBusy:value=>{if(quizBusy!==!!value){quizBusy=!!value;notify();}},
@@ -1675,6 +1716,8 @@
     status:()=>({appVersion,activeWorkerVersion,ownerId:owner,shellReady,
       readyLanguages:legacyAccessReady()?[...packs.keys()]:[],
       offlineAccess:U3D1_OFFLINE_ACCESS_ENABLED?{...effectiveAccess()}:{state:'legacy',reason:'stage_off'},
+      heldOutbox:U3D3A_OUTBOX_HOLD_ENABLED&&heldOutboxReview ?
+        {...heldOutboxReview}:null,
       pending:pendingCount,lastSync,progress:{...progress},syncError,quizBusy,updateAvailable:!!pendingShellUpdate}),
     subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},
   };
