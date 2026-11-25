@@ -2,7 +2,28 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
-import {IDBFactory} from 'fake-indexeddb';
+// This isolated test intentionally avoids npm and does not hold real study data.
+function blankIDB(){
+  return {open(){
+    const db={
+      objectStoreNames:{contains:()=>false},
+      createObjectStore(){},
+      close(){},
+      transaction(){
+        return {objectStore(){
+          return {get(){
+            const req={result:undefined,onsuccess:null};
+            queueMicrotask(()=>req.onsuccess?.());
+            return req;
+          }};
+        }};
+      },
+    };
+    const req={result:db,onupgradeneeded:null,onsuccess:null};
+    queueMicrotask(()=>{req.onupgradeneeded?.();req.onsuccess?.();});
+    return req;
+  }};
+}
 
 const helper=await fs.readFile(new URL('../../offline/device-acceptance.js',import.meta.url),'utf8');
 const runtime=await fs.readFile(new URL('../../offline/runtime.js',import.meta.url),'utf8');
@@ -154,7 +175,7 @@ test('U4A controls are opt-in, hidden until Settings opens, and do not change in
   document:{getElementById:id=>id==='kg-offline-panel'?panel:
     id==='kg-settings-dialog'?dialog:null,
    addEventListener(){},hidden:false},
-  navigator,indexedDB:new IDBFactory(),fetch:async()=>({ok:false}),
+  navigator,indexedDB:blankIDB(),fetch:async()=>({ok:false}),
   location:{href:'https://kg-offline.example/'},
   addEventListener(){},URL,Response,Headers,TextEncoder,
   setTimeout:()=>0,clearTimeout,console,
