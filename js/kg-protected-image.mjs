@@ -12,6 +12,20 @@ export async function loadProtectedWordPicture({
   resolve,
 }){
   if(signal?.aborted||resource?.type!=='word_image')return null;
+  // A restricted offline picture must be served only as a freshly checked
+  // owner-bound blob lease. Missing/denied bytes NEVER trigger the signer or
+  // any public vocabulary-assets fetch, even when the worker is offline.
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    const reader=globalThis.KGOffline?.readPrivateMedia;
+    if (typeof reader!=='function') return null;
+    const lease=await reader(resource);
+    if (signal?.aborted) { lease?.release?.();return null; }
+    if(!lease||typeof lease.url!=='string'||!lease.url.startsWith('blob:')||
+       !['image/jpeg','image/png','image/webp','image/gif'].includes(lease.contentType)){
+      lease?.release?.();return null;
+    }
+    return lease;
+  }
   // Tests can inject a fake signer; no user email/path/text hash is accepted.
   const signed=await acquireProtectedMedia({
     kind:'image',resource,policy,sentenceScope,supabase,projectUrl,
