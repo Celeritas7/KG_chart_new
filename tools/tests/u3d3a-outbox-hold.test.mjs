@@ -132,6 +132,7 @@ test('Restricted auto-sync is preflight-HOLD: no writes, deletions, pull or leve
   accountGuard:()=>()=>{},
   notify:()=>{},
   U3D1_OFFLINE_ACCESS_ENABLED:true,U3D3A_OUTBOX_HOLD_ENABLED:true,
+  U3D3C_RESTRICTED_SYNC_ENABLED:false,
   refreshVerifiedAccess:async()=>({state:'restricted_pending'}),
   legacyAccessReady:()=>false,
   auditRestrictedQueue:async()=>{calls.audit++;return {held:7,publishable:false};},
