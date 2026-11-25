@@ -270,5 +270,5 @@ test('Install/rollback code uses atomic account-scoped KV pointer swap and leave
  assert(!install.includes("kv.delete('active:"));
  const build=await fs.readFile(new URL('../build-offline.mjs',import.meta.url),'utf8');
  assert(build.includes("'offline/restricted-packs.js', 'js/offline-restricted-packs.js'"));
- assert(build.includes('<script src="./js/offline-restricted-packs.js"></script><script src="./js/offline-restricted-sync.js"></script><script src="./js/offline-runtime.js"></script>'));
+ assert(build.includes('<script src="./js/offline-restricted-packs.js"></script><script src="./js/offline-restricted-sync.js"></script><script src="./js/offline-device-acceptance.js"></script><script src="./js/offline-runtime.js"></script>'));
 });
