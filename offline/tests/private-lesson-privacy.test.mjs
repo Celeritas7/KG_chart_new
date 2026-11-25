@@ -22,6 +22,8 @@ function offlineRpcFor({settings,online=false,email='student1@example.invalid'}=
     TABLES:{settings:'kg_chart_settings'},
     selectRows:async()=>settings||[],
     owner:'fake-owner',
+    // U3D1 stays source-disabled in this legacy compatibility fixture.
+    U3D1_OFFLINE_ACCESS_ENABLED:false,
   };
   return vm.runInNewContext(source,sandbox);
 }
