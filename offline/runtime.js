@@ -65,6 +65,9 @@
   // U3D3B: restricted text + protected media share ONE owner-scoped atomic
   // pointer. This is OFF until U3D3C server sync, U4 physical and release.
   const U3D3B_RESTRICTED_PACKS_ENABLED = false;
+  // U3D3C: per-event server/RLS-verified restricted replay. OFF until
+  // current backend grant enforcement and physical U4 acceptance.
+  const U3D3C_RESTRICTED_SYNC_ENABLED = false;
   let heldOutboxReview=null;
   const privateMediaKey=(id,lang)=>'active-private-media:'+id+':'+lang;
   const previousPrivateMediaKey=(id,lang)=>'previous-private-media:'+id+':'+lang;
@@ -1312,6 +1315,85 @@
     }
   }
 
+  async function syncRestrictedQueue() {
+    if(!U3D1_OFFLINE_ACCESS_ENABLED || !U3D3A_OUTBOX_HOLD_ENABLED ||
+       !U3D3B_RESTRICTED_PACKS_ENABLED ||
+       !U3D3C_RESTRICTED_SYNC_ENABLED ||
+       !currentEnrollment()||!navigator.onLine||
+       effectiveAccess().state!=='restricted_pending')
+      throw Error('Restricted offline sync is not approved on this installation.');
+    const guard=accountGuard(),id=owner,starting=cachedAccessRecord;
+    if(!starting?.snapshot||starting.ownerId!==id)
+      throw Error('Verified learner grant missing. Original queued work is retained.');
+    const snapshot=JSON.stringify(starting.snapshot);
+    const check=()=>{
+      guard();
+      if(owner!==id||!currentEnrollment()||!navigator.onLine||
+         !cachedAccessRecord||effectiveAccess().state!=='restricted_pending'||
+         JSON.stringify(cachedAccessRecord.snapshot)!==snapshot)
+        throw Error('Permission changed during synchronization. Queue is retained.');
+    };
+    check();
+    const queued=await outbox();check();
+    const verifier=window.KGRestrictedSync;
+    if(!verifier?.reconcile)
+      throw Error('Permission-aware sync verification unavailable. Queued work was not deleted.');
+    const refresh=async()=>{
+      await refreshVerifiedAccess();check();
+      return cachedAccessRecord;
+    };
+    const ack=async(event,checked)=>{
+      check();
+      // ACK is a conditional owner-bound compare/delete in ONE transaction.
+      // Re-read both the persisted policy and outbox record to close races
+      // with a second tab, sign-out, retry or a revised permission snapshot.
+      await transact(['kv','outbox'],tx=>{
+        const kv=tx.objectStore('kv'),queue=tx.objectStore('outbox');
+        const policyReq=kv.get(policyKey(id));
+        policyReq.onsuccess=()=>{
+          const eventReq=queue.get(event.id);
+          eventReq.onsuccess=()=>{
+            try {
+              check();
+              const disk=policyReq.result,existing=eventReq.result;
+              if(!disk||disk.ownerId!==id||
+                 JSON.stringify(disk.snapshot)!==snapshot||
+                 disk.checkedAt!==checked.checkedAt||
+                 !existing||existing.ownerId!==id||
+                 existing.id!==event.id||
+                 JSON.stringify(existing)!==JSON.stringify(event))
+                throw Error('Outbox or permissions changed before acknowledgment.');
+              queue.delete(event.id);
+            }catch(_){tx.abort();}
+          };
+        };
+      });
+      check();
+    };
+    const report=await verifier.reconcile({
+      events:queued,ownerId:id,policyRecord:starting,
+      client:live,refresh,apply:async event=>{
+        check();await syncEvent(event);check();
+      },ack,assertCurrent:check,
+      offlineAccess:window.KGOfflineAccess,
+      learnerAccess:window.KGLearnerAccess,
+      sentenceAccess:window.KGSentenceAccess,
+    });
+    check();
+    if(!report||report.publishable!==false||
+       report.acknowledged<0||report.acknowledged>queued.length)
+      throw Error('Restricted reconciliation result is invalid. Original queue retained.');
+    // Aggregate-only UX: no private row, email, source ID or answer in status.
+    heldOutboxReview={...report};
+    const remaining=queued.length-report.acknowledged;
+    syncError=remaining
+      ? report.acknowledged+' authorized change(s) confirmed. '+
+        remaining+' retained for permission review or retry. Export recovery before resolving.'
+      : report.acknowledged+' authorized change(s) confirmed. All restricted queue entries reviewed.';
+    notify();
+    return report;
+  }
+
   async function doSync() {
     if(syncing || busy || !currentEnrollment() || !navigator.onLine) return;
     const guard=accountGuard();
@@ -1325,6 +1407,12 @@
       if(U3D1_OFFLINE_ACCESS_ENABLED){
         await refreshVerifiedAccess();guard();
         if(!legacyAccessReady()){
+          if(U3D3C_RESTRICTED_SYNC_ENABLED){
+            // Leave the old legacy loop and level-up/pull RPC completely
+            // unreachable for restricted accounts. Every candidate is
+            // independently reauthorized against live SQL and RLS.
+            await syncRestrictedQueue();guard();return;
+          }
           if(U3D3A_OUTBOX_HOLD_ENABLED){
             const review=await auditRestrictedQueue();guard();
             // No syncEvent, outbox delete, level-up RPC or remote pull after this return.
@@ -1900,7 +1988,7 @@
     previewRestrictedPack,stageRestrictedPrivateMedia,
     readPrivateMedia,restorePreviousPrivateMedia,
     installRestrictedBundle,readRestrictedBundle,restorePreviousRestrictedBundle,
-    auditRestrictedQueue,
+    auditRestrictedQueue,syncRestrictedQueue,
     setLanguage:value=>{studyLanguage=value;},
     pause:()=>{pauseRequested=true;},sync,exportRecovery,importRecovery,
     setQuizBusy:value=>{if(quizBusy!==!!value){quizBusy=!!value;notify();}},
