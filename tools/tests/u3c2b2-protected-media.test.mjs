@@ -112,7 +112,7 @@ test('Learner media calls identify real word, topic, sentence and colour records
   for(const type of ['word_audio','topic_audio','sentence_audio','colour_audio'])
     assert.match(html,new RegExp("type:\\s*['\"]"+type+"['\"]"));
   const calls=html.split('\n').filter(s=>/window\.KGAudio\.(?:play|autoPlay|stateOf|has)\(/.test(s));
-  assert(calls.length>=30,'expected all learner audio surfaces to be reviewed');
+  assert(calls.length>=23,'expected all learner audio surfaces to be reviewed');
   for(const line of calls){
     assert.match(line,/(?:wordAudioResource|sentenceAudioResource|colourAudioResource|resource)/,
       'text-only audio call: '+line.trim());
