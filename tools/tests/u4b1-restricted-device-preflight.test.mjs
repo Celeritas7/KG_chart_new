@@ -63,7 +63,7 @@ test('U4B1 source preflight: canonical learner and restricted offline release sw
     '../../sql/kg-chart-u3c2-sentence-topic-mapping.sql',
   ]){
     const sql=await fs.readFile(new URL(path,import.meta.url),'utf8');
-    assert(sql.includes("'server_enforced', false"),
+    assert(/['"]server_enforced['"]\s*,\s*false/.test(sql),
       path+' must not imply live authorization before a reviewed deployment');
     assert(!sql.includes("'server_enforced', true"),
       path+' would require a new backend security review');
