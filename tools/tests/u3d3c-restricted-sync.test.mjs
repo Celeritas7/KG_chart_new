@@ -262,6 +262,39 @@ test('No completed local ACK if confirmation transaction errors or account chang
  assert.equal(result.acknowledged,0);assert.equal(result.held,1);
  assert.equal(result.reasonCounts.local_ack_not_committed,1);
 });
+test('A newer rating for the same word never passes an earlier unresolved rating',async()=>{
+ const c=fakeClient(),acks=[],applied=[];
+ const earlier={...rating,kind:'update'};
+ const later={...rating,id:'60000000-0000-4000-8000-000000000088',
+   row:{...rating.row,rating:5}};
+ const res=await API.reconcile({
+  events:[earlier,later],ownerId:uid,policyRecord,client:c,
+  clock:()=>TIME+100,offlineAccess:access,learnerAccess:learner,
+  refresh:async()=>policyRecord,
+  apply:async e=>applied.push(e.id),
+  ack:async e=>acks.push(e.id),
+ });
+ assert.equal(res.held,2);assert.equal(res.acknowledged,0);
+ assert.equal(res.reasonCounts.unsupported_mutation,1);
+ assert.equal(res.reasonCounts.later_rating_held_behind_conflict,1);
+ assert.deepEqual(applied,[]);assert.deepEqual(acks,[]);
+});
+test('Processing limit is bounded; untouched queued events remain pending and counted',async()=>{
+ const c=fakeClient();
+ const events=Array.from({length:220},(_,i)=>({
+   ...completion,id:'90000000-0000-4000-8000-'+String(i+1).padStart(12,'0'),
+ }));
+ let ack=0;
+ const res=await API.reconcile({
+  events,ownerId:uid,policyRecord,client:c,
+  clock:()=>TIME+100,offlineAccess:access,learnerAccess:learner,
+  refresh:async()=>policyRecord,apply:async()=>{},
+  ack:async()=>{ack++;},
+ });
+ assert.equal(res.checked,200);assert.equal(res.acknowledged,200);
+ assert.equal(res.held,20);assert.equal(ack,200);
+ assert.equal(res.reasonCounts.not_yet_reviewed,20);
+});
 test('Static production gate: restricted ACK is conditional KV+outbox transaction, never uses legacy unguarded loop',async()=>{
  const source=await fs.readFile(new URL('../../offline/runtime.js',import.meta.url),'utf8');
  const build=await fs.readFile(new URL('../build-offline.mjs',import.meta.url),'utf8');
