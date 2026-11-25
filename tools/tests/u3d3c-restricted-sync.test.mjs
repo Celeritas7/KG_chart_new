@@ -295,6 +295,74 @@ test('Processing limit is bounded; untouched queued events remain pending and co
  assert.equal(res.held,20);assert.equal(ack,200);
  assert.equal(res.reasonCounts.not_yet_reviewed,20);
 });
+test('Real restricted runtime ACK compare/delete commits once only for unchanged owner, policy and event',async()=>{
+ const runtime=await fs.readFile(new URL('../../offline/runtime.js',import.meta.url),'utf8');
+ const start=runtime.indexOf('  async function syncRestrictedQueue() {');
+ const end=runtime.indexOf('\n  async function doSync() {',start);
+ assert(start>0&&end>start);
+ const code=runtime.slice(start,end);
+ async function run({diskPolicy=policyRecord,diskEvent=rating,switched=false}={}){
+  const deleted=[];
+  const ctx={
+   U3D1_OFFLINE_ACCESS_ENABLED:true,U3D3A_OUTBOX_HOLD_ENABLED:true,
+   U3D3B_RESTRICTED_PACKS_ENABLED:true,U3D3C_RESTRICTED_SYNC_ENABLED:true,
+   navigator:{onLine:true},owner:uid,cachedAccessRecord:policyRecord,
+   currentEnrollment:()=>true,effectiveAccess:()=>({state:'restricted_pending'}),
+   accountGuard(){
+    const expected=ctx.owner;
+    return ()=>{if(ctx.owner!==expected)throw Error('Account changed');};
+   },
+   outbox:async()=>[rating],policyKey:id=>'offline-access-policy:'+id,
+   live:{},notify(){},heldOutboxReview:null,syncError:'',
+   crypto:{},
+   window:{KGRestrictedSync:{async reconcile({events,ack}){
+      if(switched)ctx.owner=OTHER;
+      await ack(events[0],policyRecord);
+      return {contract:1,mode:'restricted_review',checked:1,
+       acknowledged:1,held:0,reasonCounts:{},publishable:false};
+    }}},
+   transact:async(stores,task)=>{
+    assert.deepEqual([...stores],['kv','outbox']);
+    let aborted=false;
+    const tx={abort(){aborted=true;},
+     objectStore(store){
+      return {
+       get(key){
+        const req={result:store==='kv'?diskPolicy:diskEvent,onsuccess:null};
+        queueMicrotask(()=>req.onsuccess?.());
+        return req;
+       },
+       delete(id){if(!aborted)deleted.push(id);},
+      };
+     },
+    };
+    task(tx);
+    await new Promise(resolve=>setImmediate(resolve));
+    if(aborted)throw Error('outbox transaction aborted');
+   },
+  };
+  const execute=vm.runInNewContext(code+'\nsyncRestrictedQueue',ctx);
+  let error=null;
+  try{await execute();}catch(e){error=e;}
+  return {ctx,deleted,error};
+ }
+ const ok=await run();
+ assert.equal(ok.error,null);
+ assert.deepEqual(ok.deleted,[rating.id]);
+ assert.equal(ok.ctx.heldOutboxReview.acknowledged,1);
+ const stalePolicy=await run({diskPolicy:{...policyRecord,
+  snapshot:{...policyRecord.snapshot,revision:8}}});
+ assert(stalePolicy.error);
+ assert.deepEqual(stalePolicy.deleted,[]);
+ const alteredEvent=await run({diskEvent:{...rating,
+  row:{...rating.row,rating:1}}});
+ assert(alteredEvent.error);
+ assert.deepEqual(alteredEvent.deleted,[]);
+ const switched=await run({switched:true});
+ assert(switched.error);
+ assert.deepEqual(switched.deleted,[]);
+});
+
 test('Static production gate: restricted ACK is conditional KV+outbox transaction, never uses legacy unguarded loop',async()=>{
  const source=await fs.readFile(new URL('../../offline/runtime.js',import.meta.url),'utf8');
  const build=await fs.readFile(new URL('../build-offline.mjs',import.meta.url),'utf8');
