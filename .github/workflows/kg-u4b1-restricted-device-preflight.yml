@@ -1,0 +1,82 @@
+name: KG Chart U4B1 - restricted device test preflight (synthetic only)
+
+on:
+  pull_request:
+    paths:
+      - 'tools/tests/u4b1-restricted-device-preflight.test.mjs'
+      - 'docs/U4B1-RESTRICTED-DEVICE-PREFLIGHT.md'
+      - '.github/workflows/kg-u4b1-restricted-device-preflight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-restrictions-not-hardware:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check test syntax and synthetic restricted learner contracts
+        run: |
+          set -euo pipefail
+          node --check tools/tests/u4b1-restricted-device-preflight.test.mjs
+          node --test \
+            tools/tests/u4b1-restricted-device-preflight.test.mjs \
+            tools/tests/u4a-device-acceptance.test.mjs \
+            tools/tests/u3c1-learner-permissions.test.mjs \
+            tools/tests/u3c2-sentence-access.test.mjs \
+            tools/tests/u3d1-offline-policy.test.mjs \
+            tools/tests/u3d2a-scoped-pack.test.mjs \
+            tools/tests/u3d2b1-private-media-stage.test.mjs \
+            tools/tests/u3d2b2-private-playback.test.mjs \
+            tools/tests/u3d3a-outbox-hold.test.mjs \
+            tools/tests/u3d3b-restricted-bundles.test.mjs \
+            tools/tests/u3d3c-restricted-sync.test.mjs
+      - name: Enforce stacked source-only diff and default-OFF gates
+        run: |
+          set -euo pipefail
+          TARGET="$GITHUB_BASE_REF"
+          if [ -z "$TARGET" ]; then TARGET=main; fi
+          BASE="$(git merge-base "origin/$TARGET" HEAD)"
+          git diff --name-only "$BASE" HEAD | tee /tmp/u4b1-reviewed-files.txt
+          while IFS= read -r path; do
+            case "$path" in
+              tools/tests/u4b1-restricted-device-preflight.test.mjs|docs/U4B1-RESTRICTED-DEVICE-PREFLIGHT.md|.github/workflows/kg-u4b1-restricted-device-preflight.yml)
+                ;;
+              *)
+                echo "Unreviewed U4B1 change: $path"
+                exit 1
+                ;;
+            esac
+          done < /tmp/u4b1-reviewed-files.txt
+          grep -Fq 'const U3C1_SCOPED_UI_ENABLED = false;' index.html
+          for flag in U3D1_OFFLINE_ACCESS_ENABLED U3D2_SCOPED_PACK_PREVIEW_ENABLED U3D2B1_PRIVATE_MEDIA_STAGE_ENABLED U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED U3D3A_OUTBOX_HOLD_ENABLED U3D3B_RESTRICTED_PACKS_ENABLED U3D3C_RESTRICTED_SYNC_ENABLED; do
+            grep -Fq "const $flag = false;" offline/runtime.js
+          done
+          grep -Fq "'server_enforced', false" sql/kg-chart-u3a-access-snapshot.sql
+          grep -Fq "'server_enforced',false" sql/kg-chart-u3c2-sentence-topic-mapping.sql
+          echo 'U4B1 preflight only. No backend/worker/production/storage change, no physical-device PASS.'
+  independent-build-regression:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Recheck offline and unified candidates without deployment
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run check:unified
+
+# CI has no Android/iPad, account-switch or Supabase production access.
+# It must never be used as authorization to create a restricted learner.
