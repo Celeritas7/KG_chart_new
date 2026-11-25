@@ -50,6 +50,9 @@
   // U3D1: OFF by default. Restricted offline packs are NOT authorized
   // until U3D2/U3D3, even when a valid online grant exists.
   const U3D1_OFFLINE_ACCESS_ENABLED = false;
+  // U3D2A deliberately creates NO restricted pack. This read-only preview
+  // contract is independently OFF until all backend/media gates are reviewed.
+  const U3D2_SCOPED_PACK_PREVIEW_ENABLED = false;
   let cachedAccessRecord=null;
   let accessView={state:'blocked',reason:'unverified',revision:null};
   const policyKey=id=>'offline-access-policy:'+id;
@@ -405,6 +408,95 @@
       [TABLES.sentences]:sentences,[TABLES.colours]:colours,[TABLES.settings]:safeSettings };
   }
 
+  // U3D2A: inspect only account-granted source rows, never download all
+  // languages/topics and then try to hide unwanted media. This preview is
+  // kept entirely in memory and NEVER switches an active pack pointer.
+  async function previewRestrictedPack(lang) {
+    if(!U3D1_OFFLINE_ACCESS_ENABLED || !U3D2_SCOPED_PACK_PREVIEW_ENABLED)
+      throw Error('Restricted offline preview is disabled pending release review.');
+    if(!currentEnrollment() || !navigator.onLine || !live)
+      throw Error('Connect and verify the enrolled account before restricted preview.');
+    const guard=accountGuard();
+    const access=await refreshVerifiedAccess();guard();
+    if(access.state!=='restricted_pending')
+      throw Error('Only a verified restricted account can request the scoped preview.');
+    const original=cachedAccessRecord;
+    const policy=window.KGLearnerAccess.parseSnapshot(original.snapshot);
+    if(policy.state!=='restricted' || !policy.languages.includes(lang))
+      throw Error('Requested language is not assigned to this learner.');
+    const topicIds=policy.topics.filter(x=>x.startsWith(lang+'|'))
+      .map(x=>x.slice(lang.length+1));
+    if(!topicIds.length)throw Error('No assigned translated topics for this language.');
+
+    const pagedIds=async(table,field,ids,extra=q=>q)=>{
+      const rows=[];
+      const values=[...new Set(ids)];
+      for(let i=0;i<values.length;i+=25){
+        const batch=values.slice(i,i+25);
+        rows.push(...await readPaged(table,q=>extra(q.in(field,batch))));
+        guard();
+      }
+      return rows;
+    };
+
+    const wantsSentences=policy.features.includes('quiz.sentences')||
+      policy.features.includes('quiz.speak');
+    const [vis,groups]=await Promise.all([
+      live.rpc('kg_chart_my_private_lesson_visibility',{p_language:lang}),
+      wantsSentences ? live.rpc('kg_chart_u3c2_my_sentence_groups',{p_language:lang}) :
+        Promise.resolve({data:null,error:null}),
+    ]);guard();
+    if(vis.error || (wantsSentences && groups.error))
+      throw Error('Restricted private lesson or sentence mapping unavailable.');
+    const sentenceScope=wantsSentences
+      ? window.KGSentenceAccess.parseGroupSnapshot(groups.data,policy,lang) : null;
+    if(wantsSentences && sentenceScope.state!=='restricted')
+      throw Error('Restricted sentence group mappings are not server enforced.');
+
+    const [languages,topics,topicTranslations,vocabulary]=await Promise.all([
+      readPaged(TABLES.languages,q=>q.eq('code',lang).eq('is_active',true)),
+      pagedIds(TABLES.topics,'id',topicIds),
+      pagedIds(TABLES.topicTranslations,'topic_id',topicIds,q=>q.eq('language_code',lang)),
+      pagedIds(TABLES.vocabulary,'topic_id',topicIds),
+    ]);guard();
+    const wordIds=vocabulary.map(w=>w.id);
+    const [wordTranslations,sentences,colours]=await Promise.all([
+      pagedIds(TABLES.vocabularyTranslations,'vocabulary_id',wordIds,
+        q=>q.eq('language_code',lang)),
+      wantsSentences ? pagedIds(TABLES.sentences,'group_name',sentenceScope.groups,
+        q=>q.eq('language_code',lang)) : Promise.resolve([]),
+      policy.features.includes('quiz.colours')
+        ? readPaged(TABLES.colours,q=>q.eq('language_code',lang)) : Promise.resolve([]),
+    ]);guard();
+    const source={
+      [TABLES.languages]:languages,
+      [TABLES.topics]:topics,[TABLES.topicTranslations]:topicTranslations,
+      [TABLES.vocabulary]:vocabulary,[TABLES.vocabularyTranslations]:wordTranslations,
+      [TABLES.sentences]:sentences,[TABLES.colours]:colours,
+      [TABLES.settings]:[],
+    };
+    const candidate=window.KGScopedPack?.buildScopedPack({
+      data:source,language:lang,ownerId:owner,policyRecord:original,
+      sentenceResponse:groups.data,privateVisibility:vis.data,
+      checkedAt:Date.now(),
+    });
+    if(!candidate)throw Error('Restricted content validator is unavailable.');
+
+    // Do not promote a candidate if the grant changed while reading pages.
+    // A same-revision mutation also fails in U3D1's snapshot contract.
+    const refreshed=await refreshVerifiedAccess();guard();
+    if(refreshed.state!=='restricted_pending' ||
+       cachedAccessRecord.snapshot.revision!==candidate.manifest.policyRevision ||
+       JSON.stringify(cachedAccessRecord.snapshot)!==JSON.stringify(original.snapshot))
+      throw Error('Access changed during preview; no pack was installed.');
+    return {
+      ...candidate.manifest,
+      previewOnly:true,downloadable:false,
+      // This is an intentionally safe aggregate; no media IDs or text contents.
+      description:'Reviewed content preview only. Private media and filtered offline activation await U3D2B/U3D3.',
+    };
+  }
+
   function requiredMedia(data,lang) {
     const root = mediaBase();
     const urlSet=new Set();
@@ -543,7 +635,12 @@
     if(!navigator.onLine) throw Error('An internet connection is required to download or update packs.');
     if(U3D1_OFFLINE_ACCESS_ENABLED){
       await refreshVerifiedAccess();
-      if(!legacyAccessReady())throw Error('U3D2 per-user pack filtering is required for restricted learners. Existing downloads remain saved.');
+      if(!legacyAccessReady()){
+        if(U3D2_SCOPED_PACK_PREVIEW_ENABLED &&
+           effectiveAccess().state==='restricted_pending')
+          await previewRestrictedPack(lang); // read-only: returns NO media/pack
+        throw Error('Restricted packs await U3D2B protected media and U3D3 sync review. Previous packs are preserved.');
+      }
     }
     const guard=accountGuard();
     busy=true;pauseRequested=false;
@@ -1405,6 +1502,7 @@
   window.KGOffline={
     openSettings,
     ready:bounded(init(), 'Opening saved lessons', 20000).catch(e=>{fatal(e);throw e;}), wrapClient,afterVerified,downloadPack,
+    previewRestrictedPack,
     setLanguage:value=>{studyLanguage=value;},
     pause:()=>{pauseRequested=true;},sync,exportRecovery,importRecovery,
     setQuizBusy:value=>{if(quizBusy!==!!value){quizBusy=!!value;notify();}},
