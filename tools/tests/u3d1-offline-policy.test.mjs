@@ -122,7 +122,10 @@ test('All U3D1 runtime controls are source-disabled and preserve original DB/out
   const verified=runtime.indexOf('const user=await fetchOwner();guard();');
   const snapshot=runtime.indexOf("live.rpc('kg_chart_u3_my_access_snapshot')");
   assert(verified>=0&&snapshot>verified,'server-auth identity check must precede policy retrieval');
-  assert.match(runtime,/!legacyAccessReady\(\)\)return \{data:null,error:accessDenied\(\)\}/);
+  assert.match(runtime,/if\(!U3D3B_RESTRICTED_PACKS_ENABLED \|\| navigator\.onLine/);
+  assert.match(runtime,/!CONTENT_TABLES\.has\(this\.table\) \|\| this\.mutation\)/);
+  assert.match(runtime,/return \{data:null,error:accessDenied\(\)\}/);
+  assert.match(runtime,/restrictedContent=verified\.content/);
   assert.match(runtime,/await refreshVerifiedAccess\(\);guard\(\)/);
   assert.match(runtime,/worker\?\.postMessage\(\{type:'KG_OFFLINE_RESTRICTED_MEDIA'\}\)/);
   assert.match(runtime,/navigator\.serviceWorker\?\.controller\?\.postMessage\(\{type:'KG_OFFLINE_LOCK'\}\)/);
@@ -131,7 +134,7 @@ test('All U3D1 runtime controls are source-disabled and preserve original DB/out
 
 test('Both offline and unified shells bundle policy parser before runtime without changing source UI',()=>{
   assert(build.includes("'offline/access-policy.js', 'js/offline-policy.js'"));
-  assert(build.includes('<script src="./js/offline-policy.js"></script><script src="./js/offline-scoped-pack.js"></script><script src="./js/offline-access-outbox.js"></script><script src="./js/offline-runtime.js"></script>'));
+  assert(build.includes('<script src="./js/offline-policy.js"></script><script src="./js/offline-scoped-pack.js"></script><script src="./js/offline-access-outbox.js"></script><script src="./js/offline-restricted-packs.js"></script><script src="./js/offline-runtime.js"></script>'));
   assert(build.indexOf("'offline/access-policy.js'")<build.indexOf("'offline/runtime.js'"));
   assert.equal((runtime.match(/const U3D1_OFFLINE_ACCESS_ENABLED = false/g)||[]).length,1);
 });

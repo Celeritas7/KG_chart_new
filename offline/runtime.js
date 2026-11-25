@@ -62,6 +62,9 @@
   const U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED = false;
   // U3D3A is a restricted outbox REVIEW/HOLD gate, not upload permission.
   const U3D3A_OUTBOX_HOLD_ENABLED = false;
+  // U3D3B: restricted text + protected media share ONE owner-scoped atomic
+  // pointer. This is OFF until U3D3C server sync, U4 physical and release.
+  const U3D3B_RESTRICTED_PACKS_ENABLED = false;
   let heldOutboxReview=null;
   const privateMediaKey=(id,lang)=>'active-private-media:'+id+':'+lang;
   const previousPrivateMediaKey=(id,lang)=>'previous-private-media:'+id+':'+lang;
@@ -270,14 +273,29 @@
     then(yes,no) { return this.execute().then(yes,no); }
     async execute() {
       const requestedLanguage = this.filters.find(([op,key])=>op==='eq' && key==='language_code')?.[2] || studyLanguage;
+      let restrictedContent=null;
       const needsRemoteContent = unified && CONTENT_TABLES.has(this.table) && !packs.has(requestedLanguage);
       const onlineOnlyWrite = unified && this.mutation && !WRITABLE_TABLES.has(this.table);
       // Never read an unscoped previously downloaded pack or create new
       // queued learner mutations for a restricted/unknown account in U3D1.
       if(U3D1_OFFLINE_ACCESS_ENABLED &&
          (CONTENT_TABLES.has(this.table)||PERSONAL_TABLES.has(this.table)) &&
-         !legacyAccessReady())return {data:null,error:accessDenied()};
-      if (!canUseLocal(this.table) || needsRemoteContent || onlineOnlyWrite) {
+         !legacyAccessReady()){
+        // Until U3D3C, queueing new restricted progress is explicitly
+        // disabled. Never upgrade a broad legacy pack or read personal tables.
+        if(!U3D3B_RESTRICTED_PACKS_ENABLED || navigator.onLine ||
+           effectiveAccess().state!=='restricted_pending' ||
+           !CONTENT_TABLES.has(this.table) || this.mutation)
+          return {data:null,error:accessDenied()};
+        try{
+          const verified=await readRestrictedBundle(requestedLanguage);
+          restrictedContent=verified.content;
+        }catch(e){
+          return {data:null,error:problem('Restricted offline lesson unavailable: '+e.message,
+            'KG_RESTRICTED_PACK_NOT_READY')};
+        }
+      }
+      if (!restrictedContent && (!canUseLocal(this.table) || needsRemoteContent || onlineOnlyWrite)) {
         if(!navigator.onLine) return {data:null,error:offlineError('This feature')};
         return this.remote.then(x=>x);
       }
@@ -288,12 +306,16 @@
         catch (e) { return { data:null,error:problem('Could not save on this device: '+e.message, 'KG_LOCAL_SAVE_FAILED') }; }
       }
       try {
-        let rows = (await selectRows(this.table)).filter(r => matches(r,this.filters));
+        let rows = (restrictedContent ? restrictedContent[this.table] : await selectRows(this.table))
+          .filter(r => matches(r,this.filters));
         if (this.columns.includes('translations:') || this.table === TABLES.colours && this.columns.includes('colour:')) {
           const all = {};
-          if (this.table === TABLES.topics) all[TABLES.topicTranslations] = await selectRows(TABLES.topicTranslations);
-          if (this.table === TABLES.vocabulary) all[TABLES.vocabularyTranslations] = await selectRows(TABLES.vocabularyTranslations);
-          if (this.table === TABLES.colours) all[TABLES.vocabulary] = await selectRows(TABLES.vocabulary);
+          if (this.table === TABLES.topics) all[TABLES.topicTranslations] = restrictedContent ?
+            restrictedContent[TABLES.topicTranslations] : await selectRows(TABLES.topicTranslations);
+          if (this.table === TABLES.vocabulary) all[TABLES.vocabularyTranslations] = restrictedContent ?
+            restrictedContent[TABLES.vocabularyTranslations] : await selectRows(TABLES.vocabularyTranslations);
+          if (this.table === TABLES.colours) all[TABLES.vocabulary] = restrictedContent ?
+            restrictedContent[TABLES.vocabulary] : await selectRows(TABLES.vocabulary);
           rows = enrich(this.table, rows, true, all);
         }
         for (const [column,asc] of [...this.orders].reverse()) rows.sort((a,b) => {
@@ -631,6 +653,167 @@
     }
   }
 
+  async function readRestrictedBundle(language) {
+    if(!U3D1_OFFLINE_ACCESS_ENABLED || !U3D3B_RESTRICTED_PACKS_ENABLED ||
+       !currentEnrollment() || effectiveAccess().state!=='restricted_pending')
+      throw Error('Restricted lessons require verified access and a complete installed bundle.');
+    const guard=accountGuard();
+    const id=owner,record=cachedAccessRecord;
+    if(!record||record.ownerId!==id)throw Error('Account policy missing.');
+    const k=window.KGRestrictedPacks?.keys(id,language);
+    if(!k)throw Error('Restricted bundle validator unavailable.');
+    const active=await get(k.active);guard();
+    if(!active)throw Error('No account-specific lesson pack installed.');
+    const body=await get(k.payloadPrefix+active.packageId);guard();
+    if(!body)throw Error('Restricted lesson content was evicted.');
+    const content=await window.KGRestrictedPacks.verify({
+      ownerId:id,language,policyRecord:record,pointer:active,body,
+      cryptoApi:crypto,checkedAt:Date.now(),
+    });guard();
+    return {content,pointer:active};
+  }
+
+  async function installRestrictedBundle(language) {
+    if(!U3D1_OFFLINE_ACCESS_ENABLED || !U3D2B1_PRIVATE_MEDIA_STAGE_ENABLED ||
+       !U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED ||
+       !U3D3B_RESTRICTED_PACKS_ENABLED)
+      throw Error('Restricted pack installation is disabled pending release acceptance.');
+    if(!currentEnrollment()||!navigator.onLine||busy||syncing||quizBusy)
+      throw Error('Connect and finish the current quiz, download or sync first.');
+    const guard=accountGuard(),id=owner;
+    busy=true;
+    progress={phase:'Verifying restricted lessons and private media…',
+      done:0,total:0,bytes:0,remaining:null,failures:0,missingImages:0};notify();
+    const appOrigin=location.origin;
+    let descriptor=null,committed=false,mediaModule=null;
+    try{
+      const {candidate,policyRecord,sentenceScope}=await assembleRestrictedCandidate(language);
+      guard();
+      if(!candidate.mediaPlan.length)
+        throw Error('This language has no verified protected media inventory.');
+      const snapshot=JSON.stringify(policyRecord.snapshot);
+      const assertCurrent=()=>{
+        guard();
+        if(owner!==id||!currentEnrollment()||!navigator.onLine||
+           !cachedAccessRecord||JSON.stringify(cachedAccessRecord.snapshot)!==snapshot||
+           effectiveAccess().state!=='restricted_pending')
+          throw Error('Account or permissions changed during restricted pack install.');
+      };
+      const args={ownerId:id,language,policyRecord,appOrigin,
+        offlineAccess:window.KGOfflineAccess,
+        learnerAccess:window.KGLearnerAccess,cacheStorage:caches,cryptoApi:crypto};
+      mediaModule=await import(new URL('./js/kg-private-offline-media.mjs',document.baseURI).href);
+      assertCurrent();
+      descriptor=await mediaModule.stagePrivateMedia({
+        ...args,mediaPlan:candidate.mediaPlan,sentenceScope,
+        supabase:live,projectUrl:new URL(mediaBase()).origin,assertCurrent,
+      });
+      assertCurrent();
+      const playback=await import(new URL('./js/kg-private-offline-playback.mjs',document.baseURI).href);
+      const mediaPointer=await playback.preparePrivateMediaActivation({
+        ...args,descriptor,authorizedPlan:candidate.mediaPlan,
+        sentenceScope,assertCurrent,
+      });
+      assertCurrent();
+      const bundle=await window.KGRestrictedPacks.prepare({
+        ownerId:id,language,policyRecord,content:candidate.content,
+        mediaPlan:candidate.mediaPlan,mediaPointer,sentenceScope,
+        checkedAt:Date.now(),cryptoApi:crypto,packageId:crypto.randomUUID(),
+      });
+      assertCurrent();
+      await window.KGRestrictedPacks.verify({
+        ownerId:id,language,policyRecord,pointer:bundle.pointer,
+        body:bundle.body,cryptoApi:crypto,checkedAt:Date.now(),
+      });
+      // A different session/revision might become current while streaming
+      // media. Revalidate Auth and server policy immediately before install.
+      const current=await refreshVerifiedAccess();guard();
+      if(current.state!=='restricted_pending' ||
+         JSON.stringify(cachedAccessRecord.snapshot)!==snapshot)
+        throw Error('Permissions changed before restricted pack activation.');
+      const k=window.KGRestrictedPacks.keys(id,language);
+      const activeRecord=cachedAccessRecord;
+      await transact(['kv'],tx=>{
+        const kv=tx.objectStore('kv');
+        const policyReq=kv.get(policyKey(id));
+        const activeReq=kv.get(k.active);
+        activeReq.onsuccess=()=>{
+          try{assertCurrent();}
+          catch(_){tx.abort();return;}
+          const disk=policyReq.result;
+          // Multi-tab change detection is inside the SAME read/write IDB
+          // transaction as both pointers and the new content body.
+          if(!disk||disk.ownerId!==id ||
+             JSON.stringify(disk.snapshot)!==snapshot ||
+             disk.snapshot.revision!==activeRecord.snapshot.revision){
+            tx.abort();return;
+          }
+          const old=activeReq.result;
+          if(old)kv.put(old,k.previous);
+          kv.put(bundle.body,k.payloadPrefix+bundle.pointer.packageId);
+          kv.put(bundle.pointer,k.active);
+        };
+      });
+      committed=true;
+      progress.phase='Restricted content and private media verified together. Sync activation and device checks are still pending.';
+      notify();
+      return {contract:1,installedForReview:true,readyForRestrictedStudy:false,
+        language,topics:bundle.pointer.counts.topics,
+        words:bundle.pointer.counts.words,revision:bundle.pointer.revision,
+        mediaSources:bundle.pointer.sourceKeys.length};
+    }catch(error){
+      if(descriptor&&!committed&&mediaModule)
+        await mediaModule.discardPrivateMediaStage({
+          descriptor,ownerId:id,language,policyRecord:{
+            ownerId:id,snapshot:{revision:descriptor.revision}},
+          appOrigin,cacheStorage:caches,
+        }).catch(()=>{});
+      progress.phase='Restricted pack not installed: '+error.message+
+        '. Previously installed packs and queued progress remain saved.';
+      notify();throw error;
+    }finally{busy=false;notify();}
+  }
+
+  async function restorePreviousRestrictedBundle(language) {
+    if(!U3D1_OFFLINE_ACCESS_ENABLED || !U3D3B_RESTRICTED_PACKS_ENABLED ||
+       !currentEnrollment()||effectiveAccess().state!=='restricted_pending')
+      throw Error('Restricted pack rollback is disabled or not authorized.');
+    const guard=accountGuard(),id=owner,record=cachedAccessRecord;
+    const k=window.KGRestrictedPacks?.keys(id,language);
+    if(!k)throw Error('Restricted bundle validator unavailable.');
+    const prior=await get(k.previous);guard();
+    if(!prior)throw Error('No compatible earlier restricted bundle.');
+    const body=await get(k.payloadPrefix+prior.packageId);guard();
+    await window.KGRestrictedPacks.verify({
+      ownerId:id,language,policyRecord:record,
+      pointer:prior,body,cryptoApi:crypto,checkedAt:Date.now(),
+    });guard();
+    // A rollback is not permission to revive media from a revoked grant.
+    const media=await import(new URL('./js/kg-private-offline-media.mjs',document.baseURI).href);guard();
+    await media.inspectPrivateMediaStage({
+      descriptor:prior.mediaPointer.descriptor,ownerId:id,language,
+      policyRecord:{...record,checkedAt:prior.mediaPointer.checkedAt},
+      appOrigin:location.origin,offlineAccess:window.KGOfflineAccess,
+      learnerAccess:window.KGLearnerAccess,cacheStorage:caches,
+    });guard();
+    const snapshot=JSON.stringify(record.snapshot);
+    await transact(['kv'],tx=>{
+      const kv=tx.objectStore('kv');
+      const policyReq=kv.get(policyKey(id)),activeReq=kv.get(k.active);
+      activeReq.onsuccess=()=>{
+        if(owner!==id||!currentEnrollment()||
+           JSON.stringify(cachedAccessRecord?.snapshot)!==snapshot ||
+           JSON.stringify(policyReq.result?.snapshot)!==snapshot) {
+          tx.abort();return;
+        }
+        if(activeReq.result)kv.put(activeReq.result,k.previous);
+        kv.put(prior,k.active);
+      };
+    });guard();
+    return {restored:true,language,mediaAndText:true,
+      queuedChangesPreserved:true};
+  }
+
   async function readPrivateMedia(resource) {
     // A reader on a device without network must never attempt the public
     // Storage hash path or retry a signed token. Null means "not available".
@@ -640,7 +823,10 @@
       return null;
     const guard=accountGuard();
     const id=owner,lang=resource.language;
-    const pointer=await get(privateMediaKey(id,lang));guard();
+    const pointer=U3D3B_RESTRICTED_PACKS_ENABLED ?
+      (await readRestrictedBundle(lang)).pointer.mediaPointer :
+      await get(privateMediaKey(id,lang));
+    guard();
     if(!pointer)return null;
     const record=cachedAccessRecord;
     const playback=await import(new URL('./js/kg-private-offline-playback.mjs',document.baseURI).href);guard();
@@ -1713,6 +1899,7 @@
     ready:bounded(init(), 'Opening saved lessons', 20000).catch(e=>{fatal(e);throw e;}), wrapClient,afterVerified,downloadPack,
     previewRestrictedPack,stageRestrictedPrivateMedia,
     readPrivateMedia,restorePreviousPrivateMedia,
+    installRestrictedBundle,readRestrictedBundle,restorePreviousRestrictedBundle,
     auditRestrictedQueue,
     setLanguage:value=>{studyLanguage=value;},
     pause:()=>{pauseRequested=true;},sync,exportRecovery,importRecovery,
@@ -1723,6 +1910,7 @@
     status:()=>({appVersion,activeWorkerVersion,ownerId:owner,shellReady,
       readyLanguages:legacyAccessReady()?[...packs.keys()]:[],
       offlineAccess:U3D1_OFFLINE_ACCESS_ENABLED?{...effectiveAccess()}:{state:'legacy',reason:'stage_off'},
+      restrictedBundlesEnabled:U3D3B_RESTRICTED_PACKS_ENABLED,
       heldOutbox:U3D3A_OUTBOX_HOLD_ENABLED&&heldOutboxReview ?
         {...heldOutboxReview}:null,
       pending:pendingCount,lastSync,progress:{...progress},syncError,quizBusy,updateAvailable:!!pendingShellUpdate}),
