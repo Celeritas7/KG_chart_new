@@ -106,10 +106,13 @@ function cacheKey(appOrigin,ownerId,language,revision,hash){
   return originOf(appOrigin)+CACHE_PATH+ownerId+'/'+language+'/'+revision+'/'+hash+'.bin';
 }
 function expectedType(signed){
-  let ext;
-  try{ext=new URL(signed).pathname.match(/\.[a-z]+$/i)?.[0].toLowerCase();}catch(_){}
+  let ext,path='';
+  try{
+    path=new URL(signed).pathname;
+    ext=path.match(/\.[a-z]+$/i)?.[0]?.toLowerCase();
+  }catch(_){failure('signed media location is not a valid URL');}
   for(const [type,suffix] of MIME_EXT)if(ext===suffix)return type;
-  failure('unexpected private asset extension ('+String(ext)+')');
+  failure('unexpected private asset extension ('+String(ext)+', path ending '+path.slice(-8)+')');
 }
 function safeDescriptor(descriptor,{ownerId,language,policyRecord,appOrigin}){
   if(!descriptor||descriptor.contract!==1||
