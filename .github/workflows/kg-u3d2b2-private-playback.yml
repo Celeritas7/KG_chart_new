@@ -19,6 +19,10 @@ on:
       - 'tools/tests/u3d3a-outbox-hold.test.mjs'
       - 'docs/U3D3A-OUTBOX-REVIEW.md'
       - '.github/workflows/kg-u3d3a-outbox-hold.yml'
+      - 'offline/restricted-packs.js'
+      - 'tools/tests/u3d3b-restricted-bundles.test.mjs'
+      - 'docs/U3D3B-RESTRICTED-BUNDLES-REVIEW.md'
+      - '.github/workflows/kg-u3d3b-restricted-bundles.yml'
       - '.github/workflows/kg-u3c1-learner-access.yml'
       - '.github/workflows/kg-u3c2b1-protected-player.yml'
       - '.github/workflows/kg-u3c2b2-protected-media.yml'
@@ -47,9 +51,10 @@ jobs:
           node --check js/kg-audio.js
           node --check js/kg-protected-image.mjs
           node --check offline/access-outbox.js
+          node --check offline/restricted-packs.js
           node --check offline/runtime.js
           node --check offline/sw.js
-          node --test tools/tests/u3d2b2-private-playback.test.mjs tools/tests/u3c2b2-protected-media.test.mjs tools/tests/u3d2b1-private-media-stage.test.mjs tools/tests/u3d2a-scoped-pack.test.mjs tools/tests/u3d1-offline-policy.test.mjs offline/tests/private-lesson-privacy.test.mjs tools/tests/u3d3a-outbox-hold.test.mjs
+          node --test tools/tests/u3d2b2-private-playback.test.mjs tools/tests/u3c2b2-protected-media.test.mjs tools/tests/u3d2b1-private-media-stage.test.mjs tools/tests/u3d2a-scoped-pack.test.mjs tools/tests/u3d1-offline-policy.test.mjs offline/tests/private-lesson-privacy.test.mjs tools/tests/u3d3a-outbox-hold.test.mjs tools/tests/u3d3b-restricted-bundles.test.mjs
       - name: Enforce default-OFF flags and exact source-only path allowlist
         run: |
           set -euo pipefail
@@ -59,11 +64,12 @@ jobs:
           grep -Fq 'const U3D2B1_PRIVATE_MEDIA_STAGE_ENABLED = false;' offline/runtime.js
           grep -Fq 'const U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED = false;' offline/runtime.js
           grep -Fq 'const U3D3A_OUTBOX_HOLD_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D3B_RESTRICTED_PACKS_ENABLED = false;' offline/runtime.js
           BASE=$(git merge-base origin/main HEAD)
           git diff --name-only "$BASE" HEAD | tee /tmp/u3d2b2-reviewed.txt
           while IFS= read -r path; do
             case "$path" in
-              js/kg-private-offline-playback.mjs|js/kg-audio.js|js/kg-protected-image.mjs|offline/runtime.js|offline/sw.js|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3c2b2-protected-media.test.mjs|tools/build-offline.mjs|tools/tests/u3d2b2-private-playback.test.mjs|docs/U3D2B2-PRIVATE-OFFLINE-REVIEW.md|.github/workflows/kg-u3d2b2-private-playback.yml|offline/access-outbox.js|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|docs/U3D3A-OUTBOX-REVIEW.md|.github/workflows/kg-u3d3a-outbox-hold.yml|.github/workflows/kg-u3c1-learner-access.yml|.github/workflows/kg-u3c2b1-protected-player.yml|.github/workflows/kg-u3c2b2-protected-media.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml)
+              js/kg-private-offline-playback.mjs|js/kg-audio.js|js/kg-protected-image.mjs|offline/runtime.js|offline/sw.js|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3c2b2-protected-media.test.mjs|tools/build-offline.mjs|tools/tests/u3d2b2-private-playback.test.mjs|docs/U3D2B2-PRIVATE-OFFLINE-REVIEW.md|.github/workflows/kg-u3d2b2-private-playback.yml|offline/access-outbox.js|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|docs/U3D3A-OUTBOX-REVIEW.md|.github/workflows/kg-u3d3a-outbox-hold.yml|offline/restricted-packs.js|tools/tests/u3d3b-restricted-bundles.test.mjs|docs/U3D3B-RESTRICTED-BUNDLES-REVIEW.md|.github/workflows/kg-u3d3b-restricted-bundles.yml|.github/workflows/kg-u3c1-learner-access.yml|.github/workflows/kg-u3c2b1-protected-player.yml|.github/workflows/kg-u3c2b2-protected-media.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml)
                 ;;
               *)
                 echo "Unreviewed U3D2B2 path: $path"
