@@ -46,6 +46,10 @@
   let options = { autoUpdate: true, wifiOnly: true }, knownLanguages = [], selectedLang = 'my', quizBusy = false, panelOpen = false, shellReady = false;
   let pendingShellUpdate = null, applyingShellUpdate = false, shellUpdateError = '';
   let readinessReport=null,checkingReadiness=false;
+  // U4A: review evidence lives only in memory until manually exported.
+  // No re-enrollment, IndexedDB writes, caches.delete or hidden syncs.
+  let devicePanelOpen=false,devicePlatform='',deviceChecks=Object.create(null);
+  let deviceOfflineEvidence=null,deviceEvidenceWasOffline=false,deviceCheckMessage='';
   let accountEpoch=0;
   // U3D1: OFF by default. Restricted offline packs are NOT authorized
   // until U3D2/U3D3, even when a valid online grant exists.
@@ -1604,6 +1608,8 @@
     if(allowed.error || allowed.data!==true) throw Error('This account is not approved for KG Chart.');
     const adm=await live.rpc('kg_chart_is_admin');
     accountEpoch++;
+    devicePlatform='';deviceChecks=Object.create(null);
+    deviceOfflineEvidence=null;deviceEvidenceWasOffline=false;deviceCheckMessage='';
     enrollment={id:user.id,email:user.email.toLowerCase(),admin:adm.data===true,unlocked:true,verifiedAt:now()};
     owner=user.id;
     await transact(['kv'],tx=>{
@@ -1625,6 +1631,8 @@
   async function lockAccount() {
     // Sign-out never deletes outbox or existing content. It just revokes local presentation.
     accountEpoch++;readinessReport=null;heldOutboxReview=null;
+    devicePlatform='';deviceChecks=Object.create(null);
+    deviceOfflineEvidence=null;deviceEvidenceWasOffline=false;deviceCheckMessage='';
     cachedAccessRecord=null;accessView={state:'blocked',reason:'signed_out',revision:null};
     const prev=owner;
     if(typeof Event==='function') window.dispatchEvent?.(new Event('kg-account-locked'));
@@ -1715,6 +1723,58 @@
     const url=URL.createObjectURL(new Blob([JSON.stringify(readinessReport,null,2)],{type:'application/json'}));
     const a=document.createElement('a');a.href=url;a.download='kg-offline-readiness.json';a.click();
     setTimeout(()=>URL.revokeObjectURL(url),30000);
+  }
+
+  function deviceAcceptanceReport() {
+    const contract=window.KGDeviceAcceptance;
+    if(!contract?.createReport)throw Error('U4 device acceptance report is unavailable.');
+    return contract.createReport({
+      platform:devicePlatform,observations:deviceChecks,
+      readiness:deviceOfflineEvidence,wasOffline:deviceEvidenceWasOffline,
+      currentPending:currentEnrollment()?pendingCount:null,
+      edition:unified?'unified':'separate-offline',
+    });
+  }
+  async function verifyDeviceOffline() {
+    // Require actual disconnected state. The existing full file-hash
+    // readiness audit is reused, never a special-case fake PASS.
+    if(navigator.onLine) {
+      deviceOfflineEvidence=null;deviceEvidenceWasOffline=false;
+      deviceCheckMessage='Disconnect Wi-Fi/mobile data and reopen the installed app before verifying saved files.';
+      notify();return null;
+    }
+    const guard=accountGuard();
+    deviceOfflineEvidence=null;deviceEvidenceWasOffline=false;
+    deviceCheckMessage='Reading saved app and language files without internet…';
+    notify();
+    try{
+      const result=await verifyOffline();
+      guard();
+      if(navigator.onLine)throw Error('Connection changed during the offline audit. Repeat while disconnected.');
+      deviceOfflineEvidence=result;
+      deviceEvidenceWasOffline=true;
+      deviceCheckMessage=result.ready
+        ? 'Offline files verified. Physical steps still require manual observations.'
+        : 'Some saved files need attention. Reconnect and repair before relying on the device.';
+      notify();return result;
+    }catch(e) {
+      deviceOfflineEvidence=null;deviceEvidenceWasOffline=false;
+      deviceCheckMessage='Offline file verification incomplete: '+humanError(e);
+      notify();throw e;
+    }
+  }
+  function exportDeviceAcceptance() {
+    if(!currentEnrollment())throw Error('Sign in as this device account before exporting acceptance.');
+    // Only sanitized counts and human observations; not the older detailed
+    // readiness report or recovery JSON (which contain private filenames).
+    const report=deviceAcceptanceReport();
+    const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;a.download='kg-u4a-device-acceptance-'+report.platform+'.json';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),30000);
+    return report;
   }
 
   function tellWorker() {
@@ -1822,6 +1882,21 @@
     const complete=ready.length && shellReady ? 'App files and lessons are saved. Verify offline reopening on this device before relying on them.' :
       ready.length ? 'Language pack saved. Finish installing the app shell and reopen once while online before going offline.' :
       'No complete pack yet. Sign in and download before taking this edition offline.';
+    const deviceContract=window.KGDeviceAcceptance;
+    const deviceSummary=deviceContract?.createReport?.({
+      platform:devicePlatform,observations:deviceChecks,
+      readiness:deviceOfflineEvidence,wasOffline:deviceEvidenceWasOffline,
+      currentPending:currentEnrollment()?pendingCount:null,
+      edition:unified?'unified':'separate-offline',
+    });
+    const deviceCases=deviceContract?.CASES||[];
+    const deviceCaseControls=deviceCases.map(item=>
+      '<label>'+esc(item.label)+
+      '<select id="kg-u4-'+esc(item.id)+'" aria-label="'+esc(item.label)+'">'+
+      [['not_tested','Not tested'],['pass','Pass (I checked)'],['fail','Fail']].map(([value,label])=>
+        '<option value="'+value+'"'+(deviceChecks[item.id]===value?' selected':'')+'>'+label+'</option>').join('')+
+      '</select><small>'+esc(item.instruction)+'</small></label>'
+    ).join('');
     const updateBlocked=quizBusy || busy || syncing;
     const updateReason=quizBusy ? 'Open the Chart tab to enable the update.' :
       busy ? 'Finish or pause the language-pack download first.' :
@@ -1864,6 +1939,35 @@
             <label><input type="checkbox" id="kg-wifi" ${options.wifiOnly?'checked':''}> Wi-Fi only when the browser identifies it</label>
           </div>
           ${readinessReport ? `<p class="kg-offline-message">File check: ${readinessReport.ready?'Passed':'Needs attention'} · ${readinessReport.edition} · ${esc(readinessReport.appVersion)} · ${readinessReport.pendingChanges} unsent changes · ${readinessReport.packs.reduce((sum,p)=>sum+p.missingPictures,0)} picture placeholders. Physical Airplane-mode testing is still required.</p>` : ''}
+          <details id="kg-u4-device" ${devicePanelOpen?'open':''}>
+            <summary><strong>U4 device acceptance</strong> · Android/iPad · ${esc(deviceSummary?.baselineVerdict||'incomplete')}</summary>
+            <div class="kg-offline-body">
+              <p>Record real device results. No test automatically marks a physical check as passed.
+              Restricted-user access is NOT authorized. This checklist never uploads a report or alters study storage.</p>
+              <label>Device
+                <select id="kg-u4-platform" aria-label="Device platform">
+                  <option value="" ${!devicePlatform?'selected':''}>Select device</option>
+                  <option value="android" ${devicePlatform==='android'?'selected':''}>Android</option>
+                  <option value="ipad" ${devicePlatform==='ipad'?'selected':''}>iPad Home Screen app</option>
+                </select>
+              </label>
+              <div class="kg-offline-actions">
+                <button id="kg-u4-check" ${!currentEnrollment()||checkingReadiness||busy||syncing||quizBusy?'disabled':''}>Verify saved files offline</button>
+                <button id="kg-u4-export" ${!currentEnrollment()?'disabled':''}>Export U4 evidence (counts only)</button>
+              </div>
+              <p role="status">${esc(deviceCheckMessage||
+                'First reopen the installed app with Airplane mode enabled. Then verify saved files while still offline.')}</p>
+              <p>Offline file check: ${deviceOfflineEvidence?
+                (deviceSummary?.readiness?.ready?'Files verified':'Needs attention'):
+                'Not checked on this app session'} · User observations: ${deviceSummary?.totals?.passed||0} passed,
+                ${deviceSummary?.totals?.failed||0} failed, ${deviceSummary?.totals?.notTested||deviceCases.length} untested</p>
+              <div class="kg-offline-grid kg-offline-options">${deviceCaseControls}</div>
+              <p><strong>Baseline verdict:</strong> ${esc(deviceSummary?.baselineVerdict||'incomplete')}.
+              <strong>Restricted sharing:</strong> NOT TESTED / NO-GO.
+              Do not clear browser storage, uninstall the PWA or sign out for this test.
+              Recovery backup exports contain personal data; keep them privately.</p>
+            </div>
+          </details>
           <p class="kg-offline-foot">App version: ${esc(appVersion)} · Active worker: ${esc(activeWorkerVersion||'Checking…')}</p>
           <p class="kg-offline-foot">Last server-acknowledged sync: ${shortDate(lastSync)}. ${pendingCount} unsent changes.
             Account verification and audio assessment need internet. Expired sessions need reauthentication before sync.
@@ -1872,6 +1976,20 @@
       </details>
     </section>`;
     node.querySelector('details')?.addEventListener('toggle',e=>{panelOpen=e.target.open;});
+    node.querySelector('#kg-u4-device')?.addEventListener('toggle',e=>{devicePanelOpen=e.target.open;});
+    node.querySelector('#kg-u4-platform')?.addEventListener('change',e=>{
+      devicePlatform=e.target.value;renderPanel();
+    });
+    for(const item of deviceCases){
+      node.querySelector('#kg-u4-'+item.id)?.addEventListener('change',e=>{
+        deviceChecks[item.id]=e.target.value;renderPanel();
+      });
+    }
+    node.querySelector('#kg-u4-check')?.addEventListener('click',()=>
+      verifyDeviceOffline().catch(e=>{deviceCheckMessage=humanError(e);notify();}));
+    node.querySelector('#kg-u4-export')?.addEventListener('click',()=>
+      {try{exportDeviceAcceptance();}
+       catch(e){deviceCheckMessage=humanError(e);notify();}});
     node.querySelector('#kg-check-app-update')?.addEventListener('click',()=>{
       if(window.KGCheckAppUpdate) window.KGCheckAppUpdate();
       else {progress.phase='App updater is not ready. Reopen while connected and try again.';notify();}
@@ -1935,7 +2053,10 @@
     progress.phase=currentEnrollment() ? 'Saved packs are ready.' : 'Sign in online to authorize this device and download lessons.';
     notify();
     navigator.serviceWorker?.addEventListener('controllerchange',()=>{
-      shellReady=false;sharedPicturesReady=false;pendingShellUpdate=null;applyingShellUpdate=false;tellWorker();notify();
+      shellReady=false;sharedPicturesReady=false;pendingShellUpdate=null;applyingShellUpdate=false;
+      deviceOfflineEvidence=null;deviceEvidenceWasOffline=false;
+      deviceCheckMessage='App worker changed. Repeat the offline file check before exporting evidence.';
+      tellWorker();notify();
     });
     navigator.serviceWorker?.addEventListener('message',event=>{
       if(event.data?.type==='KG_OFFLINE_VERSION' && event.source===navigator.serviceWorker.controller) {
@@ -1994,7 +2115,8 @@
     setQuizBusy:value=>{if(quizBusy!==!!value){quizBusy=!!value;notify();}},
     canApplyShellUpdate:()=>!quizBusy && !busy && !syncing,
     offerShellUpdate:apply=>{pendingShellUpdate=typeof apply==='function'?apply:null;applyingShellUpdate=false;shellUpdateError='';notify();},
-    verifyOffline,readMedia,tellWorker,notice:message=>{progress.phase=message;notify();},fatal,
+    verifyOffline,verifyDeviceOffline,deviceAcceptanceReport,exportDeviceAcceptance,
+    readMedia,tellWorker,notice:message=>{progress.phase=message;notify();},fatal,
     status:()=>({appVersion,activeWorkerVersion,ownerId:owner,shellReady,
       readyLanguages:legacyAccessReady()?[...packs.keys()]:[],
       offlineAccess:U3D1_OFFLINE_ACCESS_ENABLED?{...effectiveAccess()}:{state:'legacy',reason:'stage_off'},
