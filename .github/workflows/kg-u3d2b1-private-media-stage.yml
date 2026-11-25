@@ -1,0 +1,60 @@
+name: KG Chart U3D2B1 - private media stage isolation (synthetic)
+
+on:
+  pull_request:
+    paths:
+      - 'js/kg-private-offline-media.mjs'
+      - 'offline/runtime.js'
+      - 'tools/build-offline.mjs'
+      - 'tools/tests/u3d2b1-private-media-stage.test.mjs'
+      - '.github/workflows/kg-u3d2b1-private-media-stage.yml'
+      - '.github/workflows/kg-u3d1-offline-policy.yml'
+      - '.github/workflows/kg-u3d2a-scoped-pack.yml'
+      - 'docs/U3D2B1-PRIVATE-MEDIA-REVIEW.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-bound-private-bytes:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Run isolated private media byte/auth and previous entitlement contracts
+        run: |
+          set -euo pipefail
+          node --check js/kg-private-offline-media.mjs
+          node --check offline/runtime.js
+          node --test tools/tests/u3d2b1-private-media-stage.test.mjs tools/tests/u3d2a-scoped-pack.test.mjs tools/tests/u3d1-offline-policy.test.mjs
+      - name: Verify release gates remain OFF and exact reviewed file allowlist
+        run: |
+          set -euo pipefail
+          grep -Fq 'const U3C1_SCOPED_UI_ENABLED = false;' index.html
+          grep -Fq 'const U3D1_OFFLINE_ACCESS_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D2_SCOPED_PACK_PREVIEW_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D2B1_PRIVATE_MEDIA_STAGE_ENABLED = false;' offline/runtime.js
+          BASE=$(git merge-base origin/main HEAD)
+          git diff --name-only "$BASE" HEAD | tee /tmp/u3d2b1-files.txt
+          while IFS= read -r path; do
+            case "$path" in
+              js/kg-private-offline-media.mjs|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d2b1-private-media-stage.test.mjs|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|docs/U3D2B1-PRIVATE-MEDIA-REVIEW.md)
+                ;;
+              *)
+                echo "Unreviewed U3D2B1 path: $path"
+                exit 1
+                ;;
+            esac
+          done < /tmp/u3d2b1-files.txt
+          if grep -Eq '^(sql/|supabase/|offline/sw.js|offline/pictures.js|offline/audio-manifest.js|index.html|js/kg-audio.js)' /tmp/u3d2b1-files.txt; then
+            echo 'No backend/worker/media/online learner activation authorized'
+            exit 1
+          fi
+
+# No real user or provider access. Dual-edition CI separately validates
+# network-disabled browser startup, migration and rollback.

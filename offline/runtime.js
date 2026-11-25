@@ -53,6 +53,10 @@
   // U3D2A deliberately creates NO restricted pack. This read-only preview
   // contract is independently OFF until all backend/media gates are reviewed.
   const U3D2_SCOPED_PACK_PREVIEW_ENABLED = false;
+  // U3D2B1: stages short-lived, source-authorized private bytes in a new
+  // owner's isolated cache only. NEVER activates the stage or writes pack
+  // pointers. The live switch stays OFF through B2/U3D3 device acceptance.
+  const U3D2B1_PRIVATE_MEDIA_STAGE_ENABLED = false;
   let cachedAccessRecord=null;
   let accessView={state:'blocked',reason:'unverified',revision:null};
   const policyKey=id=>'offline-access-policy:'+id;
@@ -411,9 +415,10 @@
   // U3D2A: inspect only account-granted source rows, never download all
   // languages/topics and then try to hide unwanted media. This preview is
   // kept entirely in memory and NEVER switches an active pack pointer.
-  async function previewRestrictedPack(lang) {
-    if(!U3D1_OFFLINE_ACCESS_ENABLED || !U3D2_SCOPED_PACK_PREVIEW_ENABLED)
-      throw Error('Restricted offline preview is disabled pending release review.');
+  async function assembleRestrictedCandidate(lang) {
+    if(!U3D1_OFFLINE_ACCESS_ENABLED ||
+       (!U3D2_SCOPED_PACK_PREVIEW_ENABLED && !U3D2B1_PRIVATE_MEDIA_STAGE_ENABLED))
+      throw Error('Restricted offline content preparation is disabled pending release review.');
     if(!currentEnrollment() || !navigator.onLine || !live)
       throw Error('Connect and verify the enrolled account before restricted preview.');
     const guard=accountGuard();
@@ -489,13 +494,76 @@
        cachedAccessRecord.snapshot.revision!==candidate.manifest.policyRevision ||
        JSON.stringify(cachedAccessRecord.snapshot)!==JSON.stringify(original.snapshot))
       throw Error('Access changed during preview; no pack was installed.');
+    return {candidate,policyRecord:original,sentenceScope};
+  }
+
+  async function previewRestrictedPack(lang) {
+    if(!U3D1_OFFLINE_ACCESS_ENABLED || !U3D2_SCOPED_PACK_PREVIEW_ENABLED)
+      throw Error('Restricted offline preview is disabled pending release review.');
+    const {candidate}=await assembleRestrictedCandidate(lang);
     return {
       ...candidate.manifest,
       previewOnly:true,downloadable:false,
-      // This is an intentionally safe aggregate; no media IDs or text contents.
-      description:'Reviewed content preview only. Private media and filtered offline activation await U3D2B/U3D3.',
+      description:'Content preview only. Private media and restricted pack activation await U3D2B2/U3D3.',
     };
   }
+
+  async function stageRestrictedPrivateMedia(lang) {
+    if(!U3D1_OFFLINE_ACCESS_ENABLED || !U3D2B1_PRIVATE_MEDIA_STAGE_ENABLED)
+      throw Error('Private offline media staging is disabled pending release review.');
+    if(!currentEnrollment() || !navigator.onLine || busy || syncing || quizBusy)
+      throw Error('Verify the account online and finish the current quiz, download or sync first.');
+    // Only a verified restricted snapshot can reach this path. The candidate
+    // uses scoped RLS queries; the signer reauthorizes EACH source again.
+    const guard=accountGuard();
+    const {candidate,policyRecord,sentenceScope}=await assembleRestrictedCandidate(lang);
+    guard();
+    if(!candidate.mediaPlan.length)
+      throw Error('No private media sources to stage. Existing packs are untouched.');
+    const ownerAtStart=owner;
+    const snapshot=JSON.stringify(policyRecord.snapshot);
+    const assertCurrent=()=>{
+      guard();
+      if(owner!==ownerAtStart || !currentEnrollment() ||
+         !navigator.onLine || !cachedAccessRecord ||
+         JSON.stringify(cachedAccessRecord.snapshot)!==snapshot ||
+         effectiveAccess().state!=='restricted_pending')
+        throw Error('Account or permissions changed during private media staging.');
+    };
+    assertCurrent();
+    const appOrigin=location.origin;
+    const projectUrl=new URL(mediaBase()).origin;
+    const module=await import('./kg-private-offline-media.mjs');
+    assertCurrent();
+    const args={
+      ownerId:ownerAtStart,language:lang,policyRecord,
+      appOrigin,offlineAccess:window.KGOfflineAccess,
+      learnerAccess:window.KGLearnerAccess,cacheStorage:caches,
+    };
+    let descriptor;
+    try{
+      descriptor=await module.stagePrivateMedia({
+        ...args,mediaPlan:candidate.mediaPlan,sentenceScope,
+        supabase:live,projectUrl,assertCurrent,
+      });
+      assertCurrent();
+      // A policy change during an in-progress signed download must never
+      // promote the staged bytes; check caller identity/revision again.
+      const latest=await refreshVerifiedAccess();guard();
+      if(latest.state!=='restricted_pending' ||
+         JSON.stringify(cachedAccessRecord.snapshot)!==snapshot)
+        throw Error('Permissions changed; the staged private media cannot be activated.');
+      const verified=await module.inspectPrivateMediaStage({...args,descriptor});
+      assertCurrent();
+      return {...verified,stagedOnly:true,
+        readyToInstall:false,cacheName:descriptor.cacheName};
+    }catch(error){
+      if(descriptor)
+        await module.discardPrivateMediaStage({...args,descriptor}).catch(()=>{});
+      throw error;
+    }
+  }
+
 
   function requiredMedia(data,lang) {
     const root = mediaBase();
@@ -1502,7 +1570,7 @@
   window.KGOffline={
     openSettings,
     ready:bounded(init(), 'Opening saved lessons', 20000).catch(e=>{fatal(e);throw e;}), wrapClient,afterVerified,downloadPack,
-    previewRestrictedPack,
+    previewRestrictedPack,stageRestrictedPrivateMedia,
     setLanguage:value=>{studyLanguage=value;},
     pause:()=>{pauseRequested=true;},sync,exportRecovery,importRecovery,
     setQuizBusy:value=>{if(quizBusy!==!!value){quizBusy=!!value;notify();}},
