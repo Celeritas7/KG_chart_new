@@ -132,6 +132,7 @@ test('Restricted auto-sync is preflight-HOLD: no writes, deletions, pull or leve
   accountGuard:()=>()=>{},
   notify:()=>{},
   U3D1_OFFLINE_ACCESS_ENABLED:true,U3D3A_OUTBOX_HOLD_ENABLED:true,
+  U3D3C_RESTRICTED_SYNC_ENABLED:false,
   refreshVerifiedAccess:async()=>({state:'restricted_pending'}),
   legacyAccessReady:()=>false,
   auditRestrictedQueue:async()=>{calls.audit++;return {held:7,publishable:false};},
@@ -167,7 +168,7 @@ test('Source-only rollout guard: all legacy gates and U3D3A are OFF, DB/outbox s
  assert.match(runtime,/syncError='Permission review:/);
  assert.match(runtime,/No syncEvent/);
  assert(build.includes("'offline/access-outbox.js', 'js/offline-access-outbox.js'"));
- assert(build.includes('<script src="./js/offline-access-outbox.js"></script><script src="./js/offline-restricted-packs.js"></script><script src="./js/offline-runtime.js"></script>'));
+ assert(build.includes('<script src="./js/offline-access-outbox.js"></script><script src="./js/offline-restricted-packs.js"></script><script src="./js/offline-restricted-sync.js"></script><script src="./js/offline-runtime.js"></script>'));
  const unsafe=['indexedDB.deleteDatabase','caches.deleteAll','serviceWorker.unregister','DELETE FROM'];
  for(const tag of unsafe)assert(!runtime.includes(tag),tag);
 });
