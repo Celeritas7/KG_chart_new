@@ -91,7 +91,7 @@
     if(typeof value!=='string'||value.length>180)forbid('unsafe picture filename');
     if(value.startsWith('emoji:')){
       const emoji=value.slice(6);
-      if(!emoji || !/^[\\p{Emoji_Presentation}\\p{Emoji}\\u200d\\ufe0f ]{1,30}$/u.test(emoji))
+      if(!emoji || !/^[\p{Emoji_Presentation}\p{Emoji}\u200d\ufe0f ]{1,30}$/u.test(emoji))
         forbid('invalid local emoji picture');
       return value;
     }
