@@ -1,0 +1,72 @@
+name: KG Chart U4A - Android/iPad acceptance evidence (no live devices)
+
+on:
+  pull_request:
+    paths:
+      - 'offline/device-acceptance.js'
+      - 'offline/runtime.js'
+      - 'tools/build-offline.mjs'
+      - 'tools/tests/u4a-device-acceptance.test.mjs'
+      - 'docs/U4A-DEVICE-ACCEPTANCE-REVIEW.md'
+      - '.github/workflows/kg-u4a-device-acceptance.yml'
+      - '.github/workflows/kg-u3d1-offline-policy.yml'
+      - '.github/workflows/kg-u3d2a-scoped-pack.yml'
+      - '.github/workflows/kg-u3d2b1-private-media-stage.yml'
+      - '.github/workflows/kg-u3d2b2-private-playback.yml'
+      - '.github/workflows/kg-u3d3a-outbox-hold.yml'
+      - '.github/workflows/kg-u3d3b-restricted-bundles.yml'
+      - '.github/workflows/kg-u3d3c-restricted-sync.yml'
+      - 'tools/tests/u3d1-offline-policy.test.mjs'
+      - 'tools/tests/u3d2a-scoped-pack.test.mjs'
+      - 'tools/tests/u3d3a-outbox-hold.test.mjs'
+      - 'tools/tests/u3d3b-restricted-bundles.test.mjs'
+      - 'tools/tests/u3d3c-restricted-sync.test.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-and-physical-truth:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify privacy-safe device report and unchanged offline source contracts
+        run: |
+          set -euo pipefail
+          node --check offline/device-acceptance.js
+          node --check offline/runtime.js
+          node --check tools/build-offline.mjs
+          node --test tools/tests/u4a-device-acceptance.test.mjs tools/tests/u3d3c-restricted-sync.test.mjs tools/tests/u3d3b-restricted-bundles.test.mjs tools/tests/u3d3a-outbox-hold.test.mjs tools/tests/u3d2b2-private-playback.test.mjs tools/tests/u3d2b1-private-media-stage.test.mjs tools/tests/u3d2a-scoped-pack.test.mjs tools/tests/u3d1-offline-policy.test.mjs offline/tests/app-update.test.mjs
+      - name: Enforce no false hardware PASS, source gates OFF, no backend/worker/data changes
+        run: |
+          set -euo pipefail
+          grep -Fq 'const U3C1_SCOPED_UI_ENABLED = false;' index.html
+          for flag in U3D1_OFFLINE_ACCESS_ENABLED U3D2_SCOPED_PACK_PREVIEW_ENABLED U3D2B1_PRIVATE_MEDIA_STAGE_ENABLED U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED U3D3A_OUTBOX_HOLD_ENABLED U3D3B_RESTRICTED_PACKS_ENABLED U3D3C_RESTRICTED_SYNC_ENABLED; do
+            grep -Fq "const $flag = false;" offline/runtime.js
+          done
+          BASE=$(git merge-base origin/main HEAD)
+          git diff --name-only "$BASE" HEAD | tee /tmp/u4a-review.txt
+          while IFS= read -r path; do
+            case "$path" in
+              offline/device-acceptance.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u4a-device-acceptance.test.mjs|docs/U4A-DEVICE-ACCEPTANCE-REVIEW.md|.github/workflows/kg-u4a-device-acceptance.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d2b2-private-playback.yml|.github/workflows/kg-u3d3a-outbox-hold.yml|.github/workflows/kg-u3d3b-restricted-bundles.yml|.github/workflows/kg-u3d3c-restricted-sync.yml|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|tools/tests/u3d3c-restricted-sync.test.mjs)
+                ;;
+              *)
+                echo "Unreviewed U4A file: $path"
+                exit 1
+                ;;
+            esac
+          done < /tmp/u4a-review.txt
+          if grep -Eq '^(sql/|supabase/|offline/sw.js|offline/pictures.js|offline/audio-manifest.js|index.html|js/kg-audio.js|js/kg-protected-image.mjs)' /tmp/u4a-review.txt; then
+            echo 'No backend, service worker, login, media or production UI changes'
+            exit 1
+          fi
+
+# This is a synthetic CI workflow; it cannot assert iPad or Android hardware PASS.
+# Real Airplane mode, user-gesture audio and installed PWA acceptance require the
+# owner's physical-device observations, captured through the U4 panel.
