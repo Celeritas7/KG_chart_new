@@ -6,6 +6,9 @@ on:
       - 'index.html'
       - 'js/kg-learner-access.js'
       - 'tools/build-offline.mjs'
+      - 'offline/sw.js'
+      - 'js/kg-private-offline-playback.mjs'
+      - '.github/workflows/kg-u3d2b2-private-playback.yml'
       - 'tools/tests/u3c1-learner-permissions.test.mjs'
       - 'docs/U3C1-LEARNER-ACCESS-REVIEW.md'
       - '.github/workflows/kg-u3c1-learner-access.yml'
@@ -34,7 +37,7 @@ jobs:
           set -euo pipefail
           BASE=$(git merge-base origin/main HEAD)
           git diff --name-only "$BASE" HEAD | tee /tmp/u3c-changes.txt
-          if grep -Eq '^(supabase/|offline/sw.js)' /tmp/u3c-changes.txt; then
+          if grep -Eq '^(supabase/)' /tmp/u3c-changes.txt; then
             echo 'U3C1/C2 must not alter Edge, offline service worker or Storage.'
             exit 1
           fi
@@ -43,6 +46,10 @@ jobs:
           if grep -Fxq 'offline/runtime.js' /tmp/u3c-changes.txt; then
             grep -Fq 'const U3D1_OFFLINE_ACCESS_ENABLED = false;' offline/runtime.js
             node --test tools/tests/u3d1-offline-policy.test.mjs
+          fi
+          if grep -Fxq 'offline/sw.js' /tmp/u3c-changes.txt; then
+            grep -Fq 'const U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED = false;' offline/runtime.js
+            node --test tools/tests/u3d2b2-private-playback.test.mjs
           fi
           if grep '^sql/' /tmp/u3c-changes.txt | grep -Ev '^sql/kg-chart-u3c2-sentence-topic-mapping[.]sql$'; then
             echo 'Only the reviewed U3C2 sentence mapping SQL is allowed in this stage.'
