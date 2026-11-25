@@ -2799,49 +2799,105 @@
 
       const [imageRetry, setImageRetry] = useState(0);
       const [imageLoad, setImageLoad] = useState({ key: '', status: 'loading' });
-      const quizImageUrl = (item) => {
-        const url = getImageUrl(item.topic_id, item.image_filename);
-        return imageRetry ? url + (url.includes('?') ? '&' : '?') + 'kg_retry=' + imageRetry : url;
-      };
+      const [privateQuizImages, setPrivateQuizImages] = useState({ key: null, urls: {} });
+      const mediaScope = useContext(KGMediaScopeContext);
+      const protectedQuizPictures = U3C1_SCOPED_UI_ENABLED && mediaScope?.policy?.state === 'restricted';
       const pictureOptions = ['native_to_image', 'devanagari_to_image', 'listen_to_image'].includes(quizType);
       const imageItems = pictureOptions ? options : quizType === 'image_to_native' ? [currentQuestion] : [];
-      const requiredImages = [...new Set(imageItems.filter(item => item && !item.extra_data?.colorCode).map(quizImageUrl))];
-      const imageKey = JSON.stringify([currentWordIndex, currentQuestion?.id, imageRetry, requiredImages]);
+      const requiredWordImages = imageItems.filter(item => item && !item.extra_data?.colorCode &&
+        !item.image_filename?.startsWith('emoji:'));
+      // For ordinary legacy learners, retain the existing saved public-media
+      // preloader exactly. For restricted learners, fetch only authorized
+      // source-bound pictures and render ephemeral in-memory URLs.
+      const legacyQuizImageUrl = (item) => {
+        const url = getImageUrl(item?.topic_id, item?.image_filename);
+        return url && imageRetry ? url + (url.includes('?') ? '&' : '?') + 'kg_retry=' + imageRetry : url;
+      };
+      const publicRequired = protectedQuizPictures ? [] :
+        [...new Set(requiredWordImages.map(legacyQuizImageUrl))];
+      const imageKey = JSON.stringify([
+        currentWordIndex, currentQuestion?.id, imageRetry,
+        protectedQuizPictures
+          ? [mediaScope?.ownerId, mediaScope?.policy?.revision, languageCode,
+            requiredWordImages.map(w => [w.id, w.topic_id, w.image_filename])]
+          : publicRequired,
+      ]);
+      const quizImageUrl = (item) => {
+        if (!item) return null;
+        if (protectedQuizPictures && !item.image_filename?.startsWith('emoji:'))
+          return privateQuizImages.key === imageKey ? privateQuizImages.urls[item.id] || null : null;
+        return legacyQuizImageUrl(item);
+      };
+      const privateImagesReady = !protectedQuizPictures ||
+        (privateQuizImages.key === imageKey &&
+          requiredWordImages.every(w => !!privateQuizImages.urls[w.id]));
       const imagesReady = currentQuestion === quizWords[currentWordIndex] &&
-        (!requiredImages.length || (imageLoad.key === imageKey && imageLoad.status === 'ready'));
+        (!requiredWordImages.length ||
+          (imageLoad.key === imageKey && imageLoad.status === 'ready' && privateImagesReady));
       useEffect(() => {
         if (!quizStarted || quizCompleted || isTyped || !currentQuestion) return;
         let cancelled = false;
-        const pending = [];
+        const controller = new AbortController();
+        const pending = [], privateLeases = [];
         setImageLoad({ key: imageKey, status: 'loading' });
         const timeout = setTimeout(() => {
           if (!cancelled) setImageLoad({ key: imageKey, status: 'error' });
         }, 15000);
-        Promise.all(requiredImages.map(url => new Promise((resolve, reject) => {
-          const img = new Image(); pending.push(img);
-          img.onload = () => {
-            const decoded = img.decode ? img.decode() : Promise.resolve();
-            decoded.then(() => img.naturalWidth ? resolve() : reject()).catch(reject);
-          };
-          img.onerror = reject; img.src = url;
-        }))).then(() => {
+        const completed = () => {
           clearTimeout(timeout);
           if (!cancelled) setImageLoad({ key: imageKey, status: 'ready' });
-        }).catch(() => {
+        };
+        const failed = () => {
           clearTimeout(timeout);
           if (!cancelled) setImageLoad({ key: imageKey, status: 'error' });
-        });
-        return () => { cancelled = true; clearTimeout(timeout); pending.forEach(img => { img.onload = null; img.onerror = null; }); };
-      }, [quizStarted, quizCompleted, isTyped, imageKey]);
-      // Warm the next question's image cache without affecting readiness or scoring.
+        };
+        if (protectedQuizPictures) {
+          import(new URL('./js/kg-protected-image.mjs', document.baseURI).href)
+            .then(({ loadProtectedWordPicture }) => Promise.all(requiredWordImages.map(async word => {
+              const lease = await loadProtectedWordPicture({
+                resource: { type: 'word_image', id: word.id,
+                  topicId: word.topic_id, language: languageCode },
+                policy: mediaScope.policy, sentenceScope: mediaScope.sentenceScope,
+                supabase, projectUrl: SUPABASE_URL, signal: controller.signal,
+              });
+              if (cancelled) { lease?.release(); throw Error('Picture request cancelled'); }
+              if (!lease) throw Error('Protected picture is not available');
+              privateLeases.push(lease);
+              return [word.id, lease.url];
+            })))
+            .then(rows => {
+              if (cancelled) return;
+              setPrivateQuizImages({ key: imageKey, urls: Object.fromEntries(rows) });
+              completed();
+            }).catch(failed);
+        } else {
+          Promise.all(publicRequired.map(url => new Promise((resolve, reject) => {
+            if (!url) { reject(Error('Missing published picture')); return; }
+            const img = new Image(); pending.push(img);
+            img.onload = () => {
+              const decoded = img.decode ? img.decode() : Promise.resolve();
+              decoded.then(() => img.naturalWidth ? resolve() : reject()).catch(reject);
+            };
+            img.onerror = reject; img.src = url;
+          }))).then(completed).catch(failed);
+        }
+        return () => {
+          cancelled = true; controller.abort(); clearTimeout(timeout);
+          pending.forEach(img => { img.onload = null; img.onerror = null; });
+          privateLeases.forEach(lease => lease.release());
+        };
+      }, [quizStarted, quizCompleted, isTyped, imageKey, protectedQuizPictures]);
+      // Signed URLs expire quickly. Never warm private pictures for later
+      // questions using public cache entries or soon-to-expire signatures.
       useEffect(() => {
-        if (!quizStarted || quizCompleted || isTyped) return;
+        if (protectedQuizPictures || !quizStarted || quizCompleted || isTyped) return;
         const next = quizWords[currentWordIndex + 1];
         const items = pictureOptions ? (quizOptions[currentWordIndex + 1] || []) : quizType === 'image_to_native' && next ? [next] : [];
         items.filter(item => !item.extra_data?.colorCode).forEach(item => {
-          const image = new Image(); image.src = getImageUrl(item.topic_id, item.image_filename);
+          const url = getImageUrl(item.topic_id, item.image_filename);
+          if (url) { const image = new Image(); image.src = url; }
         });
-      }, [quizStarted, quizCompleted, isTyped, quizWords, quizOptions, currentWordIndex, quizType]);
+      }, [protectedQuizPictures, quizStarted, quizCompleted, isTyped, quizWords, quizOptions, currentWordIndex, quizType]);
 
       const handleAnswer = (item) => {
         if (showResult || !imagesReady) return;
