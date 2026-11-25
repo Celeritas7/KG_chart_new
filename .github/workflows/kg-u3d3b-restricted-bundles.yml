@@ -1,0 +1,70 @@
+name: KG Chart U3D3B - restricted atomic lesson/media bundles (synthetic)
+
+on:
+  pull_request:
+    paths:
+      - 'offline/restricted-packs.js'
+      - 'offline/runtime.js'
+      - 'tools/build-offline.mjs'
+      - 'tools/tests/u3d3b-restricted-bundles.test.mjs'
+      - '.github/workflows/kg-u3d3b-restricted-bundles.yml'
+      - 'docs/U3D3B-RESTRICTED-BUNDLES-REVIEW.md'
+      - '.github/workflows/kg-u3d1-offline-policy.yml'
+      - '.github/workflows/kg-u3d2a-scoped-pack.yml'
+      - '.github/workflows/kg-u3d2b1-private-media-stage.yml'
+      - '.github/workflows/kg-u3d2b2-private-playback.yml'
+      - '.github/workflows/kg-u3d3a-outbox-hold.yml'
+      - 'tools/tests/u3d1-offline-policy.test.mjs'
+      - 'tools/tests/u3d2a-scoped-pack.test.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restricted-text-media-pairing:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test owner/policy/revision-bound text and protected media without cloud
+        run: |
+          set -euo pipefail
+          node --check offline/restricted-packs.js
+          node --check offline/runtime.js
+          node --check tools/build-offline.mjs
+          node --test tools/tests/u3d3b-restricted-bundles.test.mjs tools/tests/u3d3a-outbox-hold.test.mjs tools/tests/u3d2b2-private-playback.test.mjs tools/tests/u3d2b1-private-media-stage.test.mjs tools/tests/u3d2a-scoped-pack.test.mjs tools/tests/u3d1-offline-policy.test.mjs offline/tests/private-lesson-privacy.test.mjs
+      - name: Enforce source OFF and no production or worker modifications
+        run: |
+          set -euo pipefail
+          grep -Fq 'const U3C1_SCOPED_UI_ENABLED = false;' index.html
+          grep -Fq 'const U3D1_OFFLINE_ACCESS_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D2_SCOPED_PACK_PREVIEW_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D2B1_PRIVATE_MEDIA_STAGE_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D2B2_PRIVATE_OFFLINE_PLAYBACK_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D3A_OUTBOX_HOLD_ENABLED = false;' offline/runtime.js
+          grep -Fq 'const U3D3B_RESTRICTED_PACKS_ENABLED = false;' offline/runtime.js
+          BASE=$(git merge-base origin/main HEAD)
+          git diff --name-only "$BASE" HEAD | tee /tmp/u3d3b-changed.txt
+          while IFS= read -r path; do
+            case "$path" in
+              offline/restricted-packs.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|docs/U3D3B-RESTRICTED-BUNDLES-REVIEW.md|.github/workflows/kg-u3d3b-restricted-bundles.yml|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d2b2-private-playback.yml|.github/workflows/kg-u3d3a-outbox-hold.yml|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs)
+                ;;
+              *)
+                echo "Unexpected U3D3B change: $path"
+                exit 1
+                ;;
+            esac
+          done < /tmp/u3d3b-changed.txt
+          if grep -Eq '^(sql/|supabase/|offline/sw.js|offline/pictures.js|offline/audio-manifest.js|index.html|js/kg-audio.js|js/kg-private-offline-media.mjs|js/kg-private-offline-playback.mjs)' /tmp/u3d3b-changed.txt; then
+            echo 'Backend/worker/private media/online learner activation is not approved'
+            exit 1
+          fi
+
+# No live Supabase accounts, Storage/Edge, OAuth, Cloudflare or CDN.
+# The existing both-editions workflow separately runs network-isolated
+# Chromium with preserved pictures, outbox and compatible rollback.
