@@ -108,17 +108,19 @@
          seenTT.has(t.topic_id))fail('foreign topic translation');
       seenTT.add(t.topic_id);
     }
-    const words=safeList(data,TABLES.vocabulary),wordIds=new Set();
+    const words=safeList(data,TABLES.vocabulary),wordIds=new Set(),wordTopics=new Map();
     for(const w of words){
       if(typeof w.id!=='string'||!UUID.test(w.id)||wordIds.has(w.id)||
          !topicIds.has(w.topic_id))fail('ungranted or duplicate word');
       if(w.image_filename!=null &&
          (typeof w.image_filename!=='string'||!w.image_filename.startsWith('emoji:')||
-          w.image_filename.length>50))fail('public picture filename in restricted pack');
+          w.image_filename.length>50||
+          !/^[\\p{Emoji_Presentation}\\p{Emoji}\\u200d\\ufe0f ]{1,30}$/u.test(w.image_filename.slice(6))))
+        fail('public or invalid picture filename in restricted pack');
       if(w.extra_data!=null && (!isObj(w.extra_data)||
          Object.keys(w.extra_data).some(k=>!['colorCode','content_type'].includes(k))))
         fail('unreviewed vocabulary metadata');
-      wordIds.add(w.id);
+      wordIds.add(w.id);wordTopics.set(w.id,w.topic_id);
     }
     const wt=safeList(data,TABLES.vocabularyTranslations);
     if(wt.length!==words.length)fail('incomplete word translations');
@@ -128,7 +130,7 @@
          seenWT.has(t.vocabulary_id))fail('foreign word translation');
       seenWT.add(t.vocabulary_id);
     }
-    const sentences=safeList(data,TABLES.sentences);
+    const sentences=safeList(data,TABLES.sentences),sentenceTopics=new Map();
     if(sentences.length && (!scope || !(policy.features.includes('quiz.sentences')||
         policy.features.includes('quiz.speak'))))
       fail('sentence feature not granted');
@@ -138,7 +140,8 @@
          s.language_code!==language||!scope?.groups.includes(s.group_name)||
          !topicIds.has(scope.groupTopics[s.group_name]))
         fail('unverified sentence group/topic');
-      seenSent.add(s.id);
+      seenSent.add(s.id);sentenceTopics.set(s.id,{
+        groupName:s.group_name,topicId:scope.groupTopics[s.group_name]});
     }
     const colours=safeList(data,TABLES.colours);
     if(colours.length && !policy.features.includes('quiz.colours'))
@@ -148,8 +151,11 @@
       if(!UUID.test(String(c.id||''))||seenColours.has(c.id)||
          c.language_code!==language||!wordIds.has(c.colour_id)||
          !wordIds.has(c.noun_id)||
-         typeof c.picture==='string' &&
-           (/^https?:|url\(|data:|blob:/i.test(c.picture)))
+         (c.picture!=null &&
+           (typeof c.picture!=='string' ||
+            !( /^#[0-9a-f]{6}$/i.test(c.picture) ||
+              /^[\\p{Emoji_Presentation}\\p{Emoji}\\u200d\\ufe0f ]{1,30}$/u.test(
+                c.picture.startsWith('emoji:')?c.picture.slice(6):c.picture)))))
         fail('ungranted colour phrase or remote picture');
       seenColours.add(c.id);
     }
@@ -161,13 +167,16 @@
        Object.keys(settings[0].value).sort().join('|')!=='contract|groups|topics')
       fail('private lesson visibility is not sanitized');
     return {topics:topicIds.size,words:wordIds.size,
-      sentences:seenSent.size,colours:seenColours.size};
+      sentences:seenSent.size,colours:seenColours.size,
+      // The following source relationships are NOT serialized as extra
+      // learner data: used only to validate the exact media source plan.
+      wordTopics,sentenceTopics,colourIds:seenColours,topicIds};
   }
   function sourceKey(s){
     return canonical([s.type,s.language,s.id||null,s.topicId||null,
       s.groupName||null,s.voice||null]);
   }
-  function validateMediaPlan(plan,mediaPointer,language,policy,scope,record){
+  function validateMediaPlan(plan,mediaPointer,language,policy,scope,record,links){
     if(!Array.isArray(plan)||plan.length<1||plan.length>3000)
       fail('private media plan missing');
     if(!isObj(mediaPointer)||mediaPointer.kind!=='kg-private-offline-active-media'||
@@ -187,6 +196,19 @@
       if((s.type==='word_audio'||s.type==='word_image'||s.type==='topic_audio')&&
          !root.KGLearnerAccess.canTopic(policy,language,s.topicId))
         fail('ungranted word or topic media');
+      if((s.type==='word_audio'||s.type==='word_image')&&
+         (!links.wordTopics.has(s.id)||links.wordTopics.get(s.id)!==s.topicId))
+        fail('word media not in approved lesson bundle');
+      if(s.type==='topic_audio'&&!links.topicIds.has(s.topicId))
+        fail('topic audio not in approved lesson bundle');
+      if(s.type==='colour_audio'&&!links.colourIds.has(s.id))
+        fail('colour audio not in approved lesson bundle');
+      if(s.type==='sentence_audio'){
+        const attached=links.sentenceTopics.get(s.id);
+        if(!attached||attached.groupName!==s.groupName||
+           attached.topicId!==s.topicId)
+          fail('sentence media not in approved lesson bundle');
+      }
       if(s.type==='sentence_audio' &&
          (!scope||!scope.groups.includes(s.groupName)||
           scope.groupTopics[s.groupName]!==s.topicId))
@@ -217,9 +239,11 @@
     if(typeof packageId!=='string'||!UUID.test(packageId))
       fail('missing verified pack nonce');
     const scope=sentenceScopeOf(sentenceScope);
-    const counts=checkRows(content,language,policy,scope);
+    const links=checkRows(content,language,policy,scope);
     const sourceKeys=validateMediaPlan(mediaPlan,mediaPointer,language,policy,scope,
-      policyRecord);
+      policyRecord,links);
+    const counts={topics:links.topics,words:links.words,
+      sentences:links.sentences,colours:links.colours};
     const cloned=JSON.parse(canonical(content));
     const contentHash=await sha256(cloned,cryptoApi);
     return {
@@ -255,7 +279,9 @@
     const actual=await sha256(body.content,cryptoApi);
     if(actual!==pointer.contentHash)fail('restricted lesson bytes changed');
     const scope=sentenceScopeOf(pointer.sentenceScope);
-    const counts=checkRows(body.content,language,policy,scope);
+    const links=checkRows(body.content,language,policy,scope);
+    const counts={topics:links.topics,words:links.words,
+      sentences:links.sentences,colours:links.colours};
     if(canonical(counts)!==canonical(pointer.counts))
       fail('restricted lesson inventory changed');
     if(!isObj(pointer.mediaPointer)||
@@ -267,6 +293,16 @@
        !Array.isArray(pointer.sourceKeys)||
        canonical(pointer.sourceKeys)!==canonical(pointer.mediaPointer.sourceKeys))
       fail('private media pointer does not match restricted lessons');
+    const sources=pointer.sourceKeys.map(key=>{
+      let values;
+      try{values=JSON.parse(key);}catch(_){fail('invalid private source key');}
+      if(!Array.isArray(values)||values.length!==6)
+        fail('invalid private source tuple');
+      return {type:values[0],language:values[1],id:values[2],
+        topicId:values[3],groupName:values[4],voice:values[5]};
+    });
+    validateMediaPlan(sources,pointer.mediaPointer,language,policy,scope,
+      policyRecord,links);
     // The private media adapter independently verifies its own SHA-256,
     // byte limits, source keys and cached manifest on every media read.
     // This method checks the atomic cross-reference, not remote auth.
