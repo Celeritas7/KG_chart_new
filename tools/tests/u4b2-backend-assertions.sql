@@ -43,6 +43,31 @@ BEGIN
  VALUES('cccccccc-cccc-4ccc-8ccc-cccccccccccc','my','food','native_to_image');
  RAISE EXCEPTION 'Cross-owner write accepted';
  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ -- Exercise ownership independently of the scope grants.
+ INSERT INTO public.kg_chart_user_ratings(user_id,language_code,vocabulary_id,rating)
+ VALUES(auth.uid(),'my','10000000-0000-4000-8000-000000000001',4);
+ INSERT INTO public.kg_chart_topic_completions(user_id,language_code,topic_id)
+ VALUES(auth.uid(),'my','food');
+ BEGIN
+ INSERT INTO public.kg_chart_user_ratings(user_id,language_code,vocabulary_id,rating)
+ VALUES('cccccccc-cccc-4ccc-8ccc-cccccccccccc','my','10000000-0000-4000-8000-000000000001',3);
+ RAISE EXCEPTION 'Cross-owner rating accepted';
+ EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ BEGIN
+ INSERT INTO public.kg_chart_topic_completions(user_id,language_code,topic_id)
+ VALUES('cccccccc-cccc-4ccc-8ccc-cccccccccccc','my','food');
+ RAISE EXCEPTION 'Cross-owner completion accepted';
+ EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ BEGIN
+ UPDATE public.kg_chart_user_ratings SET user_id='cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+ WHERE user_id=auth.uid() AND language_code='my';
+ RAISE EXCEPTION 'Rating ownership reassignment accepted';
+ EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+ BEGIN
+ UPDATE public.kg_chart_topic_completions SET user_id='cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+ WHERE user_id=auth.uid() AND language_code='my';
+ RAISE EXCEPTION 'Completion ownership reassignment accepted';
+ EXCEPTION WHEN insufficient_privilege THEN NULL; END;
  BEGIN
  INSERT INTO public.kg_chart_quiz_answers(session_id,vocabulary_id,is_correct)
  VALUES(sid,'10000000-0000-4000-8000-000000000004',true);
