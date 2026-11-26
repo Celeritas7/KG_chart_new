@@ -106,6 +106,18 @@ explicitly excluded. The optional marker metadata survives the existing
 recovery export/import, including compatibility with older recovery files.
 No pack, historical row, or existing queued event is rewritten or removed.
 
+The first PR CI run passed its behavioral tests and both-editions job, but
+eight historical U3D/U4A workflows rejected the new F1 paths under their
+earlier phase-only file boundaries. This increment extends those exact lists
+for the reviewed F1 files and runs `tools/check-f1-review-scope.mjs` before
+each boundary check. That guard requires the learner source outside the
+word/sentence save, level, recovery and two specific component-wiring changes
+to match the merge base. Negative tests reject changes to authentication,
+authorization, flags, navigation, unrelated modes and scripts. Existing
+default-OFF assertions, behavior tests, read-only CI permissions and bans on
+backend/worker/media changes remain intact. This compatibility correction
+does not fix the separate F5 backend path-trigger/ownership-test findings.
+
 **Server boundary remains open:** session and answer inserts are separate
 requests. A session may exist on the server while its answers await recovery.
 This PR gates the corrected client's callbacks and local level paths; it does
@@ -146,14 +158,14 @@ offline runtime; the server boundary above is not closed by these checks.
 | Executed local command | Result and scope |
 | --- | --- |
 | `npm run check:unified` | Online, offline and unified builds passed; 91 offline tests and 4 artifact tests passed. |
-| `npm run test:quiz-saving` | 59 stateful save/recovery tests passed, including both quiz families and copy/dev/memory typed-word levels. |
+| `npm run test:quiz-saving` | 59 stateful save/recovery tests plus 8 source-scope guard tests passed, including both quiz families and copy/dev/memory typed-word levels. |
 | `node --experimental-strip-types --test tools/tests/u2-access-ui.test.mjs tools/tests/u3*.test.mjs tools/tests/u4a-device-acceptance.test.mjs tools/tests/u4b1-restricted-device-preflight.test.mjs` | 152 existing access/media/outbox/device-preflight tests passed. |
 | `npm run test:quiz-saving-ui` | 13 real Chromium UI scenarios passed against canonical JSX, fictional persistence, blocked service workers and blocked nonlocal requests. |
 | `npm run test:browser-migration` | Existing disposable Chromium separate/offline-to-unified update, corrupt-candidate rejection, compatible rollback, media/audio, owner separation and queued-work preservation passed. |
 | `node tools/audit-c4a-artifacts.mjs` | `C4A_ARTIFACT_CONTRACT_PASS`; release authorization remains false. |
 | `git diff --check` | Passed. |
 
-There are **306 distinct Node tests**, plus the 13 quiz UI scenarios and the
+There are **314 distinct Node tests**, plus the 13 quiz UI scenarios and the
 separate existing migration/rollback rehearsal. Focused overlapping reruns
 are not added to that total. The local browser is Playwright's pinned
 Chromium 141 build 1194 in disposable profiles. CI runs the same browser

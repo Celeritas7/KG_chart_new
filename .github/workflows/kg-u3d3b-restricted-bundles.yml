@@ -25,6 +25,8 @@ on:
       - 'tools/tests/u3d1-offline-policy.test.mjs'
       - 'tools/tests/u3d2a-scoped-pack.test.mjs'
       - 'tools/tests/u3d3a-outbox-hold.test.mjs'
+      - 'tools/check-f1-review-scope.mjs'
+      - 'tools/tests/u4b2b3d-review-scope.test.mjs'
   workflow_dispatch:
 
 permissions:
@@ -61,10 +63,12 @@ jobs:
           grep -Fq 'const U3D3B_RESTRICTED_PACKS_ENABLED = false;' offline/runtime.js
           grep -Fq 'const U3D3C_RESTRICTED_SYNC_ENABLED = false;' offline/runtime.js
           BASE=$(git merge-base origin/main HEAD)
+          # Reviewed F1 extension: preserve every unrelated learner source region.
+          node tools/check-f1-review-scope.mjs "$BASE"
           git diff --name-only "$BASE" HEAD | tee /tmp/u3d3b-changed.txt
           while IFS= read -r path; do
             case "$path" in
-              offline/restricted-packs.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|docs/U3D3B-RESTRICTED-BUNDLES-REVIEW.md|.github/workflows/kg-u3d3b-restricted-bundles.yml|offline/restricted-sync.js|tools/tests/u3d3c-restricted-sync.test.mjs|docs/U3D3C-RESTRICTED-SYNC-REVIEW.md|.github/workflows/kg-u3d3c-restricted-sync.yml|offline/device-acceptance.js|tools/tests/u4a-device-acceptance.test.mjs|docs/U4A-DEVICE-ACCEPTANCE-REVIEW.md|.github/workflows/kg-u4a-device-acceptance.yml|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|tools/tests/u3d3c-restricted-sync.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d2b2-private-playback.yml|.github/workflows/kg-u3d3a-outbox-hold.yml|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d3a-outbox-hold.test.mjs)
+              offline/restricted-packs.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|docs/U3D3B-RESTRICTED-BUNDLES-REVIEW.md|.github/workflows/kg-u3d3b-restricted-bundles.yml|offline/restricted-sync.js|tools/tests/u3d3c-restricted-sync.test.mjs|docs/U3D3C-RESTRICTED-SYNC-REVIEW.md|.github/workflows/kg-u3d3c-restricted-sync.yml|offline/device-acceptance.js|tools/tests/u4a-device-acceptance.test.mjs|docs/U4A-DEVICE-ACCEPTANCE-REVIEW.md|.github/workflows/kg-u4a-device-acceptance.yml|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|tools/tests/u3d3c-restricted-sync.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d2b2-private-playback.yml|.github/workflows/kg-u3d3a-outbox-hold.yml|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|index.html|js/kg-quiz-save.js|offline/tests/quiz-save-queue.test.mjs|package.json|.github/workflows/kg-dual-edition.yml|docs/U4B2B3D-QUIZ-SAVE-CORRECTION.md|tools/tests/u4b2b3d-quiz-save.test.mjs|tools/tests/u4b2b3d-quiz-ui-browser.mjs|tools/check-f1-review-scope.mjs|tools/tests/u4b2b3d-review-scope.test.mjs)
                 ;;
               *)
                 echo "Unexpected U3D3B change: $path"
@@ -72,7 +76,7 @@ jobs:
                 ;;
             esac
           done < /tmp/u3d3b-changed.txt
-          if grep -Eq '^(sql/|supabase/|offline/sw.js|offline/pictures.js|offline/audio-manifest.js|index.html|js/kg-audio.js|js/kg-private-offline-media.mjs|js/kg-private-offline-playback.mjs)' /tmp/u3d3b-changed.txt; then
+          if grep -Eq '^(sql/|supabase/|offline/sw.js|offline/pictures.js|offline/audio-manifest.js|js/kg-audio.js|js/kg-private-offline-media.mjs|js/kg-private-offline-playback.mjs)' /tmp/u3d3b-changed.txt; then
             echo 'Backend/worker/private media/online learner activation is not approved'
             exit 1
           fi
