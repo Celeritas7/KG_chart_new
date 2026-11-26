@@ -121,6 +121,11 @@ jobs:
           set -euo pipefail
           docker exec -i kg-u4b2-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d kg_u4b2_fixture < tools/tests/u4b2-f2d3b1-timed-quizzes.sql
           timeout 180s python3 tools/tests/u4b2-f2d3b1-timed-quizzes.py
+      - name: Verify F2D3B2 restricted colour quiz evidence
+        run: |
+          set -euo pipefail
+          docker exec -i kg-u4b2-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d kg_u4b2_fixture < tools/tests/u4b2-f2d3b2-colour-evidence.sql
+          timeout 240s python3 tools/tests/u4b2-f2d3b2-colour-evidence.py
       - name: Destroy synthetic database
         if: always()
         run: docker rm -f kg-u4b2-test-db || true
