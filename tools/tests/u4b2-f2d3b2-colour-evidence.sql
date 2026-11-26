@@ -131,6 +131,11 @@ BEGIN
       IF NOT EXISTS (
         SELECT 1 FROM public.kg_chart_colour_phrases c
         WHERE c.id=option_id AND c.language_code=s.language_code
+          AND nullif(btrim(c.native_text),'') IS NOT NULL
+          AND EXISTS (SELECT 1 FROM public.kg_chart_vocabulary_translations vt
+            WHERE vt.vocabulary_id=c.colour_id AND vt.language_code=s.language_code)
+          AND EXISTS (SELECT 1 FROM public.kg_chart_vocabulary_translations vt
+            WHERE vt.vocabulary_id=c.noun_id AND vt.language_code=s.language_code)
           AND public.kg_chart_u3b1_can_colour_phrase(c.language_code,c.colour_id,c.noun_id) IS TRUE
           AND public.kg_chart_u3b3a_private_colour(c.language_code,c.colour_id,c.noun_id) IS TRUE
       ) THEN
