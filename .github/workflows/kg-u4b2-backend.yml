@@ -91,6 +91,11 @@ jobs:
           pgfixture < sql/kg-chart-u2-access-draft.sql
           pgfixture < tools/tests/u4b2-f2a-existing-profile-protocol.sql
           timeout 150s python3 tools/tests/u4b2-f2a-existing-profile-protocol.py
+      - name: Verify F2B atomic restricted word and sentence quiz ingestion
+        run: |
+          set -euo pipefail
+          docker exec -i kg-u4b2-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d kg_u4b2_fixture < tools/tests/u4b2-f2b-atomic-quiz.sql
+          timeout 150s python3 tools/tests/u4b2-f2b-atomic-quiz.py
       - name: Destroy synthetic database
         if: always()
         run: docker rm -f kg-u4b2-test-db || true
