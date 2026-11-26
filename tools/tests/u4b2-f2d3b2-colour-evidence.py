@@ -98,9 +98,11 @@ def main():
     for role in ("anon","service_role"):
         assert value(f"SELECT has_function_privilege('{role}','{RPC}(bigint,jsonb,text,jsonb)','EXECUTE');")=="f"
 
-    # The primary private test must fail only for the private rule, not the
-    # topic or feature grant. The missing component translation is separate.
-    assert value(IDENTITY+f"SELECT public.kg_chart_u3b1_can_colour_phrase('my','{COLOUR}','{FRIEND}');")=="t"
+    # An explicit topic grant is present, but both content predicates can
+    # independently incorporate private rules. Prove the grant is not absent.
+    assert value(f"SELECT count(*) FROM public.kg_chart_access_topics WHERE email='{a['EMAIL']}' AND language_code='my' AND topic_id='friends_names';")=="1"
+    assert value(IDENTITY+f"SELECT public.kg_chart_u3b1_can_colour_phrase('my','{COLOUR}','{FOOD}');")=="t"
+    assert value(IDENTITY+f"SELECT public.kg_chart_u3b1_can_colour_phrase('my','{COLOUR}','{FRIEND}');")=="f"
     assert value(IDENTITY+f"SELECT public.kg_chart_u3b3a_private_colour('my','{COLOUR}','{FRIEND}');")=="f"
     for n,mode in enumerate(("phrase_to_picture","listen_to_picture","picture_to_phrase"),1):
         p=payload(n,mode)
