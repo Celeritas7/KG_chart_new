@@ -96,6 +96,11 @@ jobs:
           set -euo pipefail
           docker exec -i kg-u4b2-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d kg_u4b2_fixture < tools/tests/u4b2-f2b-atomic-quiz.sql
           timeout 150s python3 tools/tests/u4b2-f2b-atomic-quiz.py
+      - name: Verify F2C versioned ratings and topic completions
+        run: |
+          set -euo pipefail
+          docker exec -i kg-u4b2-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d kg_u4b2_fixture < tools/tests/u4b2-f2c-versioned-progress.sql
+          timeout 180s python3 tools/tests/u4b2-f2c-versioned-progress.py
       - name: Destroy synthetic database
         if: always()
         run: docker rm -f kg-u4b2-test-db || true
