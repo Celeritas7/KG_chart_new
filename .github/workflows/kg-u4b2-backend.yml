@@ -66,6 +66,11 @@ jobs:
           set -euo pipefail
           docker exec -i kg-u4b2-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d kg_u4b2_fixture < tools/tests/u4b2b-quiz-lock-prototype.sql
           timeout 60s python3 tools/tests/u4b2b-revocation-race.py --require-rejection
+      - name: Verify quiz-answer ownership and revision guard
+        run: |
+          set -euo pipefail
+          docker exec -i kg-u4b2-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d kg_u4b2_fixture < tools/tests/u4b2-3a-answer-guard.sql
+          timeout 60s python3 tools/tests/u4b2-3a-answer-association.py
       - name: Destroy synthetic database
         if: always()
         run: docker rm -f kg-u4b2-test-db || true
