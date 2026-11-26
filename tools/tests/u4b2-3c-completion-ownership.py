@@ -101,7 +101,12 @@ def main():
     grant(OTHER_EMAIL, 60)
     query(IDENTITY + completion(UID, D1, upsert=False))
     query(OTHER_IDENTITY + completion(OTHER, D2, upsert=False))
-    query(IDENTITY + f"UPDATE {TABLE} SET completed_at='{D2}' WHERE {KEY};")
+    # Independently observe the committed UPDATE before the UPSERT.
+    assert value(IDENTITY + f"""WITH changed AS (
+      UPDATE {TABLE} SET completed_at='{D2}' WHERE {KEY} RETURNING completed_at
+    ) SELECT count(*) FROM changed WHERE completed_at='{D2}'::timestamptz;""") == "1"
+    assert_saved(history, own=D2)
+    print("U4B2_F5_COMPLETION_UPDATE_PERSISTED_BEFORE_UPSERT")
     query(IDENTITY + completion(UID, D3))
     # A repeated completion at the same timestamp must not duplicate the row.
     query(IDENTITY + completion(UID, D3))

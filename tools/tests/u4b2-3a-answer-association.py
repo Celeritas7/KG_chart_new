@@ -11,6 +11,13 @@ SESSION = "99100000-0000-4000-8000-000000000001"
 HISTORY = "99100000-0000-4000-8000-000000000002"
 PENDING = "99100000-0000-4000-8000-000000000003"
 WORD = "10000000-0000-4000-8000-000000000001"
+OTHER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+OTHER_EMAIL = "student2@example.invalid"
+OTHER_IDENTITY = IDENTITY.replace(UID, OTHER)
+OTHER_SESSION = "99100000-0000-4000-8000-000000000004"
+OTHER_HISTORY = "99100000-0000-4000-8000-000000000005"
+CROSS_A = "99100000-0000-4000-8000-000000000006"
+CROSS_B = "99100000-0000-4000-8000-000000000007"
 
 def answer(aid, session=SESSION):
     return f"""INSERT INTO public.kg_chart_quiz_answers(id,session_id,vocabulary_id,is_correct)
@@ -23,19 +30,64 @@ def expect_denied(sql):
     )):
         raise RuntimeError("Expected answer authorization rejection: " + r.stderr)
 
+def expect_owner_denied(identity, aid, parent):
+    # Demand the precise guard failure, not an unrelated grant, FK or duplicate error.
+    result = query("\\set VERBOSITY verbose\n" + identity + answer(aid, parent), check=False)
+    err = result.stderr.lower()
+    if result.returncode == 0 or "42501" not in err or "unverified answer owner" not in err:
+        raise RuntimeError("Expected exact foreign-parent ownership rejection: " + result.stderr)
+    assert value(f"SELECT count(*) FROM public.kg_chart_quiz_answers WHERE id='{aid}';") == "0"
+
+def own_answer_count(aid, parent):
+    return value(f"SELECT count(*) FROM public.kg_chart_quiz_answers WHERE id='{aid}' AND session_id='{parent}';")
+
 def main():
     assert value("SELECT current_database();") == "kg_u4b2_fixture"
     query(f"""BEGIN;
-      UPDATE public.kg_chart_access_profiles SET mode='restricted',revision=40 WHERE email='{EMAIL}';
-      INSERT INTO public.kg_chart_access_languages(email,language_code) VALUES ('{EMAIL}','my');
-      INSERT INTO public.kg_chart_access_topics(email,language_code,topic_id) VALUES ('{EMAIL}','my','food');
-      INSERT INTO public.kg_chart_access_features(email,feature_key) VALUES ('{EMAIL}','quiz.words');
+      UPDATE public.kg_chart_access_profiles SET mode='restricted',revision=40
+        WHERE email IN ('{EMAIL}','{OTHER_EMAIL}');
+      INSERT INTO public.kg_chart_access_languages(email,language_code)
+        VALUES ('{EMAIL}','my'),('{OTHER_EMAIL}','my');
+      INSERT INTO public.kg_chart_access_topics(email,language_code,topic_id)
+        VALUES ('{EMAIL}','my','food'),('{OTHER_EMAIL}','my','food');
+      INSERT INTO public.kg_chart_access_features(email,feature_key)
+        VALUES ('{EMAIL}','quiz.words'),('{OTHER_EMAIL}','quiz.words');
       COMMIT;""")
-    query(IDENTITY + f"""INSERT INTO public.kg_chart_quiz_sessions(id,user_id,language_code,topic_id,quiz_type)
-      VALUES ('{SESSION}',auth.uid(),'my','food','native_to_image');""" + answer(HISTORY))
-    # Other learner's existing synthetic parent session.
+    # Create two genuine, independently authorized parent sessions with
+    # identical language, topic and quiz mode. The same public word is valid
+    # for each caller. No pre-existing Japanese/animals grant can mask ownership.
+    for identity, uid, parent, history in (
+        (IDENTITY, UID, SESSION, HISTORY),
+        (OTHER_IDENTITY, OTHER, OTHER_SESSION, OTHER_HISTORY),
+    ):
+        assert value(identity + "SELECT public.kg_chart_u3b2_can_quiz_session('my','food','native_to_image');") == "t"
+        assert value(identity + f"SELECT public.kg_chart_u3b1_can_vocab_translation('my','{WORD}');") == "t"
+        query(identity + f"""INSERT INTO public.kg_chart_quiz_sessions(id,user_id,language_code,topic_id,quiz_type)
+          VALUES ('{parent}',auth.uid(),'my','food','native_to_image');""")
+        assert value(f"""SELECT count(*) FROM public.kg_chart_quiz_sessions
+          WHERE id='{parent}' AND user_id='{uid}' AND language_code='my'
+            AND topic_id='food' AND quiz_type='native_to_image';""") == "1"
+        assert value(identity + f"SELECT public.kg_chart_u3b2_can_answer('{parent}','{WORD}',NULL);") == "t"
+        assert value(identity + f"SELECT public.kg_chart_u3b3b1_can_private_answer('{parent}','{WORD}',NULL);") == "t"
+        query(identity + answer(history, parent))
+        assert own_answer_count(history, parent) == "1"
+
+    for identity, foreign_parent, own_parent, aid in (
+        (IDENTITY, OTHER_SESSION, SESSION, CROSS_A),
+        (OTHER_IDENTITY, SESSION, OTHER_SESSION, CROSS_B),
+    ):
+        expect_owner_denied(identity, aid, foreign_parent)
+        # Exact same ID, word and result, with only the parent changed:
+        # a fresh authorized write must succeed, so the denial is discriminating.
+        query(identity + answer(aid, own_parent))
+        assert own_answer_count(aid, own_parent) == "1"
+        assert own_answer_count(aid, foreign_parent) == "0"
+    assert own_answer_count(HISTORY, SESSION) == "1"
+    assert own_answer_count(OTHER_HISTORY, OTHER_SESSION) == "1"
+    print("U4B2_F5_SAME_SCOPE_FOREIGN_PARENT_REJECTED_BOTH_DIRECTIONS")
+    # Keep the historical different-scope negative case as a separate check.
     expect_denied(IDENTITY + answer(PENDING, "50000000-0000-4000-8000-000000000001"))
-    assert value(f"SELECT count(*) FROM public.kg_chart_quiz_answers WHERE id='{HISTORY}' AND session_id='{SESSION}';") == "1"
+    assert own_answer_count(HISTORY, SESSION) == "1"
     print("U4B2_3A_OWN_ANSWER_PASS")
     blocker = subprocess.Popen(CMD, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True)
@@ -75,6 +127,9 @@ def main():
         assert value(f"SELECT count(*) FROM public.kg_chart_quiz_answers WHERE id='{PENDING}';") == "0"
         expect_denied(IDENTITY + answer(PENDING))
         assert value(f"SELECT count(*) FROM public.kg_chart_quiz_answers WHERE id='{HISTORY}' AND session_id='{SESSION}';") == "1"
+        assert own_answer_count(CROSS_A, SESSION) == "1"
+        assert own_answer_count(OTHER_HISTORY, OTHER_SESSION) == "1"
+        assert own_answer_count(CROSS_B, OTHER_SESSION) == "1"
         print("U4B2_3A_REVOKED_ANSWER_REJECTED_HISTORY_PRESERVED")
     finally:
         for proc in (writer, blocker):

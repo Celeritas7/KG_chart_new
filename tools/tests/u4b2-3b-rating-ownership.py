@@ -95,7 +95,13 @@ def main():
     # Both learners may rate exactly the same granted word independently.
     query(IDENTITY + upsert(UID, 1))
     query(OTHER_IDENTITY + upsert(OTHER, 2))
-    query(IDENTITY + f"UPDATE {TABLE} SET rating=3 WHERE {KEY};")
+    # Assert the standalone UPDATE affected exactly one row and committed
+    # the intended value before a later UPSERT can hide a no-op.
+    assert value(IDENTITY + f"""WITH changed AS (
+      UPDATE {TABLE} SET rating=3 WHERE {KEY} RETURNING rating
+    ) SELECT count(*) FROM changed WHERE rating=3;""") == "1"
+    assert_saved(own=3)
+    print("U4B2_F5_RATING_UPDATE_PERSISTED_BEFORE_UPSERT")
     query(IDENTITY + upsert(UID, 4))
     assert_saved()
     for identity, owner_key, other_key, expected in (
