@@ -61,3 +61,7 @@ automatic stale rebase is permitted. No real database or UI code is touched.
 Next F2D increment: other effective-authorization sources and remaining
 write paths, followed by actual app/outbox integration. F3 lifecycle,
 F4/F7, 3E/F6, 3F, U4B2C and U4B2D remain. Restricted friend access is NO-GO.
+
+## Post-merge regression correction
+
+PR #108's [database CI run](https://github.com/Celeritas7/KG_chart_new/actions/runs/45849747922) failed during F2A fixture installation, before any F2D1 behavior was executed. The shared-gate function body used a single dollar sign instead of a complete PostgreSQL dollar-quote delimiter. This is a source syntax error, not evidence that the transaction protocol passed or failed its behavioral tests. The correction uses a matched named delimiter ($f2d_gate$) without altering the locking logic or any regression assertion. Both F2A/B/C and the full F2D1 behavioral suite must pass at the correction head before F2D2 proceeds. No production source or configuration is affected.
