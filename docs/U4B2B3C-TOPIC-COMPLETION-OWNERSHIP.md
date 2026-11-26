@@ -1,0 +1,9 @@
+# U4B2B-3C — topic-completion ownership
+
+This increment follows merged PR #101. It extends the existing-profile prototype in the disposable PostgreSQL fixture to topic completion INSERT and UPDATE, including the application's insert-or-update retry shape. It reuses the existing completion and private-session authorization predicates and checks the old and new record where applicable. The existing no-delete policy is preserved. No production migration or application source changes.
+
+The synthetic tests check that two learners can complete the same granted topic independently; the same completion retry does not duplicate a record; completion timestamps are updated only for the appropriate learner; historical records are preserved; ordinary rollback preserves the original date; and the other learner remains unaffected. Repeatable-read tests require rejection of an attempted new completion or update/upsert after the topic permission is revoked and its revision advanced. The original completion and the unaffected learner's historical record must remain unchanged. Restoring a fixture grant must allow a fresh permitted completion update.
+
+The existing isolated database workflow and full application regression workflow remain required. Scope limits: existing permission profiles, synthetic identities, one transaction ordering, and revocation that updates the profile revision within the same transaction. This is not live Supabase/API enforcement, complete revision-aware ingestion, a production migration or a release approval. Broader permission changes, independent history verification, combined regression, actual isolated backend acceptance and controlled production activation remain pending.
+
+No production records, live permissions, deployment, app runtime, service worker, or offline storage are changed. Restricted sharing remains NO-GO.
