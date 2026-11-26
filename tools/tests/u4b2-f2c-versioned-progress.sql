@@ -70,6 +70,7 @@ BEGIN
   IF p_expected_revision IS NULL OR p_expected_revision < 1 THEN
     RAISE EXCEPTION 'F2C explicit revision required' USING ERRCODE='40001';
   END IF;
+  PERFORM kg_u4b2b_test_private.f2d_lock_shared();
   SELECT mode,revision INTO v_mode,v_revision FROM public.kg_chart_access_profiles
     WHERE email=v_email FOR UPDATE;
   IF NOT FOUND OR v_mode IS DISTINCT FROM 'restricted'
