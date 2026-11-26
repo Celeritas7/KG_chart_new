@@ -1,0 +1,306 @@
+/* U4B2B-3D F1: recoverable, immutable word/sentence quiz saves.
+ * Recovery drafts have a separate owner-scoped namespace. This module never
+ * edits existing study storage, downloaded packs, or the offline outbox.
+ * INSERT authorization remains the server's responsibility; this client does
+ * not replace the later transactional permission/revision protocol.
+ */
+(function(root) {
+  'use strict';
+  const PREFIX = 'kg-chart-quiz-recovery-v1:';
+  const TABLES = { session: 'kg_chart_quiz_sessions', answers: 'kg_chart_quiz_answers' };
+  const OPTIONAL = { session: ['quiz_level', 'difficulty'], answers: ['answer_text', 'answered_at'] };
+  const SESSION_KEYS = new Set(['id', 'user_id', 'language_code', 'topic_id', 'quiz_type',
+    'total_questions', 'correct_answers', 'completed_at', 'created_at', 'quiz_level', 'difficulty']);
+  const ANSWER_KEYS = new Set(['id', 'session_id', 'vocabulary_id', 'sentence_id',
+    'selected_vocabulary_id', 'is_correct', 'answer_text', 'answered_at']);
+  const QUIZ_TYPES = {
+    word: ['native_to_image', 'image_to_native', 'devanagari_to_image', 'english_to_native',
+      'listen_to_image', 'listen_to_native', 'word_builder', 'type_word'],
+    sentence: ['sentence_to_meaning', 'meaning_to_sentence', 'build_sentence'],
+  };
+  const inFlight = new Map();
+  const copy = value => JSON.parse(JSON.stringify(value));
+  const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const owns = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+  const text = (value, max = 200) => typeof value === 'string' && value.length > 0 &&
+    value.length <= max && !/[\u0000-\u001f]/.test(value);
+  const timestamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
+  const keysAllowed = (value, allowed) => Object.keys(value).every(key => allowed.has(key));
+  const fail = (message, code, status = 'pending') => Object.assign(new Error(message), { code, status });
+  const invalid = () => fail('This quiz recovery record is invalid. It has been retained without uploading.',
+    'KG_QUIZ_INVALID_DRAFT', 'blocked');
+  const ownerPrefix = ownerId => PREFIX + encodeURIComponent(ownerId) + ':';
+  const draftKey = draft => ownerPrefix(draft.ownerId) + encodeURIComponent(draft.id);
+
+  function validateDraft(draft) {
+    if (!record(draft) || draft.version !== 1 || !text(draft.id) || !text(draft.ownerId) ||
+        !text(draft.languageCode, 32) || !owns(QUIZ_TYPES, draft.kind) || typeof draft.sealed !== 'boolean' ||
+        !record(draft.session) || !keysAllowed(draft.session, SESSION_KEYS) ||
+        !Array.isArray(draft.answers) || !record(draft.omittedColumns)) throw invalid();
+    const session = draft.session;
+    if (session.id !== draft.id || session.user_id !== draft.ownerId ||
+        session.language_code !== draft.languageCode || !QUIZ_TYPES[draft.kind].includes(session.quiz_type) ||
+        !(session.topic_id == null || text(session.topic_id, 200)) ||
+        !Number.isSafeInteger(session.total_questions) || !Number.isSafeInteger(session.correct_answers) ||
+        !timestamp(session.completed_at) || !timestamp(session.created_at) ||
+        (session.quiz_level != null && !['copy', 'dev', 'memory'].includes(session.quiz_level)) ||
+        (session.difficulty != null && !Number.isSafeInteger(session.difficulty))) throw invalid();
+    for (const type of ['session', 'answers']) {
+      const omitted = draft.omittedColumns[type];
+      if (!Array.isArray(omitted) || new Set(omitted).size !== omitted.length ||
+          omitted.some(column => !OPTIONAL[type].includes(column))) throw invalid();
+    }
+    const ids = new Set();
+    for (const answer of draft.answers) {
+      if (!record(answer) || !keysAllowed(answer, ANSWER_KEYS) || !text(answer.id) ||
+          answer.id === draft.id || ids.has(answer.id) || answer.session_id !== draft.id ||
+          typeof answer.is_correct !== 'boolean' || !timestamp(answer.answered_at) ||
+          !(answer.selected_vocabulary_id == null || text(answer.selected_vocabulary_id)) ||
+          !(answer.answer_text == null || typeof answer.answer_text === 'string')) throw invalid();
+      // A sentence's identity is never an optional compatibility field.
+      const word = text(answer.vocabulary_id), sentence = text(answer.sentence_id);
+      if (word === sentence || (!word && answer.vocabulary_id != null) ||
+          (!sentence && answer.sentence_id != null) ||
+          (draft.kind === 'word' ? !word : !sentence)) throw invalid();
+      ids.add(answer.id);
+    }
+    if (session.total_questions !== draft.answers.length || session.correct_answers !==
+        draft.answers.filter(answer => answer.is_correct).length) throw invalid();
+    return draft;
+  }
+
+  function samePayload(left, right) {
+    return record(left) && record(right) && left.id === right.id && left.ownerId === right.ownerId &&
+      left.languageCode === right.languageCode && left.kind === right.kind &&
+      JSON.stringify(left.session) === JSON.stringify(right.session) &&
+      JSON.stringify(left.answers) === JSON.stringify(right.answers);
+  }
+
+  function createStore({ storage, uuid = () => root.crypto.randomUUID(), now = () => new Date().toISOString() } = {}) {
+    const target = storage || root.localStorage;
+    const storageError = error => fail('Quiz recovery could not be saved on this device. Keep this page open and retry. ' +
+      (error?.message || ''), 'KG_QUIZ_STORAGE', 'storage-error');
+    const read = key => {
+      const raw = target.getItem(key);
+      if (raw === null) return null;
+      const draft = validateDraft(JSON.parse(raw));
+      if (draftKey(draft) !== key) throw invalid();
+      return draft;
+    };
+    return {
+      start({ ownerId, languageCode, kind, session }) {
+        const at = now(), id = uuid();
+        const draft = {
+          version: 1, id, ownerId, languageCode, kind,
+          session: { ...session, id, user_id: ownerId, language_code: languageCode,
+            total_questions: 0, correct_answers: 0, created_at: at, completed_at: at },
+          answers: [], sealed: false, omittedColumns: { session: [], answers: [] },
+        };
+        return validateDraft(copy(draft));
+      },
+      append(draft, answer) {
+        validateDraft(draft);
+        if (draft.sealed) throw fail('This quiz has already entered saving. Its recorded answers cannot be changed.',
+          'KG_QUIZ_SEALED', 'blocked');
+        const next = copy(draft);
+        const row = { ...answer, id: uuid(), session_id: draft.id, answered_at: answer.answered_at || now() };
+        next.answers.push(row);
+        next.session.total_questions = next.answers.length;
+        next.session.correct_answers = next.answers.filter(value => value.is_correct).length;
+        next.session.completed_at = row.answered_at;
+        return validateDraft(copy(next));
+      },
+      write(draft) {
+        validateDraft(draft);
+        try {
+          const key = draftKey(draft), prior = read(key);
+          // A stale component/tab must not replace a frozen request with a
+          // different score or set of answers while that request is in flight.
+          if (prior?.sealed && (!draft.sealed || !samePayload(prior, draft)))
+            throw fail('Another save has already frozen this quiz. The existing recovery copy was preserved.',
+              'KG_QUIZ_DRAFT_CONFLICT', 'storage-error');
+          target.setItem(key, JSON.stringify(draft));
+          return copy(draft);
+        } catch (error) { throw storageError(error); }
+      },
+      list(ownerId, languageCode, kind) {
+        if (!text(ownerId)) return [];
+        try {
+          const drafts = [], prefix = ownerPrefix(ownerId);
+          for (let index = 0; index < target.length; index++) {
+            const key = target.key(index);
+            if (typeof key !== 'string' || !key.startsWith(prefix)) continue;
+            const draft = read(key);
+            if (!draft || draft.ownerId !== ownerId) throw invalid();
+            if ((languageCode == null || draft.languageCode === languageCode) &&
+                (kind == null || draft.kind === kind)) drafts.push(draft);
+          }
+          return drafts.sort((a, b) => Date.parse(b.session.completed_at) - Date.parse(a.session.completed_at));
+        } catch (error) { throw storageError(error); }
+      },
+      remove(draft) {
+        validateDraft(draft);
+        try {
+          const key = draftKey(draft), prior = read(key);
+          if (prior && !samePayload(prior, draft)) throw invalid();
+          target.removeItem(key);
+        } catch (error) { throw storageError(error); }
+      },
+    };
+  }
+
+  function sameField(type, key, saved, expected) {
+    if ((type === 'session' && ['created_at', 'completed_at'].includes(key)) ||
+        (type === 'answers' && key === 'answered_at')) {
+      return timestamp(saved) && timestamp(expected) && Date.parse(saved) === Date.parse(expected);
+    }
+    return JSON.stringify(saved ?? null) === JSON.stringify(expected ?? null);
+  }
+
+  function assertRows(type, expected, actual) {
+    const rows = actual == null ? [] : Array.isArray(actual) ? actual : [actual];
+    if (rows.length !== expected.length || new Set(rows.map(row => row?.id)).size !== rows.length)
+      throw fail('The server did not confirm every quiz record. Your recovery copy is retained.', 'KG_QUIZ_UNCONFIRMED');
+    for (const row of expected) {
+      const saved = rows.find(value => value?.id === row.id);
+      if (!saved || Object.entries(row).some(([key, value]) => !sameField(type, key, saved[key], value)))
+        throw fail('A saved quiz record does not match this attempt. Your recovery copy is retained.', 'KG_QUIZ_ACK_MISMATCH');
+    }
+    return rows;
+  }
+
+  function permissionDenied(error) {
+    return error?.status === 'blocked' || [401, 403].includes(error?.status) ||
+      ['42501', 'PGRST301', 'PGRST302', 'KG_OFFLINE_ACCESS_PENDING', 'KG_RESTRICTED_PACK_NOT_READY',
+        'KG_QUIZ_ACCOUNT_CHANGED'].includes(error?.code);
+  }
+
+  function missingOptionalColumn(error, type, rows) {
+    if (!['PGRST204', '42703'].includes(error?.code)) return null;
+    const message = String(error.message || '');
+    const table = message.match(/\b(?:column\s+of|of\s+relation)\s+['"]([^'"]+)['"]/i)?.[1];
+    // A trigger or unrelated relation may mention the same field name. Its
+    // error is not evidence that this requested table lacks that column.
+    if ((table && table !== TABLES[type]) || (error.code === 'PGRST204' && !table)) return null;
+    return OPTIONAL[type].find(column => rows.some(row => owns(row, column)) && (
+      new RegExp("could not find (?:the )?['\"]" + column + "['\"] column\\b", 'i').test(message) ||
+      new RegExp('\\bcolumn\\s+(?:[\\w]+\\.)?["\x27]?' + column +
+        '["\x27]?(?:\\s+of\\s+relation\\s+["\x27][^"\x27]+["\x27])?\\s+does not exist\\b', 'i').test(message)
+    )) || null;
+  }
+
+  async function performSave({ client, draft: supplied, store }) {
+    let draft = supplied;
+    let destination = 'server';
+    const denied = error => fail('Quiz saving is not currently permitted for this account. Your recovery copy is retained.',
+      error?.code || 'KG_QUIZ_PERMISSION_DENIED', 'blocked');
+    const assertOwner = async () => {
+      const result = await client.auth.getSession();
+      if (result?.error) {
+        if (permissionDenied(result.error)) throw denied(result.error);
+        throw result.error;
+      }
+      if (result?.data?.session?.user?.id !== draft.ownerId)
+        throw fail('The signed-in account changed. This quiz remains with its original account.',
+          'KG_QUIZ_ACCOUNT_CHANGED', 'blocked');
+    };
+    const asOwner = async operation => {
+      await assertOwner();
+      let result, thrown;
+      try { result = await operation(); } catch (error) { thrown = error; }
+      await assertOwner();
+      if (thrown) throw thrown;
+      if (result?.saveDestination === 'device') destination = 'device';
+      return result;
+    };
+    const payload = (type, rows) => rows.map(row => Object.fromEntries(Object.entries(row)
+      .filter(([key]) => !draft.omittedColumns[type].includes(key))));
+    const rememberOmission = (type, column) => {
+      const next = copy(draft);
+      if (!next.omittedColumns[type].includes(column)) next.omittedColumns[type].push(column);
+      store.write(next); // Required before retry, including after a reopen.
+      draft = next;
+    };
+
+    // A bulk INSERT is atomic. After a 23505, read every intended ID and
+    // insert the missing subset together; never create new answers one by one.
+    const insert = async (type, source, duplicatePass = 0) => {
+      let rows = payload(type, source);
+      for (let compatibilityPass = 0; compatibilityPass <= OPTIONAL[type].length; compatibilityPass++) {
+        const result = await asOwner(() => client.from(TABLES[type])
+          .insert(type === 'session' ? rows[0] : rows).select('*'));
+        const error = result?.error;
+        if (!error) { assertRows(type, rows, result?.data); return; }
+        if (permissionDenied(error)) throw denied(error);
+        const column = missingOptionalColumn(error, type, rows);
+        if (column) {
+          rememberOmission(type, column);
+          rows = payload(type, source);
+          continue;
+        }
+        if (error.code !== '23505') throw error;
+        let check;
+        if (type === 'session') {
+          check = await asOwner(() => client.from(TABLES.session).select('*')
+            .eq('id', rows[0].id).eq('user_id', draft.ownerId).maybeSingle());
+        } else {
+          check = await asOwner(() => client.from(TABLES.answers).select('*')
+            .in('id', rows.map(row => row.id)).eq('session_id', draft.id));
+        }
+        if (check?.error) throw permissionDenied(check.error) ? denied(check.error) : check.error;
+        const found = check?.data == null ? [] : Array.isArray(check.data) ? check.data : [check.data];
+        const existing = rows.filter(row => found.some(value => value?.id === row.id));
+        assertRows(type, existing, found);
+        const missing = rows.filter(row => !found.some(value => value?.id === row.id));
+        if (!missing.length) return;
+        if (type === 'session' || duplicatePass >= 1)
+          throw fail('The existing quiz could not be confirmed. Your recovery copy is retained.', 'KG_QUIZ_UNCONFIRMED');
+        await insert(type, source.filter(row => missing.some(value => value.id === row.id)), duplicatePass + 1);
+        return;
+      }
+      throw fail('Quiz saving requires a compatible database schema. Your recovery copy is retained.', 'KG_QUIZ_SCHEMA_REQUIRED');
+    };
+
+    try {
+      validateDraft(supplied);
+      if (!supplied.answers.length) throw fail('There are no recorded quiz answers to save.', 'KG_QUIZ_EMPTY', 'blocked');
+      draft = { ...copy(supplied), sealed: true };
+      store.write(draft); // No request may begin until the complete immutable work is durable.
+      await insert('session', [draft.session]);
+      await insert('answers', draft.answers);
+      await assertOwner();
+      const status = destination === 'device' ? 'queued' : 'saved';
+      try { store.remove(draft); }
+      catch (_) {
+        return { status, draft, warning: 'Results were saved, but the recovery copy could not be removed. A later retry will reuse the same record IDs.' };
+      }
+      return { status, draft };
+    } catch (error) {
+      return { status: permissionDenied(error) ? 'blocked' : error?.status === 'storage-error' ? 'storage-error' : 'pending',
+        draft, error: { code: error?.code || 'KG_QUIZ_SAVE_FAILED',
+          message: error?.message || 'Quiz saving was not confirmed. Your recovery copy is retained.' } };
+    }
+  }
+
+  function save(options = {}) {
+    if (!record(options)) return Promise.resolve({ status: 'blocked', draft: null,
+      error: { code: 'KG_QUIZ_INVALID_DRAFT', message: invalid().message } });
+    const key = JSON.stringify([options?.draft?.ownerId, options?.draft?.id]);
+    const current = inFlight.get(key);
+    if (current) {
+      if (samePayload(current.draft, options.draft)) return current.task;
+      return Promise.resolve({ status: 'storage-error', draft: options.draft,
+        error: { code: 'KG_QUIZ_INFLIGHT_CONFLICT', message:
+          'A different set of answers for this quiz is already being saved. These changes are still on this page; keep it open.' } });
+    }
+    // Take an immutable comparison snapshot too: a caller mutating its
+    // original object cannot make different work share a successful receipt.
+    let snapshot;
+    try { snapshot = copy(options.draft); } catch (_) { snapshot = options.draft; }
+    const task = performSave(options).finally(() => { if (inFlight.get(key)?.task === task) inFlight.delete(key); });
+    inFlight.set(key, { task, draft: snapshot });
+    return task;
+  }
+
+  root.KGQuizSave = { createStore, save, validateDraft, sameField, missingOptionalColumn, storagePrefix: PREFIX };
+})(typeof window !== 'undefined' ? window : globalThis);

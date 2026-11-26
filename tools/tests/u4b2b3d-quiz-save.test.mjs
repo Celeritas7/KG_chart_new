@@ -1,0 +1,637 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import vm from 'node:vm';
+
+// Invented records only. The fake models atomic INSERT and persistent rows;
+// it never opens a socket or uses an application Supabase configuration.
+const context = {window: {}, console, setTimeout, clearTimeout};
+vm.createContext(context);
+vm.runInContext(await fs.readFile(new URL('../../js/kg-quiz-save.js', import.meta.url), 'utf8'), context);
+const API = context.KGQuizSave || context.window.KGQuizSave;
+const SESSION_TABLE = 'kg_chart_quiz_sessions';
+const ANSWER_TABLE = 'kg_chart_quiz_answers';
+const OWNER = '11000000-0000-4000-8000-000000000001';
+const OTHER = '22000000-0000-4000-8000-000000000002';
+const AT = '2026-11-26T10:00:00.000Z';
+const copy = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+const deny = {code: '42501', message: 'new row violates row-level security policy'};
+const lost = {code: '', message: 'network response lost'};
+let nextId = 1;
+const uuid = () => `33000000-0000-4000-8000-${String(nextId++).padStart(12, '0')}`;
+
+function memoryStorage() {
+  const entries = new Map();
+  const storage = {
+    entries, failSet: false, failRemove: false,
+    get length() { return entries.size; },
+    key(index) { return [...entries.keys()][index] ?? null; },
+    getItem(key) { return entries.get(key) ?? null; },
+    setItem(key, value) {
+      if (storage.failSet) throw new Error('Synthetic quota failure');
+      entries.set(String(key), String(value));
+    },
+    removeItem(key) {
+      if (storage.failRemove) throw new Error('Synthetic removal failure');
+      entries.delete(String(key));
+    },
+  };
+  return storage;
+}
+
+function fakeClient({ownerId = OWNER, destination} = {}) {
+  const tables = {[SESSION_TABLE]: new Map(), [ANSWER_TABLE]: new Map()};
+  const client = {
+    ownerId, permitted: true, calls: [], faults: [], tables,
+    auth: {async getSession() {
+      client.calls.push({op: 'auth', ownerId: client.ownerId});
+      return {data: {session: client.ownerId ? {user: {id: client.ownerId}} : null}, error: null};
+    }},
+    failNext(table, op, fault) { client.faults.push({table, op, ...fault}); },
+    from(table) {
+      assert.ok(tables[table], `Unexpected table ${table}`);
+      const state = {op: 'read', rows: null, filters: [], columns: '*', one: false};
+      let execution;
+      const query = {
+        insert(rows) { state.op = 'insert'; state.rows = copy(Array.isArray(rows) ? rows : [rows]); return query; },
+        select(columns = '*') { state.columns = columns; return query; },
+        eq(key, value) { state.filters.push([key, value]); return query; },
+        in(key, values) { state.filters.push([key, copy(values)]); return query; },
+        single() { state.one = true; return execute(); },
+        maybeSingle() { state.one = true; return execute(); },
+        then(resolve, reject) { return execute().then(resolve, reject); },
+      };
+      function execute() {
+        return execution ||= (async () => {
+          const call = {table, op: state.op, rows: copy(state.rows), filters: copy(state.filters), ownerId: client.ownerId};
+          client.calls.push(call);
+          const faultIndex = client.faults.findIndex(f => f.table === table && f.op === state.op);
+          const fault = faultIndex === -1 ? null : client.faults.splice(faultIndex, 1)[0];
+          if (fault?.before) await fault.before(client, call);
+          const result = (data, error = null) => ({data: copy(data), error: copy(error), ...(destination ? {saveDestination: destination} : {})});
+          if (fault?.throwBefore) throw new Error('Synthetic transport exception');
+          if (fault?.error && !fault.commit) return result(null, fault.error);
+          if (state.op === 'insert') {
+            // Current authorization is evaluated for every retry, including a
+            // duplicate ID. A permission error may not be converted to an ACK.
+            if (!client.permitted || !client.ownerId) return result(null, deny);
+            for (const row of state.rows) {
+              const parent = table === ANSWER_TABLE && tables[SESSION_TABLE].get(row.session_id);
+              if (table === SESSION_TABLE ? row.user_id !== client.ownerId : !parent || parent.user_id !== client.ownerId) return result(null, deny);
+            }
+            // PostgreSQL INSERT of a batch is atomic: any duplicate rejects
+            // the entire statement; no partial inserts from this operation.
+            if (state.rows.some(row => tables[table].has(row.id))) return result(null, {code: '23505', message: 'duplicate key value'});
+            for (const row of state.rows) tables[table].set(row.id, copy(row));
+            if (fault?.after) await fault.after(client, call);
+            if (fault?.throwAfter) throw new Error('Synthetic reply lost after commit');
+            if (fault?.error) return result(null, fault.error);
+            if (fault && Object.hasOwn(fault, 'data')) return result(fault.data);
+            return result(state.one ? state.rows[0] : state.rows);
+          }
+          let rows = [...tables[table].values()].filter(row => {
+            const parent = table === ANSWER_TABLE && tables[SESSION_TABLE].get(row.session_id);
+            const own = table === SESSION_TABLE ? row.user_id === client.ownerId : parent?.user_id === client.ownerId;
+            return own && state.filters.every(([key, value]) => Array.isArray(value) ? value.includes(row[key]) : row[key] === value);
+          });
+          if (fault?.missing || !client.permitted) rows = [];
+          if (fault?.mutate) rows = rows.map(row => fault.mutate(copy(row)));
+          if (fault?.after) await fault.after(client, call);
+          return result(state.one ? rows[0] ?? null : rows);
+        })();
+      }
+      return query;
+    },
+  };
+  return client;
+}
+
+function setup(kind = 'word') {
+  const storage = memoryStorage();
+  const options = {storage, uuid, now: () => AT};
+  const store = API.createStore(options);
+  let draft = store.start({
+    ownerId: OWNER, languageCode: 'my', kind,
+    session: {topic_id: kind === 'word' ? 'food' : null,
+      quiz_type: kind === 'word' ? 'native_to_image' : 'sentence_to_meaning',
+      ...(kind === 'word' ? {difficulty: 2} : {})},
+  });
+  for (const [i, correct] of [true, false].entries()) {
+    draft = store.append(draft, {
+      vocabulary_id: kind === 'word' ? `word-${i}` : null,
+      ...(kind === 'sentence' ? {sentence_id: `sentence-${i}`} : {}),
+      selected_vocabulary_id: kind === 'word' ? `selected-${i}` : null,
+      is_correct: correct,
+      answer_text: `invented response ${i}`,
+      answered_at: AT,
+    });
+  }
+  store.write(draft);
+  const client = fakeClient();
+  const save = (value = draft, target = client, targetStore = store) => API.save({client: target, draft: value, store: targetStore});
+  const reload = () => API.createStore(options);
+  return {storage, store, draft, client, save, reload, kind};
+}
+
+function assertRows(client, draft, {sessions = 1, answers = draft.answers.length} = {}) {
+  assert.equal(client.tables[SESSION_TABLE].size, sessions);
+  assert.equal(client.tables[ANSWER_TABLE].size, answers);
+  if (sessions) {
+    const row = client.tables[SESSION_TABLE].get(draft.session.id);
+    assert.ok(row, 'The original stable session ID exists');
+    assert.equal(row.user_id, OWNER);
+    assert.equal(row.total_questions, draft.answers.length);
+    assert.equal(row.correct_answers, 1);
+  }
+  for (const answer of draft.answers.slice(0, answers)) {
+    const row = client.tables[ANSWER_TABLE].get(answer.id);
+    assert.ok(row, 'Each original answer ID exists exactly once');
+    assert.equal(row.session_id, draft.session.id);
+    assert.equal(row.vocabulary_id, answer.vocabulary_id);
+    assert.equal(row.sentence_id, answer.sentence_id);
+    assert.equal(row.is_correct, answer.is_correct);
+  }
+}
+const pending = fixture => fixture.reload().list(OWNER, 'my', fixture.kind);
+const inserts = client => client.calls.filter(call => call.op === 'insert');
+
+for (const kind of ['word', 'sentence']) {
+  test(`${kind}: session failure retains durable answers and retry persists one session`, async () => {
+    const f = setup(kind);
+    f.client.failNext(SESSION_TABLE, 'insert', {error: lost});
+    const failed = await f.save();
+    assert.equal(failed.status, 'pending');
+    assertRows(f.client, f.draft, {sessions: 0, answers: 0});
+    assert.equal(inserts(f.client).filter(c => c.table === ANSWER_TABLE).length, 0);
+    assert.equal(pending(f).length, 1);
+    const restored = pending(f)[0];
+    assert.equal(restored.session.id, f.draft.session.id);
+    assert.deepEqual(copy(restored.answers), copy(f.draft.answers));
+    const recovered = await f.save(restored, f.client, f.reload());
+    assert.equal(recovered.status, 'saved');
+    assertRows(f.client, f.draft);
+    assert.equal(pending(f).length, 0);
+  });
+
+  test(`${kind}: answer failure never acknowledges the session and recovers after reopening`, async () => {
+    const f = setup(kind);
+    f.client.failNext(ANSWER_TABLE, 'insert', {error: lost});
+    assert.equal((await f.save()).status, 'pending');
+    assertRows(f.client, f.draft, {answers: 0});
+    const restored = pending(f)[0];
+    assert.ok(restored, 'The complete answer payload survives reopening');
+    assert.equal((await f.save(restored, f.client, f.reload())).status, 'saved');
+    assertRows(f.client, f.draft);
+    assert.equal(pending(f).length, 0);
+  });
+
+  test(`${kind}: permission revocation during answers blocks replay and retains work until regrant`, async () => {
+    const f = setup(kind);
+    f.client.failNext(ANSWER_TABLE, 'insert', {before: client => { client.permitted = false; }});
+    assert.equal((await f.save()).status, 'blocked');
+    assertRows(f.client, f.draft, {answers: 0});
+    const deniedRetry = await f.save(pending(f)[0]);
+    assert.equal(deniedRetry.status, 'blocked');
+    assertRows(f.client, f.draft, {answers: 0});
+    assert.equal(f.client.calls.filter(c => c.op === 'read').length, 0, 'RLS denial is not a duplicate ACK');
+    assert.equal(pending(f).length, 1);
+    f.client.permitted = true;
+    assert.equal((await f.save(pending(f)[0])).status, 'saved');
+    assertRows(f.client, f.draft);
+  });
+
+  test(`${kind}: session denial does not trigger compatibility fallback`, async () => {
+    const f = setup(kind);
+    f.client.permitted = false;
+    assert.equal((await f.save()).status, 'blocked');
+    assert.equal(inserts(f.client).length, 1);
+    assertRows(f.client, f.draft, {sessions: 0, answers: 0});
+    assert.equal(pending(f).length, 1);
+  });
+
+  for (const table of [SESSION_TABLE, ANSWER_TABLE]) {
+    for (const throws of [false, true]) {
+      test(`${kind}: ${table} committed but ${throws ? 'thrown transport failure' : 'error acknowledgment'} retries without duplicates`, async () => {
+        const f = setup(kind);
+        f.client.failNext(table, 'insert', throws ? {commit: true, throwAfter: true} : {commit: true, error: lost});
+        const uncertain = await f.save();
+        assert.equal(uncertain.status, 'pending');
+        assertRows(f.client, f.draft, {answers: table === ANSWER_TABLE ? 2 : 0});
+        const recovered = await f.save(pending(f)[0], f.client, f.reload());
+        assert.equal(recovered.status, 'saved');
+        assertRows(f.client, f.draft);
+        assert.equal(pending(f).length, 0);
+        assert.ok(f.client.calls.some(c => c.op === 'read' && c.table === table));
+      });
+    }
+  }
+
+  test(`${kind}: repeated concurrent save calls share one operation and stable IDs`, async () => {
+    const f = setup(kind);
+    let release;
+    const barrier = new Promise(resolve => { release = resolve; });
+    f.client.failNext(SESSION_TABLE, 'insert', {before: () => barrier});
+    const first = f.save();
+    const second = f.save(copy(f.draft));
+    release();
+    const results = await Promise.all([first, second]);
+    assert.ok(results.every(result => result.status === 'saved'));
+    assertRows(f.client, f.draft);
+    assert.equal(inserts(f.client).filter(call => call.table === SESSION_TABLE).length, 1);
+    assert.equal(inserts(f.client).filter(call => call.table === ANSWER_TABLE).length, 1);
+    assert.equal(pending(f).length, 0);
+  });
+
+  test(`${kind}: a subsequent save of the same retained payload is idempotent`, async () => {
+    const f = setup(kind);
+    assert.equal((await f.save()).status, 'saved');
+    assert.equal((await f.save()).status, 'saved');
+    assertRows(f.client, f.draft);
+    assert.equal(pending(f).length, 0);
+  });
+
+  test(`${kind}: mismatched session duplicate is not acknowledged or overwritten`, async () => {
+    const f = setup(kind);
+    const existing = {...copy(f.draft.session), correct_answers: 999};
+    f.client.tables[SESSION_TABLE].set(existing.id, existing);
+    assert.equal((await f.save()).status, 'pending');
+    assert.deepEqual(f.client.tables[SESSION_TABLE].get(existing.id), existing);
+    assert.equal(f.client.tables[ANSWER_TABLE].size, 0);
+    assert.equal(pending(f).length, 1);
+  });
+
+  test(`${kind}: mismatched answer duplicate preserves original history and pending answers`, async () => {
+    const f = setup(kind);
+    f.client.tables[SESSION_TABLE].set(f.draft.session.id, copy(f.draft.session));
+    const existing = {...copy(f.draft.answers[0]), is_correct: !f.draft.answers[0].is_correct};
+    f.client.tables[ANSWER_TABLE].set(existing.id, existing);
+    assert.equal((await f.save()).status, 'pending');
+    assert.deepEqual(f.client.tables[ANSWER_TABLE].get(existing.id), existing);
+    assert.equal(f.client.tables[ANSWER_TABLE].size, 1, 'No missing answers are inserted beside a conflicting record');
+    assert.equal(pending(f).length, 1);
+  });
+
+  test(`${kind}: duplicate readback missing or denied does not become success`, async () => {
+    for (const fault of [{missing: true}, {error: deny}]) {
+      const f = setup(kind);
+      f.client.tables[SESSION_TABLE].set(f.draft.session.id, copy(f.draft.session));
+      f.client.failNext(SESSION_TABLE, 'read', fault);
+      const result = await f.save();
+      assert.ok(['pending', 'blocked'].includes(result.status));
+      assert.equal(f.client.tables[ANSWER_TABLE].size, 0);
+      assert.equal(pending(f).length, 1);
+    }
+  });
+
+  test(`${kind}: stale account cannot read or save another owner's recovery work`, async () => {
+    const f = setup(kind);
+    f.client.ownerId = OTHER;
+    assert.equal(f.reload().list(OTHER, 'my', kind).length, 0);
+    assert.equal((await f.save()).status, 'blocked');
+    assert.equal(inserts(f.client).length, 0);
+    assert.equal(pending(f).length, 1);
+    f.client.ownerId = OWNER;
+    assert.equal((await f.save(pending(f)[0])).status, 'saved');
+    assertRows(f.client, f.draft);
+  });
+
+  test(`${kind}: account switch after a session acknowledgment prevents answer replay`, async () => {
+    const f = setup(kind);
+    f.client.failNext(SESSION_TABLE, 'insert', {after: client => { client.ownerId = OTHER; }});
+    assert.equal((await f.save()).status, 'blocked');
+    assertRows(f.client, f.draft, {answers: 0});
+    assert.equal(pending(f).length, 1);
+    f.client.ownerId = OWNER;
+    assert.equal((await f.save(pending(f)[0])).status, 'saved');
+    assertRows(f.client, f.draft);
+  });
+
+  test(`${kind}: account switch after answers commit retains acknowledgment uncertainty`, async () => {
+    const f = setup(kind);
+    f.client.failNext(ANSWER_TABLE, 'insert', {after: client => { client.ownerId = OTHER; }});
+    assert.equal((await f.save()).status, 'blocked');
+    assertRows(f.client, f.draft);
+    assert.equal(pending(f).length, 1);
+    f.client.ownerId = OWNER;
+    assert.equal((await f.save(pending(f)[0])).status, 'saved');
+    assertRows(f.client, f.draft);
+    assert.equal(pending(f).length, 0);
+  });
+
+  test(`${kind}: recovery storage failure prevents all remote writes and remains recoverable in memory`, async () => {
+    const f = setup(kind);
+    f.storage.failSet = true;
+    const result = await f.save();
+    assert.equal(result.status, 'storage-error');
+    assert.equal(inserts(f.client).length, 0);
+    assert.equal(result.draft.session.id, f.draft.session.id);
+    assert.deepEqual(copy(result.draft.answers), copy(f.draft.answers));
+    f.storage.failSet = false;
+    assert.equal((await f.save(result.draft)).status, 'saved');
+    assertRows(f.client, f.draft);
+  });
+
+  test(`${kind}: device receipt is queued rather than falsely acknowledged as uploaded`, async () => {
+    const f = setup(kind);
+    const client = fakeClient({destination: 'device'});
+    const result = await f.save(f.draft, client);
+    assert.equal(result.status, 'queued');
+    assertRows(client, f.draft);
+  });
+}
+
+test('Draft append preserves IDs and timestamps, and storage reload retains payload and owner boundaries', () => {
+  const f = setup('word');
+  const restored = pending(f)[0];
+  assert.deepEqual(copy(restored), copy(f.draft));
+  assert.notEqual(f.draft.answers[0].id, f.draft.answers[1].id);
+  assert.equal(f.draft.answers[0].answered_at, AT);
+  assert.equal(f.draft.session.completed_at, AT);
+  assert.equal(f.reload().list(OWNER, 'ja').length, 0);
+  assert.equal(f.reload().list(OWNER, 'my', 'sentence').length, 0);
+});
+
+test('Session compatibility removes only a named optional missing column and keeps original stable IDs', async () => {
+  for (const code of ['PGRST204', '42703']) {
+    const f = setup('word');
+    f.client.failNext(SESSION_TABLE, 'insert', {error: {code, message: code === 'PGRST204'
+      ? "Could not find the 'difficulty' column of 'kg_chart_quiz_sessions' in the schema cache"
+      : 'column "difficulty" of relation "kg_chart_quiz_sessions" does not exist'}});
+    assert.equal((await f.save()).status, 'saved');
+    assertRows(f.client, f.draft);
+    const requests = inserts(f.client).filter(c => c.table === SESSION_TABLE);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].rows[0].id, requests[1].rows[0].id);
+    assert.equal(Object.hasOwn(requests[1].rows[0], 'difficulty'), false);
+  }
+});
+
+test('Answer compatibility removes only missing optional fields and keeps required sentence association', async () => {
+  const f = setup('sentence');
+  f.client.failNext(ANSWER_TABLE, 'insert', {error: {code: 'PGRST204', message:
+    "Could not find the 'answer_text' column of 'kg_chart_quiz_answers' in the schema cache"}});
+  assert.equal((await f.save()).status, 'saved');
+  assertRows(f.client, f.draft);
+  const requests = inserts(f.client).filter(c => c.table === ANSWER_TABLE);
+  assert.equal(requests.length, 2);
+  for (let i = 0; i < 2; i++) {
+    assert.equal(requests[1].rows[i].id, f.draft.answers[i].id);
+    assert.equal(requests[1].rows[i].sentence_id, f.draft.answers[i].sentence_id);
+    assert.equal(Object.hasOwn(requests[1].rows[i], 'answer_text'), false);
+    assert.equal(requests[1].rows[i].answered_at, AT);
+  }
+});
+
+test('Missing sentence_id is a pending schema failure, never an unassociated answer fallback', async () => {
+  const f = setup('sentence');
+  f.client.failNext(ANSWER_TABLE, 'insert', {error: {code: 'PGRST204', message:
+    "Could not find the 'sentence_id' column of 'kg_chart_quiz_answers' in the schema cache"}});
+  assert.equal((await f.save()).status, 'pending');
+  assertRows(f.client, f.draft, {answers: 0});
+  assert.equal(inserts(f.client).filter(c => c.table === ANSWER_TABLE).length, 1);
+  assert.equal(pending(f).length, 1);
+});
+
+test('Network, generic schema and wrong-table errors do not activate optional-column fallback', async () => {
+  for (const error of [lost,
+    {code: 'PGRST204', message: 'schema cache unavailable'},
+    {code: 'PGRST204', message: "Could not find the 'difficulty' column of 'different_table' in the schema cache"},
+    {code: 'PGRST202', message: 'function difficulty does not exist'},
+  ]) {
+    const f = setup('word');
+    f.client.failNext(SESSION_TABLE, 'insert', {error});
+    assert.equal((await f.save()).status, 'pending');
+    assert.equal(inserts(f.client).length, 1);
+    assertRows(f.client, f.draft, {sessions: 0, answers: 0});
+  }
+});
+
+test('Failure of the compatibility retry retains optional-column decision across reopening', async () => {
+  const f = setup('word');
+  f.client.failNext(SESSION_TABLE, 'insert', {error: {code: 'PGRST204', message:
+    "Could not find the 'difficulty' column of 'kg_chart_quiz_sessions' in the schema cache"}});
+  f.client.failNext(SESSION_TABLE, 'insert', {error: lost});
+  assert.equal((await f.save()).status, 'pending');
+  const restored = pending(f)[0];
+  assert.ok(restored.omittedColumns.session.includes('difficulty'));
+  assert.equal((await f.save(restored, f.client, f.reload())).status, 'saved');
+  assertRows(f.client, f.draft);
+  assert.equal(Object.hasOwn(inserts(f.client).at(-2).rows[0], 'difficulty'), false);
+});
+
+test('Equivalent PostgreSQL timestamp representations acknowledge identical records without changing history', async () => {
+  const f = setup('word');
+  f.client.tables[SESSION_TABLE].set(f.draft.session.id, {...copy(f.draft.session), completed_at: '2026-11-26 10:00:00+00'});
+  for (const answer of f.draft.answers) {
+    f.client.tables[ANSWER_TABLE].set(answer.id, {...copy(answer), answered_at: '2026-11-26T19:00:00+09:00'});
+  }
+  const before = JSON.stringify(Object.fromEntries(Object.entries(f.client.tables).map(([key, rows]) => [key, [...rows.values()]])));
+  assert.equal((await f.save()).status, 'saved');
+  assertRows(f.client, f.draft);
+  assert.equal(JSON.stringify(Object.fromEntries(Object.entries(f.client.tables).map(([key, rows]) => [key, [...rows.values()]]))), before);
+});
+
+test('A removal failure after acknowledged writes reports success with a warning and permits safe cleanup retry', async () => {
+  const f = setup('word');
+  f.storage.failRemove = true;
+  const result = await f.save();
+  assert.equal(result.status, 'saved');
+  assert.ok(result.warning);
+  assertRows(f.client, f.draft);
+  assert.equal(pending(f).length, 1);
+  f.storage.failRemove = false;
+  assert.equal((await f.save(pending(f)[0])).status, 'saved');
+  assertRows(f.client, f.draft);
+  assert.equal(pending(f).length, 0);
+});
+
+test('Malformed success acknowledgment leaves the draft pending even when a session may have committed', async () => {
+  for (const data of [null, [], [{id: 'wrong-session'}]]) {
+    const f = setup('word');
+    f.client.failNext(SESSION_TABLE, 'insert', {commit: true, data});
+    assert.equal((await f.save()).status, 'pending');
+    assertRows(f.client, f.draft, {answers: 0});
+    assert.equal(pending(f).length, 1);
+    assert.equal((await f.save(pending(f)[0])).status, 'saved');
+    assertRows(f.client, f.draft);
+  }
+});
+
+test('An exact partial answer batch retries only the missing stable IDs in one atomic INSERT', async () => {
+  const f = setup('word');
+  f.client.tables[SESSION_TABLE].set(f.draft.session.id, copy(f.draft.session));
+  f.client.tables[ANSWER_TABLE].set(f.draft.answers[0].id, copy(f.draft.answers[0]));
+  assert.equal((await f.save()).status, 'saved');
+  assertRows(f.client, f.draft);
+  const writes = inserts(f.client).filter(call => call.table === ANSWER_TABLE);
+  assert.equal(writes.length, 2);
+  assert.deepEqual(writes[0].rows.map(row => row.id), copy(f.draft.answers.map(row => row.id)));
+  assert.deepEqual(writes[1].rows.map(row => row.id), [f.draft.answers[1].id]);
+  assert.equal(pending(f).length, 0);
+});
+
+test('A failed optional answer fallback remains pending and reopens with original answers intact', async () => {
+  const f = setup('sentence');
+  f.client.failNext(ANSWER_TABLE, 'insert', {error: {code: '42703', message:
+    'column "answered_at" of relation "kg_chart_quiz_answers" does not exist'}});
+  f.client.failNext(ANSWER_TABLE, 'insert', {error: lost});
+  assert.equal((await f.save()).status, 'pending');
+  assertRows(f.client, f.draft, {answers: 0});
+  const restored = pending(f)[0];
+  assert.deepEqual(copy(restored.answers), copy(f.draft.answers));
+  assert.ok(restored.omittedColumns.answers.includes('answered_at'));
+  assert.equal((await f.save(restored, f.client, f.reload())).status, 'saved');
+  assertRows(f.client, f.draft);
+  for (const row of f.client.tables[ANSWER_TABLE].values()) {
+    assert.equal(Object.hasOwn(row, 'answered_at'), false);
+    assert.ok(row.sentence_id);
+  }
+});
+
+test('Compatibility checkpoint storage failure prevents an unrecorded alternate request', async () => {
+  const f = setup('word');
+  f.client.failNext(SESSION_TABLE, 'insert', {
+    before: () => { f.storage.failSet = true; },
+    error: {code: 'PGRST204', message:
+      "Could not find the 'difficulty' column of 'kg_chart_quiz_sessions' in the schema cache"},
+  });
+  const result = await f.save();
+  assert.equal(result.status, 'storage-error');
+  assert.equal(inserts(f.client).length, 1);
+  assertRows(f.client, f.draft, {sessions: 0, answers: 0});
+  f.storage.failSet = false;
+  assert.equal((await f.save(result.draft)).status, 'saved');
+  assertRows(f.client, f.draft);
+});
+
+test('Permission rejection after an optional-column response is not retried without that permission', async () => {
+  const f = setup('sentence');
+  f.client.failNext(ANSWER_TABLE, 'insert', {error: {code: 'PGRST204', message:
+    "Could not find the 'answer_text' column of 'kg_chart_quiz_answers' in the schema cache"}});
+  f.client.failNext(ANSWER_TABLE, 'insert', {error: deny});
+  assert.equal((await f.save()).status, 'blocked');
+  assertRows(f.client, f.draft, {answers: 0});
+  assert.equal(inserts(f.client).filter(call => call.table === ANSWER_TABLE).length, 2);
+  assert.equal(pending(f).length, 1);
+});
+
+test('Recovery cleanup preserves unrelated local records and another owner\'s draft', async () => {
+  const f = setup('word');
+  f.storage.entries.set('existing-offline-outbox', 'untouched pending changes');
+  f.storage.entries.set('existing-language-packs', 'untouched downloaded packs');
+  let other = f.store.start({ownerId: OTHER, languageCode: 'my', kind: 'word',
+    session: {topic_id: 'food', quiz_type: 'native_to_image'}});
+  other = f.store.append(other, {vocabulary_id: 'another-invented-word', is_correct: true, answered_at: AT});
+  f.store.write(other);
+  const otherBefore = copy(f.reload().list(OTHER, 'my', 'word'));
+  assert.equal((await f.save()).status, 'saved');
+  assert.equal(pending(f).length, 0);
+  assert.deepEqual(copy(f.reload().list(OTHER, 'my', 'word')), otherBefore);
+  assert.equal(f.storage.getItem('existing-offline-outbox'), 'untouched pending changes');
+  assert.equal(f.storage.getItem('existing-language-packs'), 'untouched downloaded packs');
+});
+
+test('Signed-out state blocks any retained quiz replay without discarding recovery data', async () => {
+  const f = setup('word');
+  f.client.ownerId = null;
+  assert.equal((await f.save()).status, 'blocked');
+  assert.equal(inserts(f.client).length, 0);
+  assert.equal(pending(f).length, 1);
+});
+
+test('Concurrent saves with differing answer payloads never acknowledge the unsubmitted answers', async () => {
+  const f = setup('word');
+  const divergent = f.store.append(f.draft, {vocabulary_id: 'late-invented-word', is_correct: true, answered_at: AT});
+  let release;
+  const barrier = new Promise(resolve => { release = resolve; });
+  f.client.failNext(SESSION_TABLE, 'insert', {before: () => barrier});
+  const first = f.save();
+  const conflict = f.save(divergent);
+  release();
+  const [saved, rejected] = await Promise.all([first, conflict]);
+  assert.equal(saved.status, 'saved');
+  assert.equal(rejected.status, 'storage-error');
+  assert.equal(rejected.draft.answers.length, 3, 'Unsubmitted work remains available in memory for explicit recovery');
+  assertRows(f.client, f.draft);
+  assert.equal(f.client.tables[ANSWER_TABLE].has(divergent.answers[2].id), false);
+});
+
+test('Malformed answer acknowledgment retains a complete recovery draft until exact readback confirms all rows', async () => {
+  const f = setup('sentence');
+  f.client.failNext(ANSWER_TABLE, 'insert', {commit: true, data: []});
+  assert.equal((await f.save()).status, 'pending');
+  assertRows(f.client, f.draft);
+  assert.equal(pending(f).length, 1);
+  assert.equal((await f.save(pending(f)[0])).status, 'saved');
+  assertRows(f.client, f.draft);
+  assert.equal(pending(f).length, 0);
+});
+
+test('Revocation before replay of a missing answer subset rejects the new rows and retains complete work', async () => {
+  const f = setup('word');
+  f.client.tables[SESSION_TABLE].set(f.draft.session.id, copy(f.draft.session));
+  f.client.tables[ANSWER_TABLE].set(f.draft.answers[0].id, copy(f.draft.answers[0]));
+  f.client.failNext(ANSWER_TABLE, 'read', {after: client => { client.permitted = false; }});
+  assert.equal((await f.save()).status, 'blocked');
+  assertRows(f.client, f.draft, {answers: 1});
+  assert.equal(pending(f).length, 1);
+  f.client.permitted = true;
+  assert.equal((await f.save(pending(f)[0])).status, 'saved');
+  assertRows(f.client, f.draft);
+});
+
+test('Corrupted ownership in a supplied recovery draft never uploads or deletes the intact original', async () => {
+  const f = setup('word');
+  const forged = copy(f.draft);
+  forged.session.user_id = OTHER;
+  assert.equal((await f.save(forged)).status, 'blocked');
+  assert.equal(inserts(f.client).length, 0);
+  assert.deepEqual(copy(pending(f)[0]), copy(f.draft));
+});
+
+for (const level of ['copy', 'dev', 'memory']) {
+  test(`Typed-word ${level} level persists its actual string value through failure and reopening`, async () => {
+    const storage = memoryStorage();
+    const options = {storage, uuid, now: () => AT};
+    const store = API.createStore(options);
+    let draft = store.start({ownerId: OWNER, languageCode: 'my', kind: 'word',
+      session: {topic_id: 'food', quiz_type: 'type_word', quiz_level: level}});
+    draft = store.append(draft, {vocabulary_id: 'typed-invented-word', is_correct: true,
+      answer_text: 'invented', answered_at: AT});
+    store.write(draft);
+    const client = fakeClient();
+    client.failNext(ANSWER_TABLE, 'insert', {error: lost});
+    assert.equal((await API.save({client, draft, store})).status, 'pending');
+    const reopened = API.createStore(options);
+    const restored = reopened.list(OWNER, 'my', 'word')[0];
+    assert.equal(restored.session.quiz_level, level);
+    assert.equal((await API.save({client, draft: restored, store: reopened})).status, 'saved');
+    assert.equal(client.tables[SESSION_TABLE].size, 1);
+    assert.equal(client.tables[ANSWER_TABLE].size, 1);
+    assert.equal(client.tables[SESSION_TABLE].get(draft.id).quiz_level, level);
+    assert.equal(reopened.list(OWNER, 'my', 'word').length, 0);
+  });
+}
+
+test('Missing quiz_level compatibility keeps the original typed level in recovery until a later retry succeeds', async () => {
+  const storage = memoryStorage();
+  const options = {storage, uuid, now: () => AT};
+  const store = API.createStore(options);
+  let draft = store.start({ownerId: OWNER, languageCode: 'my', kind: 'word',
+    session: {topic_id: 'food', quiz_type: 'type_word', quiz_level: 'memory'}});
+  draft = store.append(draft, {vocabulary_id: 'typed-invented-word', is_correct: true, answered_at: AT});
+  store.write(draft);
+  const client = fakeClient();
+  client.failNext(SESSION_TABLE, 'insert', {error: {code: 'PGRST204', message:
+    "Could not find the 'quiz_level' column of 'kg_chart_quiz_sessions' in the schema cache"}});
+  client.failNext(ANSWER_TABLE, 'insert', {error: lost});
+  assert.equal((await API.save({client, draft, store})).status, 'pending');
+  const reopened = API.createStore(options);
+  const restored = reopened.list(OWNER, 'my', 'word')[0];
+  assert.equal(restored.session.quiz_level, 'memory');
+  assert.ok(restored.omittedColumns.session.includes('quiz_level'));
+  assert.equal((await API.save({client, draft: restored, store: reopened})).status, 'saved');
+  assert.equal(client.tables[SESSION_TABLE].size, 1);
+  assert.equal(client.tables[ANSWER_TABLE].size, 1);
+  assert.equal(Object.hasOwn(client.tables[SESSION_TABLE].get(draft.id), 'quiz_level'), false);
+});

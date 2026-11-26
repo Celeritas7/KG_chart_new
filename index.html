@@ -86,6 +86,7 @@
   
   <script src="./js/kg-learner-access.js"></script>
   <script src="./js/kg-sentence-access.js"></script>
+  <script src="./js/kg-quiz-save.js"></script>
   <script type="text/babel">
     const { useState, useEffect, useCallback, useMemo, createContext, useContext } = React;
 
@@ -2090,10 +2091,15 @@
 
       const loadSessions = useCallback(async () => {
         if (!user) return [];
-        const { data } = await supabase.from(TABLES.quizSessions).select('difficulty, quiz_type, total_questions, correct_answers, created_at').eq('user_id', user.id).eq('language_code', languageCode)
+        const { data } = await supabase.from(TABLES.quizSessions).select('id, difficulty, quiz_type, total_questions, correct_answers, created_at').eq('user_id', user.id).eq('language_code', languageCode)
           .in('quiz_type', MCQ_QUIZ_TYPES).order('created_at', { ascending: false }).limit(300);
-        setSessions(data || []);
-        return data || [];
+        let fresh = [];
+        try {
+          const pendingIds = new Set(quizSaveStore.list(user.id, languageCode).map(draft => draft.id));
+          fresh = (data || []).filter(session => !pendingIds.has(session.id));
+        } catch (_) { /* Unreadable recovery state must not advance a level. */ }
+        setSessions(fresh);
+        return fresh;
       }, [user, languageCode]);
 
       useEffect(() => {
@@ -2122,10 +2128,19 @@
       };
       // After a multiple-choice quiz is saved: run the formula; returns the newly unlocked level, or null
       const afterQuiz = async () => {
+        const stillOwner = async () => {
+          const result = await supabase.auth.getSession();
+          return !result.error && result.data?.session?.user?.id === user?.id;
+        };
+        if (!user || !await stillOwner()) return null;
+        if (quizSaveStore.list(user?.id, languageCode).length) return null;
         const fresh = await loadSessions();
+        if (quizSaveStore.list(user?.id, languageCode).length) return null;
+        if (!await stillOwner()) return null;
         let unlocked = state.unlocked;
         if (state.db) {
           const { data, error } = await supabase.rpc('kg_chart_check_level_up', { p_lang: languageCode });
+          if (!await stillOwner()) return null;
           if (!error && data) unlocked = data;
         } else if (state.unlocked < LEVELS.length && levelProgress(fresh, state.unlocked, rules.levelUp).ready) {
           unlocked = state.unlocked + 1;
@@ -2629,6 +2644,168 @@
       );
     }
 
+    // Separate recovery records; never reuse or clear the installed offline outbox.
+    const quizSaveStore = window.KGQuizSave.createStore({ storage: {
+      get length() { return window.localStorage.length; },
+      key: i => window.localStorage.key(i),
+      getItem: key => window.localStorage.getItem(key),
+      setItem: (key, value) => window.localStorage.setItem(key, value),
+      removeItem: key => window.localStorage.removeItem(key),
+    } });
+    const quizSaveMemory = new Map();
+    const quizSaveStates = new Map();
+    const quizRecoveryChanged = () => window.dispatchEvent(new Event('kg-quiz-recovery-changed'));
+    window.addEventListener('beforeunload', event => {
+      if ([...quizSaveStates.values()].some(s => s.status === 'storage-error')) {
+        event.preventDefault(); event.returnValue = '';
+      }
+    });
+
+    function useQuizSaving({ user, languageCode, kind, onSaved }) {
+      const draftRef = React.useRef(null);
+      const mounted = React.useRef(true);
+      const onSavedRef = React.useRef(onSaved);
+      onSavedRef.current = onSaved;
+      const [state, setState] = useState({ status: 'idle' });
+      const [pending, setPending] = useState([]);
+      const [recoveryError, setRecoveryError] = useState(false);
+      const [recoveryResult, setRecoveryResult] = useState(null);
+      const refresh = useCallback(() => {
+        if (!mounted.current) return;
+        let records = [];
+        try { records = user ? quizSaveStore.list(user.id, languageCode, kind) : []; setRecoveryError(false); }
+        catch (_) { setRecoveryError(true); }
+        const merged = new Map(records.map(draft => [draft.id, draft]));
+        for (const draft of quizSaveMemory.values()) {
+          if (draft.ownerId === user?.id && draft.languageCode === languageCode && draft.kind === kind)
+            merged.set(draft.id, draft);
+        }
+        setPending([...merged.values()].filter(draft => draft.answers.length));
+      }, [user?.id, languageCode, kind]);
+      useEffect(() => {
+        mounted.current = true;
+        refresh();
+        window.addEventListener('storage', refresh);
+        window.addEventListener('kg-quiz-recovery-changed', refresh);
+        return () => {
+          mounted.current = false;
+          window.removeEventListener('storage', refresh);
+          window.removeEventListener('kg-quiz-recovery-changed', refresh);
+        };
+      }, [refresh]);
+
+      const begin = session => {
+        draftRef.current = user ? quizSaveStore.start({ ownerId: user.id, languageCode, kind, session }) : null;
+        setState({ status: 'idle' }); setRecoveryResult(null);
+      };
+      const record = answer => {
+        if (!draftRef.current) return answer;
+        const draft = quizSaveStore.append(draftRef.current, answer);
+        draftRef.current = draft;
+        quizSaveMemory.set(draft.id, draft);
+        let next = { status: 'retained' };
+        try { quizSaveStore.write(draft); }
+        catch (_) { next = { status: 'storage-error' }; }
+        quizSaveStates.set(draft.id, next);
+        setState(next);
+        quizRecoveryChanged();
+        return draft.answers[draft.answers.length - 1];
+      };
+      const checkpoint = () => {
+        const draft = draftRef.current;
+        if (!draft) return;
+        let next = { status: 'retained' };
+        try { quizSaveStore.write(draft); }
+        catch (_) { next = { status: 'storage-error' }; }
+        quizSaveStates.set(draft.id, next); setState(next); quizRecoveryChanged();
+      };
+      const retry = async draft => {
+        if (!draft?.answers.length) return;
+        // A second click joins the same attempt, including its completion callback.
+        if (quizSaveStates.get(draft.id)?.status === 'saving') return;
+        const sealed = { ...draft, sealed: true };
+        quizSaveMemory.set(draft.id, sealed);
+        quizSaveStates.set(draft.id, { status: 'saving' });
+        if (draftRef.current?.id === draft.id) {
+          draftRef.current = sealed; if (mounted.current) setState({ status: 'saving' });
+        }
+        quizRecoveryChanged();
+        const result = await window.KGQuizSave.save({ client: supabase, draft: sealed, store: quizSaveStore });
+        const success = result.status === 'saved' || result.status === 'queued';
+        if (success) quizSaveMemory.delete(draft.id);
+        else quizSaveMemory.set(draft.id, result.draft);
+        quizSaveStates.set(draft.id, result);
+        quizRecoveryChanged();
+        if (mounted.current) {
+          if (draftRef.current?.id === draft.id) { draftRef.current = result.draft; setState(result); }
+          else if (success) setRecoveryResult(result);
+          refresh();
+        }
+        // Saving is already complete. A later progress-refresh error must not repeat the writes.
+        if (success) {
+          try {
+            const identity = await supabase.auth.getSession();
+            if (!identity.error && identity.data?.session?.user?.id === result.draft.ownerId)
+              await onSavedRef.current?.(result.draft, () => mounted.current && draftRef.current?.id === draft.id);
+          }
+          catch (_) {
+            const next = { ...result, warning: 'Your results are saved. Progress could not refresh yet.' };
+            quizSaveStates.set(draft.id, next);
+            if (mounted.current && draftRef.current?.id === draft.id) setState(next);
+          }
+        }
+        return result;
+      };
+      const saveCurrent = () => retry(draftRef.current);
+      const download = draft => {
+        const blob = new Blob([JSON.stringify({ contract: 'kg-quiz-recovery-v1', draft }, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url; link.download = `kg-quiz-recovery-${draft.id}.json`; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+      return { begin, record, checkpoint, saveCurrent, retry, refresh, state, pending, recoveryError, recoveryResult,
+        draft: draftRef.current, download };
+    }
+
+    function QuizSaveStatus({ state, onRetry, onDownload }) {
+      const status = state?.status || 'idle';
+      const success = status === 'saved' || status === 'queued';
+      const retryable = ['pending', 'blocked', 'storage-error'].includes(status);
+      const message = status === 'saved' ? '✓ Results saved' : status === 'queued'
+        ? '✓ Saved on this device. Check Settings for sync status.' : status === 'saving'
+        ? 'Saving…' : status === 'blocked'
+        ? 'Saving is blocked by your current access or sign-in. Your answers are retained on this device. Check your access, then retry.'
+        : status === 'storage-error'
+        ? 'A recovery copy could not be saved on this device. Keep this page open and retry, or download your answers.'
+        : status === 'pending'
+        ? 'Not saved yet. Your answers are retained on this device. Retry when your connection and access are ready.'
+        : 'Your answers are kept on this device until the quiz is saved.';
+      return <div role={retryable ? 'alert' : 'status'} aria-live="polite" className={`text-sm my-4 ${success ? 'text-green-700' : 'text-amber-800'}`}>
+        <p>{message}</p>
+        {state?.warning && <p className="mt-1">{state.warning}</p>}
+        {(retryable || success && state?.warning && onRetry) && <div className="flex flex-wrap gap-3 justify-center mt-3">
+          <button type="button" onClick={onRetry} className="px-4 py-2 bg-amber-100 rounded-xl font-medium">Retry save</button>
+          {onDownload && <button type="button" onClick={onDownload} className="px-4 py-2 bg-gray-100 rounded-xl">Download answers</button>}
+        </div>}
+      </div>;
+    }
+
+    function QuizRecoveryPanel({ saving }) {
+      if (!saving.pending.length && !saving.recoveryError) return saving.recoveryResult
+        ? <QuizSaveStatus state={saving.recoveryResult} /> : null;
+      return <section aria-label="Quiz save recovery" className="mb-6 rounded-2xl border border-amber-300 bg-amber-50 p-4">
+        <h3 className="font-bold text-amber-900">Quiz results waiting to be saved</h3>
+        {saving.recoveryError && <p role="alert" className="text-sm mt-2">Saved recovery records could not be read. Keep this page open; no records were removed.</p>}
+        {saving.pending.map(draft => <div key={draft.id} className="mt-3 border-t border-amber-200 pt-3">
+          <p className="text-sm font-medium">{draft.kind === 'word' ? 'Word quiz' : 'Sentence quiz'} · {draft.session.correct_answers}/{draft.session.total_questions} · {new Date(draft.session.completed_at).toLocaleString()}</p>
+          <QuizSaveStatus state={['idle', 'retained'].includes(quizSaveStates.get(draft.id)?.status)
+              ? { status: 'pending' } : quizSaveStates.get(draft.id) || { status: 'pending' }}
+            onRetry={() => saving.retry(draft)} onDownload={() => saving.download(draft)} />
+        </div>)}
+      </section>;
+    }
+
     function WordQuizView({ topics, vocabulary, poolVocabulary, ratings, onRate, languageCode, user, onSessionSaved, modeToggle, meaningName }) {
       const rules = React.useContext(RulesContext);
       const [flagItem, setFlagItem] = useState(null);
@@ -2642,7 +2819,6 @@
       ) : null;
       const pool = poolVocabulary || vocabulary;
       useAudioState();
-      const savingRef = React.useRef(false);
       const [quizTopic, setQuizTopic] = useState('all'); // 'all' = unlocked topics, 'everything' = locked ones too, or a topic id
       const [quizBucket, setQuizBucket] = useState('all'); // 'all' | 0 (not sorted yet) | 1..5 (a Cards bucket)
       const [quizType, setQuizType] = useState('native_to_image');
@@ -2659,7 +2835,6 @@
       const [quizCompleted, setQuizCompleted] = useState(false);
       const [quizAnswers, setQuizAnswers] = useState([]);
       const [recentSessions, setRecentSessions] = useState([]);
-      const [sessionSaved, setSessionSaved] = useState(false);
 
       const lv = useLevels(user, languageCode);
       const isMcq = MCQ_QUIZ_TYPES.includes(quizType);
@@ -2668,6 +2843,21 @@
       const L = levelOf(quizStarted ? quizLevelN : (isMcq ? lv.level : 1));
       const [timeLeft, setTimeLeft] = useState(null);
       const [levelUp, setLevelUp] = useState(null);
+      const saving = useQuizSaving({ user, languageCode, kind: 'word', onSaved: async (draft, isCurrent) => {
+        if (onSessionSaved) onSessionSaved();
+        for (const answer of draft.answers) {
+          if (!answer.is_correct && answer.vocabulary_id && !ratings[answer.vocabulary_id]?.rating)
+            onRate(answer.vocabulary_id, 5);
+        }
+        // A partial run must not contribute to a later level check on this device.
+        if (MCQ_QUIZ_TYPES.includes(draft.session.quiz_type) && !quizSaveStore.list(user.id, languageCode).length) {
+          const up = await lv.afterQuiz(); if (up && isCurrent()) setLevelUp(up);
+        }
+      } });
+      const sessionSaved = ['saved', 'queued'].includes(saving.state.status);
+      const recoveryWarning = saving.state.status === 'storage-error' && <QuizSaveStatus
+        state={saving.state} onRetry={saving.checkpoint}
+        onDownload={saving.draft ? () => saving.download(saving.draft) : null} />;
       const showHint = L.hint || showResult;
 
       const [wb, setWb] = useState(() => ({ ...WB_DEFAULTS, ...loadFromStorage(WB_STORAGE_KEY, {}) }));
@@ -2711,36 +2901,7 @@
       }, [user, languageCode, sessionSaved]);
 
       // Save the session once: on completion, or when leaving mid-quiz with answers (so every faced word counts)
-      const persistSession = useCallback(async (sc, answers) => {
-        if (!user || savingRef.current || sc.total === 0) return;
-        savingRef.current = true;
-        const sessionRow = {
-          user_id: user.id,
-          language_code: languageCode,
-          topic_id: quizTopic === 'all' || quizTopic === 'everything' ? null : quizTopic,
-          quiz_type: quizType,
-          total_questions: sc.total,
-          correct_answers: sc.correct,
-          completed_at: new Date().toISOString(),
-        };
-        if (quizType === 'type_word') sessionRow.quiz_level = twLevel;
-        if (isMcq) sessionRow.difficulty = L.n;
-        let { data: session, error: sessionErr } = await supabase.from(TABLES.quizSessions).insert(sessionRow).select('id').single();
-        // Fallback if kg-chart-phase10.sql (quiz_level) or kg-chart-levels.sql (difficulty) hasn't been run yet
-        if (sessionErr && (sessionRow.quiz_level || sessionRow.difficulty)) {
-          const { quiz_level, difficulty, ...rest } = sessionRow;
-          ({ data: session, error: sessionErr } = await supabase.from(TABLES.quizSessions).insert(rest).select('id').single());
-        }
-        if (!sessionErr && session && answers.length > 0) {
-          const rows = answers.map(a => ({ ...a, session_id: session.id }));
-          const { error: ansErr } = await supabase.from(TABLES.quizAnswers).insert(rows);
-          // Fallback if the answer_text / answered_at columns haven't been added yet (users.sql / phase8b.sql)
-          if (ansErr) await supabase.from(TABLES.quizAnswers).insert(rows.map(({ answer_text, answered_at, ...r }) => r));
-        }
-        setSessionSaved(true);
-        if (onSessionSaved) onSessionSaved();
-        if (isMcq && !sessionErr) { const up = await lv.afterQuiz(); if (up) setLevelUp(up); }
-      }, [user, languageCode, quizTopic, quizType, twLevel, onSessionSaved, isMcq, L.n, lv]);
+      const persistSession = () => saving.saveCurrent();
 
       useEffect(() => {
         if (quizCompleted && !sessionSaved) persistSession(score, quizAnswers);
@@ -2748,10 +2909,13 @@
 
       // Leaving via a top tab (Chart/Cards/Progress) unmounts this view: save pending answers so faced words still count
       const pendingRef = React.useRef(null);
-      pendingRef.current = quizStarted && !quizCompleted && quizAnswers.length ? { score, quizAnswers, persistSession } : null;
-      useEffect(() => () => { const p = pendingRef.current; if (p) p.persistSession(p.score, p.quizAnswers); window.KGAudio.stop(); }, []);
+      pendingRef.current = quizStarted && !quizCompleted && quizAnswers.length ? { persistSession } : null;
+      useEffect(() => () => { const p = pendingRef.current; if (p) p.persistSession(); window.KGAudio.stop(); }, []);
 
       const startQuiz = useCallback(() => {
+        saving.begin({ topic_id: quizTopic === 'all' || quizTopic === 'everything' ? null : quizTopic,
+          quiz_type: quizType, ...(quizType === 'type_word' ? { quiz_level: twLevel } : {}),
+          ...(isMcq ? { difficulty: L.n } : {}) });
         const targetCount = dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length);
         // All buckets: words you're still learning come up more often (weighted shuffle), well-known ones less
         const shuffled = quizBucket === 'all' ? weightedShuffle(playableVocab, v => BUCKET_WEIGHT[bucketOf(v)]) : shuffleArr(playableVocab);
@@ -2782,11 +2946,9 @@
         setQuizAnswers([]);
         setLevelUp(null);
         setQuizLevelN(L.n);
-        savingRef.current = false;
-        setSessionSaved(false);
         setQuizCompleted(false);
         setQuizStarted(true);
-      }, [playableVocab, topicVocab, pool, dailyTarget, isListen, languageCode, isMcq, L.n, L.choices, quizBucket, ratings]);
+      }, [playableVocab, topicVocab, pool, dailyTarget, isListen, languageCode, isMcq, L.n, L.choices, quizBucket, ratings, quizTopic, quizType, twLevel]);
 
       const generateQuestion = useCallback(() => {
         if (pool.length < 4 || quizWords.length < 1 || currentWordIndex >= quizWords.length) {
@@ -2921,6 +3083,10 @@
         });
       }, [protectedQuizPictures, quizStarted, quizCompleted, isTyped, quizWords, quizOptions, currentWordIndex, quizType]);
 
+      const recordQuizAnswer = answer => {
+        const retained = saving.record(answer);
+        setQuizAnswers(prev => [...prev, retained]);
+      };
       const handleAnswer = (item) => {
         if (showResult || !imagesReady) return;
         setSelectedAnswer(item);
@@ -2929,16 +3095,12 @@
         const isCorrect = item.id === currentQuestion.id;
         setScore(prev => ({ correct: prev.correct + (isCorrect ? 1 : 0), total: prev.total + 1 }));
         // Track answer for session persistence
-        setQuizAnswers(prev => [...prev, {
+        recordQuizAnswer({
           vocabulary_id: currentQuestion.id,
           selected_vocabulary_id: item.id,
           is_correct: isCorrect,
           answered_at: new Date().toISOString(),
-        }]);
-        // Only auto-rate unrated words as "Don't know" — never overwrite an existing rating
-        if (!isCorrect && user && !ratings[currentQuestion.id]?.rating) {
-          onRate(currentQuestion.id, 5);
-        }
+        });
       };
 
       // Time ran out: counts as wrong, shows the answer
@@ -2948,14 +3110,13 @@
         setShowResult(true);
         window.KGAudio.autoPlay(currentQuestion.translation?.native_text, languageCode, undefined, wordAudioResource(currentQuestion, languageCode));
         setScore(prev => ({ correct: prev.correct, total: prev.total + 1 }));
-        setQuizAnswers(prev => [...prev, {
+        recordQuizAnswer({
           vocabulary_id: currentQuestion.id,
           selected_vocabulary_id: null,
           is_correct: false,
           answer_text: 'timeout',
           answered_at: new Date().toISOString(),
-        }]);
-        if (user && !ratings[currentQuestion.id]?.rating) onRate(currentQuestion.id, 5);
+        });
       };
       const timeoutRef = React.useRef(handleTimeout);
       timeoutRef.current = handleTimeout;
@@ -2982,14 +3143,13 @@
         const item = quizWords[currentWordIndex];
         if (!item) return;
         setScore(prev => ({ correct: prev.correct + (isCorrect ? 1 : 0), total: prev.total + 1 }));
-        setQuizAnswers(prev => [...prev, {
+        recordQuizAnswer({
           vocabulary_id: item.id,
           selected_vocabulary_id: isCorrect ? item.id : null,
           is_correct: isCorrect,
           answer_text: answerText,
           answered_at: new Date().toISOString(),
-        }]);
-        if (!isCorrect && user && !ratings[item.id]?.rating) onRate(item.id, 5);
+        });
       };
 
       const nextQuestion = () => {
@@ -3024,6 +3184,7 @@
       if (!quizStarted) {
         return (
           <div className="max-w-2xl mx-auto p-6">
+            <QuizRecoveryPanel saving={saving} />
             <div className="bg-white rounded-3xl shadow-xl p-8">
               <div className="text-center mb-8">
                 <div className="w-20 h-20 bg-jade-100 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -3234,11 +3395,8 @@
                 <div className="text-5xl font-bold mb-2">{score.correct}/{score.total}</div>
                 <div className="text-xl opacity-90">{percentage}% Correct</div>
               </div>
-              {user && (
-                <p className={`text-sm mb-4 ${sessionSaved ? 'text-green-600' : 'text-gray-400'}`}>
-                  {sessionSaved ? '✓ Results saved' : 'Saving...'}
-                </p>
-              )}
+              {user && score.total > 0 && <QuizSaveStatus state={saving.state} onRetry={persistSession}
+                onDownload={saving.draft ? () => saving.download(saving.draft) : null} />}
               {levelUp && (
                 <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 mb-5">
                   <div className="text-lg font-bold text-amber-800">🎉 {levelOf(levelUp).icon} {levelOf(levelUp).name} unlocked!</div>
@@ -3266,6 +3424,7 @@
         if (!wbItem) return <LoadingSpinner />;
         return (
           <>
+            {recoveryWarning}
             <WordBuilderRound key={`${wbItem.id}-${currentWordIndex}`} item={wbItem} index={currentWordIndex} total={quizWords.length}
               score={score} settings={wb} languageCode={languageCode} unitPool={wbUnitPool}
               onBack={leaveQuiz} onAnswered={handleWbAnswer} onNext={nextQuestion} />
@@ -3283,6 +3442,7 @@
         // No key: the same input stays mounted so the phone keyboard doesn't close between words
         return (
           <>
+            {recoveryWarning}
             <TypeWordRound item={twItem} index={currentWordIndex} total={quizWords.length}
               score={score} settings={tw} languageCode={languageCode} trailingWrong={trailingWrong}
               onBack={leaveQuiz} onAnswered={handleWbAnswer} onNext={nextQuestion} />
@@ -3296,6 +3456,7 @@
 
       return (
         <div className="max-w-4xl mx-auto p-4">
+          {recoveryWarning}
           <div className="bg-white rounded-2xl shadow-lg p-4 mb-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <button onClick={leaveQuiz} className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">← Back</button>
@@ -3702,18 +3863,17 @@
       if (currentMode === 'speak') return <SpeakView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} sentenceAccess={props.sentenceAccess} />;
       if (currentMode === 'typing') return <TypingView key={props.languageCode} topics={props.topics} vocabulary={props.vocabulary} languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} accessPolicy={props.accessPolicy} />;
       return currentMode === 'sentences'
-        ? <SentenceQuizView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} sentenceAccess={props.sentenceAccess} />
+        ? <SentenceQuizView languageCode={props.languageCode} user={props.user} meaningName={props.meaningName} modeToggle={toggle} sentenceAccess={props.sentenceAccess} onSessionSaved={props.onSessionSaved} />
         : <WordQuizView {...props} modeToggle={toggle}
             topics={props.topics.filter(t => t.id !== 'friends_names')}
             vocabulary={props.vocabulary.filter(v => v.topic_id !== 'friends_names')}
             poolVocabulary={(props.poolVocabulary || props.vocabulary).filter(v => v.topic_id !== 'friends_names')} />;
     }
 
-    function SentenceQuizView({ languageCode, user, meaningName, modeToggle, sentenceAccess }) {
+    function SentenceQuizView({ languageCode, user, meaningName, modeToggle, sentenceAccess, onSessionSaved }) {
       const [flagSentence, setFlagSentence] = useState(null);
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       useAudioState();
-      const savingRef = React.useRef(false);
       const saved0 = loadFromStorage(SENTENCE_SETTINGS_KEY, {});
       const [sentences, setSentences] = useState(null); // null = loading
       const [loadError, setLoadError] = useState(null);
@@ -3730,7 +3890,8 @@
       const [gaveUp, setGaveUp] = useState(false);
       const [score, setScore] = useState({ correct: 0, total: 0 });
       const [answers, setAnswers] = useState([]);
-      const [sessionSaved, setSessionSaved] = useState(false);
+      const saving = useQuizSaving({ user, languageCode, kind: 'sentence', onSaved: onSessionSaved });
+      const sessionSaved = ['saved', 'queued'].includes(saving.state.status);
       const [recent, setRecent] = useState([]);
 
       useEffect(() => { saveToStorage(SENTENCE_SETTINGS_KEY, { count, type: sType }); }, [count, sType]);
@@ -3768,34 +3929,16 @@
       const needed = isBuild ? 1 : 4;
       const n = count === 0 ? filtered.length : Math.min(count, filtered.length);
 
-      const persistSession = useCallback(async (sc, ans, type) => {
-        if (!user || savingRef.current || sc.total === 0) return;
-        savingRef.current = true;
-        const { data: session, error } = await supabase.from(TABLES.quizSessions).insert({
-          user_id: user.id,
-          language_code: languageCode,
-          topic_id: null,
-          quiz_type: type,
-          total_questions: sc.total,
-          correct_answers: sc.correct,
-          completed_at: new Date().toISOString(),
-        }).select('id').single();
-        if (!error && session && ans.length) {
-          const rows = ans.map(a => ({ ...a, session_id: session.id }));
-          const { error: ansErr } = await supabase.from(TABLES.quizAnswers).insert(rows);
-          // Fallback if the sentence_id column hasn't been added yet (kg-chart-sentences.sql)
-          if (ansErr) await supabase.from(TABLES.quizAnswers).insert(rows.map(({ sentence_id, ...r }) => r));
-        }
-        setSessionSaved(true);
-      }, [user, languageCode]);
+      const persistSession = () => saving.saveCurrent();
 
       useEffect(() => { if (completed && !sessionSaved) persistSession(score, answers, sType); }, [completed]);
 
       const pendingRef = React.useRef(null);
-      pendingRef.current = started && !completed && answers.length ? { score, answers, sType, persistSession } : null;
-      useEffect(() => () => { const p = pendingRef.current; if (p) p.persistSession(p.score, p.answers, p.sType); window.KGAudio.stop(); }, []);
+      pendingRef.current = started && !completed && answers.length ? { persistSession } : null;
+      useEffect(() => () => { const p = pendingRef.current; if (p) p.persistSession(); window.KGAudio.stop(); }, []);
 
       const startQuiz = () => {
+        saving.begin({ topic_id: null, quiz_type: sType });
         const picked = shuffleArr(filtered).slice(0, n);
         const frozen = picked.map(s => {
           if (isBuild) {
@@ -3825,21 +3968,21 @@
         setItems(frozen);
         setIdx(0); setSelected(null); setShowResult(false); setPlaced([]); setGaveUp(false);
         setScore({ correct: 0, total: 0 }); setAnswers([]);
-        savingRef.current = false; setSessionSaved(false);
         setCompleted(false); setStarted(true);
       };
 
       const item = items[idx];
       const record = (isCorrect, selectedId, answerText) => {
-        setScore(prev => ({ correct: prev.correct + (isCorrect ? 1 : 0), total: prev.total + 1 }));
-        setAnswers(prev => [...prev, {
+        const answer = saving.record({
           vocabulary_id: null,
           sentence_id: item.s.id,
           selected_vocabulary_id: selectedId,
           is_correct: isCorrect,
           answer_text: answerText,
           answered_at: new Date().toISOString(),
-        }]);
+        });
+        setScore(prev => ({ correct: prev.correct + (isCorrect ? 1 : 0), total: prev.total + 1 }));
+        setAnswers(prev => [...prev, answer]);
       };
 
       const pick = (opt) => {
@@ -3926,6 +4069,7 @@
         }[sType];
         return (
           <div className="max-w-2xl mx-auto p-6">
+            <QuizRecoveryPanel saving={saving} />
             <div className="bg-white rounded-3xl shadow-xl p-8">
               <div className="text-center mb-8">
                 <div className="w-20 h-20 bg-jade-100 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -4033,7 +4177,8 @@
                 <div className="text-5xl font-bold mb-2">{score.correct}/{score.total}</div>
                 <div className="text-xl opacity-90">{pct}% Correct</div>
               </div>
-              {user && <p className={`text-sm mb-4 ${sessionSaved ? 'text-green-600' : 'text-gray-400'}`}>{sessionSaved ? '✓ Results saved' : 'Saving...'}</p>}
+              {user && score.total > 0 && <QuizSaveStatus state={saving.state} onRetry={persistSession}
+                onDownload={saving.draft ? () => saving.download(saving.draft) : null} />}
               <div className="flex gap-4 justify-center">
                 <button onClick={() => { setStarted(false); setCompleted(false); }} className="px-6 py-3 bg-gray-100 rounded-xl font-medium hover:bg-gray-200">← Back to Setup</button>
                 <button onClick={startQuiz} className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Try Again</button>
@@ -4050,6 +4195,8 @@
       // ---------- Question ----------
       return (
         <div className="max-w-3xl mx-auto p-4">
+          {saving.state.status === 'storage-error' && <QuizSaveStatus state={saving.state}
+            onRetry={saving.checkpoint} onDownload={saving.draft ? () => saving.download(saving.draft) : null} />}
           <div className="bg-white rounded-2xl shadow-lg p-4 mb-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <button onClick={leave} className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-medium">← Back</button>
@@ -6460,7 +6607,7 @@
                     } : null} />
                 )}
                 {selectedView === 'quiz' && (
-                  <QuizView topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={selectedLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} accessPolicy={policy} sentenceAccess={sentenceAccess} />
+                  <QuizView key={`${user?.id || 'guest'}:${selectedLanguage}`} topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={selectedLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} accessPolicy={policy} sentenceAccess={sentenceAccess} />
                 )}
                 {selectedView === 'flashcard' && (
                   <FlashcardView key={selectedLanguage} topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} ratingsLoaded={ratingsLoaded} onRate={updateRating} onClearRating={clearRating} languageCode={selectedLanguage} user={user} />
