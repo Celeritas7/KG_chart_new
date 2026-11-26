@@ -8,6 +8,29 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- F2D1: common lock order, shared by existing-profile publication and
+-- restricted writes. The global row is changed only by the later candidate
+-- authorization-edit triggers, after all earlier regressions have run.
+CREATE TABLE kg_u4b2b_test_private.f2d_authorization_gate (
+  singleton boolean PRIMARY KEY CHECK(singleton),
+  epoch bigint NOT NULL CHECK(epoch > 0)
+);
+INSERT INTO kg_u4b2b_test_private.f2d_authorization_gate VALUES (true,1);
+REVOKE ALL ON TABLE kg_u4b2b_test_private.f2d_authorization_gate
+  FROM PUBLIC,anon,authenticated,service_role;
+CREATE FUNCTION kg_u4b2b_test_private.f2d_lock_shared()
+RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog
+AS $
+BEGIN
+  PERFORM 1 FROM kg_u4b2b_test_private.f2d_authorization_gate
+    WHERE singleton FOR SHARE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'F2D authorization gate unavailable' USING ERRCODE='42501';
+  END IF;
+END $;
+REVOKE ALL ON FUNCTION kg_u4b2b_test_private.f2d_lock_shared()
+  FROM PUBLIC,anon,authenticated,service_role;
+
 -- Reuse the reviewed U2 selection validation in one private implementation.
 -- Both public wrappers call it as the schema owner; never trust a supplied actor.
 CREATE FUNCTION kg_u4b2b_test_private.f2_replace_grants(
@@ -60,6 +83,7 @@ BEGIN
   -- Serialize drafts per email without requiring UPDATE privilege on the
   -- existing allowlist table. This transaction-scoped lock also covers the
   -- first save, when no access profile exists yet.
+  PERFORM kg_u4b2b_test_private.f2d_lock_shared();
   PERFORM pg_advisory_xact_lock(hashtext('kg_chart_u2_draft:' || v_email));
   SELECT u.role INTO v_role
     FROM public.kg_chart_users AS u
@@ -271,6 +295,7 @@ BEGIN
   -- This shares the same existing profile row that grant publication updates.
   -- At READ COMMITTED, subsequent statements observe the post-lock snapshot.
   -- At REPEATABLE READ PostgreSQL can reject a concurrently updated row.
+  PERFORM kg_u4b2b_test_private.f2d_lock_shared();
   SELECT mode,revision INTO v_mode,v_revision FROM public.kg_chart_access_profiles
     WHERE email=v_email FOR SHARE;
   IF NOT FOUND OR v_mode IS DISTINCT FROM 'restricted' THEN
