@@ -1,10 +1,9 @@
 name: KG Chart U4B2 - isolated database authorization
+# Intentionally unfiltered: this fixture suite consumes SQL, Python, Edge,
+# client helpers and shared prerequisites. A partial path allowlist can
+# silently skip revocation/ownership checks on a dependency-only change.
 on:
   pull_request:
-    paths:
-      - 'sql/**'
-      - 'tools/tests/u4b2-*'
-      - '.github/workflows/kg-u4b2-backend.yml'
   workflow_dispatch:
 permissions:
   contents: read
@@ -16,6 +15,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Verify the unconditional PR trigger contract
+        run: python3 tools/tests/u4b2-ci-trigger-contract.py
       - name: Recheck synthetic Edge authorization contracts
         run: node --experimental-strip-types --test tools/tests/u3b3b2-private-delivery.test.mjs tools/tests/u3b2-pronounce-preflight.test.mjs
       - name: Start disposable PostgreSQL 17 with disabled network
