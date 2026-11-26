@@ -53,10 +53,14 @@ def save(d, rev):
 def old_partial(d, omitted_answered_at=False):
     s = d["session"]
     item = d["answers"][0]
-    # Test owner inserts *synthetic* pre-candidate history, including the
-    # old server-assigned metadata. Never mutate an actual learner record.
+    # Seed synthetic pre-candidate history as fixture owner, with the
+    # fictional learner's JWT claims so the existing BEFORE INSERT guards
+    # still run. Only fixture-owner RLS bypass models historical rows; no
+    # trigger is disabled and no real learner is impersonated.
     history_at = "2026-11-26T10:10:00Z"
-    query(f"""INSERT INTO {S}(id,user_id,language_code,topic_id,quiz_type,total_questions,correct_answers,
+    claims = IDENTITY.replace("SET ROLE authenticated;", "")
+    assert claims != IDENTITY
+    query(claims + f"""INSERT INTO {S}(id,user_id,language_code,topic_id,quiz_type,total_questions,correct_answers,
       created_at,completed_at,difficulty,quiz_level)
       VALUES({literal(s['id'])},{literal(s['user_id'])},{literal(s['language_code'])},{literal(s['topic_id'])},
       {literal(s['quiz_type'])},{s['total_questions']},{s['correct_answers']},
