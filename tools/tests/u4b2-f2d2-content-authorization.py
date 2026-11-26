@@ -57,7 +57,12 @@ def coverage(e,r):
         query(IDENTITY+f"UPDATE {table} SET {col}={new} WHERE {key};")
         assert row_value(table,col,key)==original
         expect_versions(e,r)
-        denied(f"TRUNCATE {table};","42501")
+        # FK-dependent tables can reject ordinary TRUNCATE before firing
+        # triggers. CASCADE in a disposable rollback transaction exercises
+        # the explicit prohibition rather than accepting an FK error.
+        for role in ("anon","authenticated","service_role"):
+            assert value(f"SELECT has_table_privilege('{role}','{table}','TRUNCATE');")=="f"
+        denied(f"BEGIN; TRUNCATE {table} CASCADE; ROLLBACK;","42501")
         # Verify that the full trigger trio really exists on every source.
         assert value(f"""SELECT count(*) FROM pg_trigger
           WHERE tgrelid='{table}'::regclass AND NOT tgisinternal
