@@ -246,7 +246,7 @@ legacy scope. Preserve established owner and existing legacy-user behavior.
 ### F4 — verified sentence scope in navigation
 
 `visibleViews`/`chooseView` receive `sentenceAccess`, but the Header's
-`onViewChange` check and Progress `onGoQuiz` check omit it. The follow-up must
+`onViewChange` check and `LockedTopicPanel`'s `onGoQuiz` check omit it. The follow-up must
 pass the same verified scope throughout visibility and navigation. Exercise
 actual Header clicks for Chart plus `quiz.sentences` and Chart plus
 `quiz.speak`, invalid/unverified scope, and unrelated permissions. A visible
