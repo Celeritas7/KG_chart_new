@@ -20,14 +20,14 @@ REVOKE ALL ON TABLE kg_u4b2b_test_private.f2d_authorization_gate
   FROM PUBLIC,anon,authenticated,service_role;
 CREATE FUNCTION kg_u4b2b_test_private.f2d_lock_shared()
 RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog
-AS $
+AS $f2d_gate$
 BEGIN
   PERFORM 1 FROM kg_u4b2b_test_private.f2d_authorization_gate
     WHERE singleton FOR SHARE;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'F2D authorization gate unavailable' USING ERRCODE='42501';
   END IF;
-END $;
+END $f2d_gate$;
 REVOKE ALL ON FUNCTION kg_u4b2b_test_private.f2d_lock_shared()
   FROM PUBLIC,anon,authenticated,service_role;
 
