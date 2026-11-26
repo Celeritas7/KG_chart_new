@@ -9,7 +9,7 @@ END $$;
 -- Supersede the restricted session-only API after the F2A regression runs.
 -- Its owner can still call it inside the atomic operation below.
 REVOKE EXECUTE ON FUNCTION public.kg_chart_f2_save_restricted_session(
-  bigint,uuid,text,text,text,int,int,smallint,timestamptz,timestamptz)
+  bigint,uuid,text,text,text,int,int,smallint,timestamptz,timestamptz,text)
   FROM PUBLIC,anon,authenticated,service_role;
 CREATE POLICY kg_u4b2_f2_legacy_direct_answer ON public.kg_chart_quiz_answers
   AS RESTRICTIVE FOR INSERT TO authenticated
@@ -19,7 +19,7 @@ CREATE FUNCTION public.kg_chart_f2_save_restricted_quiz(
   p_expected_revision bigint,p_session_id uuid,p_language_code text,
   p_topic_id text,p_quiz_type text,p_total_questions int,p_correct_answers int,
   p_difficulty smallint,p_completed_at timestamptz,p_created_at timestamptz,
-  p_answers jsonb
+  p_answers jsonb,p_quiz_level text DEFAULT NULL,p_f1_contract boolean DEFAULT false
 ) RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER
 SET search_path=pg_catalog
 AS $$
@@ -45,6 +45,7 @@ BEGIN
   END IF;
   IF p_total_questions IS NULL OR p_total_questions NOT BETWEEN 1 AND 500
      OR p_correct_answers IS NULL OR p_completed_at IS NULL
+     OR NOT isfinite(p_completed_at) OR p_f1_contract IS NULL
      OR jsonb_typeof(p_answers) IS DISTINCT FROM 'array' THEN
     RAISE EXCEPTION 'F2B invalid completed quiz' USING ERRCODE='22023';
   END IF;
@@ -58,7 +59,7 @@ BEGIN
   -- Any following exception rolls back this session and every new answer.
   v_id := public.kg_chart_f2_save_restricted_session(
     p_expected_revision,p_session_id,p_language_code,p_topic_id,p_quiz_type,
-    p_total_questions,p_correct_answers,p_difficulty,p_completed_at,p_created_at);
+    p_total_questions,p_correct_answers,p_difficulty,p_completed_at,p_created_at,p_quiz_level);
   -- Serialize complete-set validation against simultaneous retries. Never
   -- lock a parent before the profile (the common F2A lock order).
   PERFORM 1 FROM public.kg_chart_quiz_sessions
@@ -79,14 +80,21 @@ BEGIN
     IF jsonb_typeof(v_item->'id') IS DISTINCT FROM 'string'
        OR jsonb_typeof(v_item->'is_correct') IS DISTINCT FROM 'boolean'
        OR jsonb_typeof(v_item->'answered_at') IS DISTINCT FROM 'string'
-       OR jsonb_typeof(v_item->'created_at') IS DISTINCT FROM 'string'
+       OR ((NOT p_f1_contract OR v_item ? 'created_at')
+           AND jsonb_typeof(v_item->'created_at') IS DISTINCT FROM 'string')
        OR EXISTS (SELECT 1 FROM jsonb_each(v_item) e
          WHERE e.key NOT IN ('is_correct') AND jsonb_typeof(e.value) NOT IN ('string','null')) THEN
       RAISE EXCEPTION 'F2B invalid answer field types' USING ERRCODE='22023';
     END IF;
     SELECT * INTO v_answer FROM jsonb_populate_record(
       NULL::public.kg_chart_quiz_answers,v_item);
+    -- The F1 draft has no created_at; its durable answered_at is the only
+    -- deterministic source for a new row. Never use the retry clock.
+    IF p_f1_contract AND NOT (v_item ? 'created_at') THEN
+      v_answer.created_at := v_answer.answered_at;
+    END IF;
     IF v_answer.id IS NULL OR v_answer.answered_at IS NULL OR v_answer.created_at IS NULL
+       OR NOT isfinite(v_answer.answered_at) OR NOT isfinite(v_answer.created_at)
        OR v_answer.id=ANY(v_ids) OR v_answer.is_correct IS NULL
        OR (v_answer.vocabulary_id IS NULL) = (v_answer.sentence_id IS NULL) THEN
       RAISE EXCEPTION 'F2B missing or duplicate answer identity' USING ERRCODE='22023';
@@ -129,7 +137,11 @@ BEGIN
         AND a.answer_text IS NOT DISTINCT FROM v_answer.answer_text
         AND a.answered_at IS NOT DISTINCT FROM v_answer.answered_at
         AND a.completed_at IS NOT DISTINCT FROM v_answer.completed_at
-        AND a.created_at IS NOT DISTINCT FROM v_answer.created_at;
+        -- An F1 historical answer may have a DB-assigned created_at.
+        -- A missing server-only timestamp is not a client-authored value;
+        -- retain it, and require all supplied fields to match exactly.
+        AND ((p_f1_contract AND NOT (v_item ? 'created_at'))
+             OR a.created_at IS NOT DISTINCT FROM v_answer.created_at);
       IF NOT FOUND THEN
         RAISE EXCEPTION 'F2B answer identity conflict' USING ERRCODE='23505';
       END IF;
@@ -147,9 +159,9 @@ BEGIN
     'expected_revision',p_expected_revision);
 END $$;
 REVOKE ALL ON FUNCTION public.kg_chart_f2_save_restricted_quiz(
-  bigint,uuid,text,text,text,int,int,smallint,timestamptz,timestamptz,jsonb)
+  bigint,uuid,text,text,text,int,int,smallint,timestamptz,timestamptz,jsonb,text,boolean)
   FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION public.kg_chart_f2_save_restricted_quiz(
-  bigint,uuid,text,text,text,int,int,smallint,timestamptz,timestamptz,jsonb)
+  bigint,uuid,text,text,text,int,int,smallint,timestamptz,timestamptz,jsonb,text,boolean)
   TO authenticated;
 COMMIT;

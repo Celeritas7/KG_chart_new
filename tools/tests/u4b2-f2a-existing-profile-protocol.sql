@@ -8,6 +8,10 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- F2D3A models the optional typed-word level used by F1. Fixture only.
+ALTER TABLE public.kg_chart_quiz_sessions ADD COLUMN quiz_level text
+  CHECK (quiz_level IS NULL OR (quiz_type='type_word' AND quiz_level IN ('copy','dev','memory')));
+
 -- F2D1: common lock order, shared by existing-profile publication and
 -- restricted writes. The global row is changed only by the later candidate
 -- authorization-edit triggers, after all earlier regressions have run.
@@ -270,7 +274,8 @@ CREATE POLICY kg_u4b2_f2_legacy_direct_session ON public.kg_chart_quiz_sessions
 CREATE FUNCTION public.kg_chart_f2_save_restricted_session(
   p_expected_revision bigint,p_session_id uuid,p_language_code text,
   p_topic_id text,p_quiz_type text,p_total_questions int,p_correct_answers int,
-  p_difficulty smallint,p_completed_at timestamptz,p_created_at timestamptz
+  p_difficulty smallint,p_completed_at timestamptz,p_created_at timestamptz,
+  p_quiz_level text DEFAULT NULL
 ) RETURNS uuid LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog
 AS $$
 DECLARE
@@ -306,7 +311,11 @@ BEGIN
   END IF;
   IF p_session_id IS NULL OR p_created_at IS NULL OR p_total_questions IS NULL
      OR p_correct_answers IS NULL OR p_total_questions < 0
-     OR p_correct_answers < 0 OR p_correct_answers > p_total_questions THEN
+     OR p_correct_answers < 0 OR p_correct_answers > p_total_questions
+     OR NOT isfinite(p_created_at)
+     OR (p_completed_at IS NOT NULL AND NOT isfinite(p_completed_at))
+     OR (p_quiz_level IS NOT NULL AND (p_quiz_type IS DISTINCT FROM 'type_word'
+          OR p_quiz_level NOT IN ('copy','dev','memory'))) THEN
     RAISE EXCEPTION 'F2 invalid session payload' USING ERRCODE='22023';
   END IF;
   -- SECURITY DEFINER bypasses RLS: explicitly require all current session
@@ -318,8 +327,8 @@ BEGIN
     RAISE EXCEPTION 'F2 revoked session scope' USING ERRCODE='42501';
   END IF;
   INSERT INTO public.kg_chart_quiz_sessions
-    (id,user_id,language_code,topic_id,quiz_type,total_questions,correct_answers,difficulty,completed_at,created_at)
-    VALUES (p_session_id,v_uid,p_language_code,p_topic_id,p_quiz_type,p_total_questions,p_correct_answers,p_difficulty,p_completed_at,p_created_at)
+    (id,user_id,language_code,topic_id,quiz_type,total_questions,correct_answers,difficulty,completed_at,created_at,quiz_level)
+    VALUES (p_session_id,v_uid,p_language_code,p_topic_id,p_quiz_type,p_total_questions,p_correct_answers,p_difficulty,p_completed_at,p_created_at,p_quiz_level)
     ON CONFLICT(id) DO NOTHING RETURNING id INTO v_saved;
   IF NOT FOUND THEN
     -- Exact immutable replay only; do not disclose a different owner's row.
@@ -331,6 +340,7 @@ BEGIN
         AND s.total_questions IS NOT DISTINCT FROM p_total_questions
         AND s.correct_answers IS NOT DISTINCT FROM p_correct_answers
         AND s.difficulty IS NOT DISTINCT FROM p_difficulty
+        AND s.quiz_level IS NOT DISTINCT FROM p_quiz_level
         AND s.completed_at IS NOT DISTINCT FROM p_completed_at
         AND s.created_at IS NOT DISTINCT FROM p_created_at;
     IF NOT FOUND THEN
@@ -339,8 +349,8 @@ BEGIN
   END IF;
   RETURN v_saved;
 END $$;
-REVOKE ALL ON FUNCTION public.kg_chart_f2_save_restricted_session(bigint,uuid,text,text,text,int,int,smallint,timestamptz,timestamptz)
+REVOKE ALL ON FUNCTION public.kg_chart_f2_save_restricted_session(bigint,uuid,text,text,text,int,int,smallint,timestamptz,timestamptz,text)
   FROM PUBLIC,anon,authenticated,service_role;
-GRANT EXECUTE ON FUNCTION public.kg_chart_f2_save_restricted_session(bigint,uuid,text,text,text,int,int,smallint,timestamptz,timestamptz)
+GRANT EXECUTE ON FUNCTION public.kg_chart_f2_save_restricted_session(bigint,uuid,text,text,text,int,int,smallint,timestamptz,timestamptz,text)
   TO authenticated;
 COMMIT;
