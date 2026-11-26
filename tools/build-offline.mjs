@@ -121,6 +121,7 @@ for (const [from, to] of [
   ['js/kg-shared.js', 'js/kg-shared.js'],
   ['js/kg-learner-access.js', 'js/kg-learner-access.js'],
   ['js/kg-sentence-access.js', 'js/kg-sentence-access.js'],
+  ['js/kg-quiz-save.js', 'js/kg-quiz-save.js'],
   ['js/kg-private-media-client.mjs', 'js/kg-private-media-client.mjs'],
   ['js/kg-protected-media-context.mjs', 'js/kg-protected-media-context.mjs'],
   ['js/kg-protected-player.mjs', 'js/kg-protected-player.mjs'],

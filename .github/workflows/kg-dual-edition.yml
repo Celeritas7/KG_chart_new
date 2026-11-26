@@ -25,6 +25,8 @@ jobs:
       - run: npm ci
       - name: Compile and test both editions from the same SHA
         run: npm run check:unified
+      - name: Verify recoverable word and sentence quiz saving with fictional records
+        run: npm run test:quiz-saving
       - name: Read-only C4A release artifact contract (no deployment)
         run: node tools/audit-c4a-artifacts.mjs
       - name: C3C isolated Chromium migration and rollback (container has no network)
@@ -40,6 +42,16 @@ jobs:
             -e CI=true -e HOME=/tmp -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
             mcr.microsoft.com/playwright:v1.56.1-noble \
             npm run test:browser-migration
+      - name: F1 real quiz UI and recovery in isolated Chromium
+        run: |
+          docker run --rm \
+            --network none --read-only --tmpfs /tmp:rw,exec,size=1024m \
+            --shm-size=1g \
+            --mount type=bind,source="$GITHUB_WORKSPACE",target=/work,readonly \
+            --workdir /work \
+            -e CI=true -e HOME=/tmp -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+            mcr.microsoft.com/playwright:v1.56.1-noble \
+            npm run test:quiz-saving-ui
       - name: Verify online source remains unchanged by the offline build
         run: git diff --exit-code -- index.html sw.js manifest.webmanifest js/
       - name: Package the existing online edition

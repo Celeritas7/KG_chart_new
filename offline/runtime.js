@@ -309,7 +309,7 @@
       if (this.mutation) {
         if (!WRITABLE_TABLES.has(this.table)) return { data: null, error: offlineError('Editing shared lesson content') };
         if (!currentEnrollment()) return { data: null, error: problem('Reauthenticate this account before saving offline progress') };
-        try { return { data: await queueMutation(this.table,this.mutation,this.filters,this.conflict,this.shape), error:null }; }
+        try { return { data: await queueMutation(this.table,this.mutation,this.filters,this.conflict,this.shape), error:null, saveDestination:'device' }; }
         catch (e) { return { data:null,error:problem('Could not save on this device: '+e.message, 'KG_LOCAL_SAVE_FAILED') }; }
       }
       try {
@@ -341,7 +341,7 @@
   function makeRows(table,kind,value,filters,oldRows,conflict) {
     const incoming = value == null ? [] : (Array.isArray(value)?value:[value]);
     const keys = (conflict && conflict.split(',').map(x=>x.trim())) || PRIMARY[table] || ['id'];
-    const rows = oldRows.map(r=>({...r})), created=[];
+    const rows = oldRows.map(r=>({...r})), created=[], acknowledged=[];
     if (kind === 'delete') {
       const removed=rows.filter(r=>matches(r,filters));
       return {next:rows.filter(r=>!matches(r,filters)),created:removed};
@@ -353,6 +353,19 @@
     for (const raw of incoming) {
       const row={...raw};
       if ([TABLES.sessions,TABLES.answers].includes(table)) row.id ||= crypto.randomUUID();
+      const quizIndex=[TABLES.sessions,TABLES.answers].includes(table)
+        ? rows.findIndex(r=>rowKey(r,keys)===rowKey(row,keys)) : -1;
+      if(quizIndex!==-1 && kind==='insert') {
+        // F1 retries use immutable UUIDs. An exact local row already has its
+        // original outbox event (or was pulled from the server); acknowledge it
+        // without adding a second event. Never overwrite a conflicting result.
+        // Compare supplied fields before generating default timestamps.
+        const mismatch=Object.entries(row).find(([key,value])=>
+          !sameDuplicateInsertField(table,key,rows[quizIndex][key],value));
+        if(mismatch) throw Error(`Existing saved quiz differs in ${table}.${mismatch[0]}. Your original work was retained.`);
+        acknowledged.push({...rows[quizIndex]});
+        continue;
+      }
       if (table===TABLES.sessions) row.created_at ||= now();
       if (table===TABLES.answers) row.answered_at ||= now();
       if (table === TABLES.ratings) { row.user_id ||= owner;row.updated_at ||= now(); }
@@ -361,13 +374,31 @@
       if (i===-1) rows.push(row);
       else if (kind === 'upsert') rows[i]={...rows[i],...row};
       created.push({...row});
+      acknowledged.push({...row});
     }
-    return {next:rows,created};
+    return {next:rows,created,acknowledged};
+  }
+
+  // Only the F1 word/sentence saves require answer rows. In particular,
+  // colour_phrase intentionally saves a session summary with no answers.
+  const QUIZ_ANSWER_TYPES=new Set([
+    'native_to_image','image_to_native','devanagari_to_image','english_to_native',
+    'listen_to_image','listen_to_native','word_builder','type_word',
+    'sentence_to_meaning','meaning_to_sentence','build_sentence',
+  ]);
+  const quizChecksKey=uid=>'quiz-answer-checks:'+uid;
+  function quizAnswersComplete(check,rows) {
+    return Number.isSafeInteger(check.total_questions) && check.total_questions>0 &&
+      Number.isSafeInteger(check.correct_answers) && check.correct_answers>=0 &&
+      check.correct_answers<=check.total_questions &&
+      rows.length===check.total_questions && rows.every(row=>typeof row.is_correct==='boolean') &&
+      rows.filter(row=>row.is_correct).length===check.correct_answers;
   }
 
   async function queueMutation(table,[kind,value],filters,conflict,shape) {
     // This read + outbox enqueue + updated view are committed atomically, in one IDB transaction.
     const uid=owner;
+    const guard=accountGuard();
     const key=`rows:${uid}:${table}`;
     if((Array.isArray(value)?value:[value]).filter(Boolean).some(row=>
       (row.user_id && row.user_id!==uid) ||
@@ -379,20 +410,25 @@
       cachedAccessRecord?.ownerId===uid &&
       Number.isSafeInteger(cachedAccessRecord.snapshot?.revision)
       ? cachedAccessRecord.snapshot.revision : null;
-    let created=[];
+    let created=[],acknowledged=[],localError=null;
     await transact(['kv','outbox'], tx => {
       const kv=tx.objectStore('kv'), out=tx.objectStore('outbox');
       const req=kv.get(key);
       req.onsuccess=()=>{
         const prior=req.result || [];
-        const result=makeRows(table,kind,value,filters,prior,conflict);
+        let result;
+        try { guard();result=makeRows(table,kind,value,filters,prior,conflict); }
+        catch(error) { localError=error;tx.abort();return; }
         created=result.created;
+        acknowledged=result.acknowledged||created;
         if (kind === 'delete' && !created.length) {
           // Preserve a delete against a remote record even when local data is missing.
           created=[Object.fromEntries(filters.filter(([op])=>op==='eq').map(([,k,v])=>[k,v]))];
+          acknowledged=created;
         }
         const seqReq=kv.get('sequence:'+uid);
         seqReq.onsuccess=()=>{
+          try { guard(); } catch(error) {localError=error;tx.abort();return;}
           let sequence=Number(seqReq.result)||0;
           for(const row of created){
             if (owner!==uid || (row.user_id && row.user_id!==uid)) {tx.abort();return;}
@@ -410,12 +446,34 @@
               for(const row of created) if(row.language_code) checks[row.language_code]=sequence;
               kv.put(checks,pendingKey);
             };
+            const checkedSessions=kind==='insert'
+              ?created.filter(row=>QUIZ_ANSWER_TYPES.has(row.quiz_type)):[];
+            if(checkedSessions.length) {
+              const req=kv.get(quizChecksKey(uid));
+              req.onsuccess=()=>{
+                const checks=req.result||{};
+                for(const row of checkedSessions) checks[row.id]={language_code:row.language_code,
+                  total_questions:row.total_questions,correct_answers:row.correct_answers};
+                kv.put(checks,quizChecksKey(uid));
+              };
+            }
+          }
+          if(table===TABLES.answers && kind==='insert' && acknowledged.length) {
+            const req=kv.get(quizChecksKey(uid));
+            req.onsuccess=()=>{
+              const checks=req.result||{};
+              for(const id of new Set(acknowledged.map(row=>row.session_id))) {
+                if(checks[id] && quizAnswersComplete(checks[id],result.next.filter(row=>row.session_id===id)))
+                  delete checks[id];
+              }
+              kv.put(checks,quizChecksKey(uid));
+            };
           }
           kv.put(sequence,'sequence:'+uid);
           kv.put(result.next,key);
         };
       };
-    });
+    }).catch(error=>{throw localError||error;});
     channel?.postMessage({type:'changed',owner});
     await updatePending();
     if(U3D3A_OUTBOX_HOLD_ENABLED)await auditRestrictedQueue().catch(e=>{
@@ -423,7 +481,7 @@
       // an acknowledged local write into a misleading "save failed" result.
       syncError='Queued work saved; permission review needs retry: '+e.message;notify();
     });
-    return shape ? (created[0]||null) : (created.length?created:null);
+    return shape ? (acknowledged[0]||null) : (acknowledged.length?acknowledged:null);
   }
 
   // Read the published Supabase tables (not CSV demo data) with pagination.
@@ -1171,17 +1229,39 @@
     const pending=await outbox();guard();
     // Pull server changes, then replay ONLY this account's unsent edits in memory before
     // atomically replacing local views. Remote account changes are never discarded silently.
+    let pullError=null;
     await transact(['kv'],tx=>{
       const kv=tx.objectStore('kv');
       for(const [table,cloudRows] of Object.entries(incoming)) {
-        let next=cloudRows;
-        for(const event of pending.filter(e=>e.table===table)) {
-          const kind=event.kind;
-          next=makeRows(table,kind,event.row,event.filters,next).next;
-        }
-        kv.put(next,accountKey(table));
+        const saveRows=rows=>{
+          guard();let next=rows;
+          for(const event of pending.filter(e=>e.table===table))
+            next=makeRows(table,event.kind,event.row,event.filters,next).next;
+          kv.put(next,accountKey(table));
+        };
+        if(table===TABLES.sessions) {
+          const req=kv.get(accountKey(table));
+          req.onsuccess=()=>{
+            try {
+              const previous=new Map((req.result||[]).map(row=>[row.id,row]));
+              saveRows(cloudRows.map(row=>{
+                const saved=previous.get(row.id);
+                // Current offline upload intentionally omits quiz_level for
+                // older servers. Retain the proven local typing metadata for
+                // an otherwise identical owned session, so a pending answer
+                // retry is not stranded after a successful session pull.
+                if(!Object.prototype.hasOwnProperty.call(row,'quiz_level') &&
+                  saved?.quiz_level!=null && saved.user_id===owner && row.user_id===owner &&
+                  Object.entries(saved).every(([key,value])=>key==='quiz_level' ||
+                    sameDuplicateInsertField(table,key,row[key],value)))
+                  return {...row,quiz_level:saved.quiz_level};
+                return row;
+              }));
+            } catch(error) {pullError=error;tx.abort();}
+          };
+        } else saveRows(cloudRows);
       }
-    });
+    }).catch(error=>{throw pullError||error;});
     lastSync=now();await put('last-sync:'+owner,lastSync);
     channel?.postMessage({type:'changed',owner});notify();
   }
@@ -1455,7 +1535,15 @@
       const checkKey='level-checks:'+owner;
       const levelChecks=await get(checkKey)||{};
       for(const [lang,sequence] of Object.entries(levelChecks)){
-        if((await outbox()).some(e=>e.table===TABLES.sessions && e.row.language_code===lang)) continue;
+        // New sessions are not eligible until their required answers are
+        // durable locally AND uploaded. Historical sessions without a marker
+        // retain their established behavior; no old row is rewritten here.
+        const answerChecks=await get(quizChecksKey(owner))||{};guard();
+        if(Object.values(answerChecks).some(check=>check.language_code===lang)) continue;
+        const sessionIds=new Set((await selectRows(TABLES.sessions))
+          .filter(row=>row.language_code===lang).map(row=>row.id));guard();
+        if((await outbox()).some(e=>e.table===TABLES.sessions && e.row.language_code===lang ||
+          e.table===TABLES.answers && sessionIds.has(e.row.session_id))) continue;
         guard();const result=await live.rpc('kg_chart_check_level_up',{p_lang:lang});guard();
         if(result.error) throw Error('Server level check for '+lang+': '+result.error.message);
         await transact(['kv'],tx=>{
@@ -1533,8 +1621,12 @@
       })),error:null};
     })();
     if(name==='kg_chart_check_level_up') return (async()=>{
+      const guard=accountGuard();
       const s=(await selectRows(TABLES.sessions)).filter(s=>s.user_id===owner && s.language_code===args.p_lang &&
         ['native_to_image','image_to_native','devanagari_to_image','english_to_native','listen_to_image','listen_to_native'].includes(s.quiz_type));
+      const answerChecks=await get(quizChecksKey(owner))||{};guard();
+      if(Object.values(answerChecks).some(check=>check.language_code===args.p_lang))
+        return {data:null,error:problem('Quiz answers are not fully saved yet. Retry the pending quiz before checking levels.','KG_QUIZ_ANSWERS_PENDING')};
       const levels=await selectRows(TABLES.levels),level=levels.find(l=>l.email===enrollment.email && l.language_code===args.p_lang)?.unlocked||1;
       const configured=(await selectRows(TABLES.settings)).find(s=>s.key==='unlock_rules')?.value||{};
       const limits=configured.languages?.[args.p_lang]?.level_up||configured.level_up||{answers:40,pct:85};
@@ -1543,6 +1635,7 @@
         total+=x.total_questions||0;correct+=x.correct_answers||0;if(total>=(limits.answers||40))break;
       }
       const unlocked=Math.min(4,level<4 && total>=(limits.answers||40) && correct*100>=(limits.pct||85)*total ? level+1 : level);
+      guard();
       if(unlocked>level){
         const i=levels.findIndex(l=>l.email===enrollment.email && l.language_code===args.p_lang);
         if(i>=0) levels[i]={...levels[i],unlocked};
@@ -1794,7 +1887,8 @@
     const tables={};
     for(const table of PERSONAL_TABLES) tables[table]=await get(accountKey(table))||[];
     const payload={format:'kg-chart-unsynced-recovery',version:1,exportedAt:now(),ownerId:owner,
-      email:enrollment.email,lastSync,outbox:await outbox(),tables};
+      email:enrollment.email,lastSync,outbox:await outbox(),tables,
+      quizAnswerChecks:await get(quizChecksKey(owner))||{}};
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');a.href=url;a.download=`kg-chart-unsynced-${owner}-${new Date().toISOString().slice(0,10)}.json`;
@@ -1818,6 +1912,22 @@
       if(!Array.isArray(rows) || rows.length>100000 || rows.some(row=>row.user_id && row.user_id!==owner ||
         table===TABLES.levels && row.email!==enrollment.email)) throw Error('Recovery contains rows for a different account.');
     }
+    const savedChecks=saved.quizAnswerChecks||{};
+    if(typeof savedChecks!=='object' || Array.isArray(savedChecks) || Object.keys(savedChecks).length>100000)
+      throw Error('Recovery quiz checks are invalid. Nothing was imported.');
+    const savedSessions=saved.tables?.[TABLES.sessions]||[];
+    for(const [id,check] of Object.entries(savedChecks)) {
+      const session=savedSessions.find(row=>row.id===id && row.user_id===owner);
+      if(!check || typeof check!=='object' || Array.isArray(check) ||
+        !session || !QUIZ_ANSWER_TYPES.has(session.quiz_type) ||
+        !session.language_code || check.language_code!==session.language_code ||
+        !Number.isSafeInteger(check.total_questions) || check.total_questions<1 ||
+        !Number.isSafeInteger(check.correct_answers) || check.correct_answers<0 ||
+        check.correct_answers>check.total_questions ||
+        check.total_questions!==session.total_questions || check.correct_answers!==session.correct_answers)
+        throw Error('Recovery quiz check does not match its owned session. Nothing was imported.');
+    }
+    let recoveryError=null;
     await transact(['kv','outbox'],tx=>{
       const kv=tx.objectStore('kv'),queue=tx.objectStore('outbox');
       for(const event of saved.outbox) {
@@ -1832,7 +1942,31 @@
           kv.put([...old,...rows.filter(r=>{const k=rowKey(r,unique);if(existing.has(k))return false;existing.add(k);return true;})],key);
         };
       }
-    });
+      if(Object.keys(savedChecks).length) {
+        const checksReq=kv.get(quizChecksKey(owner));
+        checksReq.onsuccess=()=>{
+          // These reads follow the table merge writes already queued above.
+          const sessionsReq=kv.get(accountKey(TABLES.sessions));
+          sessionsReq.onsuccess=()=>{
+            const answersReq=kv.get(accountKey(TABLES.answers));
+            answersReq.onsuccess=()=>{
+              const checks=checksReq.result||{};
+              for(const [id,check] of Object.entries(savedChecks)) {
+                const row=(sessionsReq.result||[]).find(row=>row.id===id && row.user_id===owner);
+                if(!row || Object.entries(check).some(([key,value])=>row[key]!==value)) {
+                  recoveryError=Error('Recovery conflicts with a saved quiz session. Nothing was imported.');
+                  tx.abort();return;
+                }
+                if(!checks[id]) checks[id]={...check};
+                if(quizAnswersComplete(checks[id],(answersReq.result||[]).filter(row=>row.session_id===id)))
+                  delete checks[id];
+              }
+              kv.put(checks,quizChecksKey(owner));
+            };
+          };
+        };
+      }
+    }).catch(error=>{throw recoveryError||error;});
     progress.phase=`Recovered ${saved.outbox.length} queued changes for ${enrollment.email}. Verify and synchronize when online.`;
     await updatePending();
   }

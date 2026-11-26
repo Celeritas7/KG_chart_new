@@ -10,7 +10,9 @@
     "build:unified": "node tools/build-offline.mjs --unified",
     "check:unified": "npm run check:both && npm run build:unified && npm run test:unified-artifacts",
     "test:unified-artifacts": "node --test tools/tests/unified-artifacts.test.mjs",
-    "test:browser-migration": "node tools/tests/c3b-browser.mjs"
+    "test:browser-migration": "node tools/tests/c3b-browser.mjs",
+    "test:quiz-saving": "node --test tools/tests/u4b2b3d-quiz-save.test.mjs",
+    "test:quiz-saving-ui": "node tools/tests/u4b2b3d-quiz-ui-browser.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.99.3",
