@@ -193,6 +193,7 @@ BEGIN
       THEN max(evidence_at) END AS eligible_at FROM required GROUP BY topic
   ), topic_rows AS (
     SELECT p.id AS topic_id,coalesce(v.version,0) AS version,c.completed_at,
+      (c.completed_at IS NOT NULL AND (cutoff IS NULL OR c.completed_at>cutoff)) AS complete,
       CASE WHEN public.kg_chart_u3b2_can_completion(p_lang,p.id) IS TRUE
         AND public.kg_chart_u3b3b1_can_private_session(p_lang,p.id) IS TRUE
         THEN e.eligible_at END AS eligible_at
