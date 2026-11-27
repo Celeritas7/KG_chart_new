@@ -16,7 +16,8 @@ for (const [label, before, after] of [
   ['authentication logic', 'function AuthProvider({ children }) {', 'function AuthProvider({ children }) { return children;'],
   ['authorization logic', 'function useLearnerAccess(user) {', 'function useLearnerAccess(user) { return { state: "legacy" };'],
   ['navigation scope', 'function Header({', 'function Header(/* changed */{'],
-  ['unrelated quiz mode', 'function ColourQuizView({', 'function ColourQuizView(/* changed */{'],
+  ['unrelated quiz mode', 'function SayItView({', 'function SayItView(/* changed */{'],
+  ['colour rendering helper', 'function ColourPicture({', 'function ColourPicture(/* changed */{'],
   ['preference helper', 'async function syncTypingBests(user, local) {', 'async function syncTypingBests(user, local) { return {};'],
   ['pronunciation helper', 'const PRON_MAX_SECONDS = 15;', 'const PRON_MAX_SECONDS = 16;'],
   ['unrelated script', '  <script src="./js/kg-sentence-access.js"></script>', '  <script src="./js/kg-sentence-access.js"></script><script src="./unexpected.js"></script>'],
@@ -29,4 +30,11 @@ for (const [label, before, after] of [
 test('missing or duplicate component boundaries fail closed', () => {
   assert.throws(() => assertF1ReviewScope(source, source.replace('    function WordQuizView(', '    function RenamedQuizView(')));
   assert.throws(() => assertF1ReviewScope(source, source + '\n    function SentenceQuizView('));
+});
+
+test('F2E1c scope admits the reviewed colour producer but not a missing boundary', () => {
+  const edited = source.replace('data-colour-option={o.id}', 'data-colour-option={o.id} title="Option"');
+  assert.notEqual(edited, source);
+  assert.doesNotThrow(() => assertF1ReviewScope(source, edited));
+  assert.throws(() => assertF1ReviewScope(source, source.replace('    function ColourQuizView(', '    function RenamedColourQuizView(')));
 });

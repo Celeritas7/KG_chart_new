@@ -2095,7 +2095,7 @@
           .in('quiz_type', MCQ_QUIZ_TYPES).order('created_at', { ascending: false }).limit(300);
         let fresh = [];
         try {
-          const pendingIds = new Set(quizSaveStore.list(user.id, languageCode).map(draft => draft.id));
+          const pendingIds = new Set(quizSaveStore.list(user.id, languageCode).filter(draft => draft.kind !== 'colour').map(draft => draft.id));
           fresh = (data || []).filter(session => !pendingIds.has(session.id));
         } catch (_) { /* Unreadable recovery state must not advance a level. */ }
         setSessions(fresh);
@@ -2133,9 +2133,9 @@
           return !result.error && result.data?.session?.user?.id === user?.id;
         };
         if (!user || !await stillOwner()) return null;
-        if (quizSaveStore.list(user?.id, languageCode).length) return null;
+        if (quizSaveStore.list(user?.id, languageCode).some(draft => draft.kind !== 'colour')) return null;
         const fresh = await loadSessions();
-        if (quizSaveStore.list(user?.id, languageCode).length) return null;
+        if (quizSaveStore.list(user?.id, languageCode).some(draft => draft.kind !== 'colour')) return null;
         if (!await stillOwner()) return null;
         let unlocked = state.unlocked;
         if (state.db) {
@@ -2699,8 +2699,8 @@
         };
       }, [refresh]);
 
-      const begin = session => {
-        draftRef.current = user ? quizSaveStore.start({ ownerId: user.id, languageCode, kind, session,
+      const begin = (session, colourMode) => {
+        draftRef.current = user ? quizSaveStore.start({ ownerId: user.id, languageCode, kind, session, colourMode,
           saveContext: window.KGQuizSave.captureContext(accessRef.current) }) : null;
         setState({ status: 'idle' }); setRecoveryResult(null);
       };
@@ -2790,8 +2790,8 @@
       const status = state?.status || 'idle';
       const success = status === 'saved' || status === 'queued';
       const retryable = ['pending', 'blocked', 'storage-error'].includes(status);
-      const message = status === 'saved' ? '✓ Results saved' : status === 'queued'
-        ? '✓ Saved on this device. Check Settings for sync status.' : status === 'saving'
+      const message = status === 'saved' ? (state?.summaryOnly ? '✓ Score saved (legacy summary only).' : '✓ Results saved') : status === 'queued'
+        ? (state?.summaryOnly ? '✓ Score saved on this device. Check Settings for sync status.' : '✓ Saved on this device. Check Settings for sync status.') : status === 'saving'
         ? 'Saving…' : status === 'blocked'
         ? 'Saving is blocked by your current access or sign-in. Your answers are retained on this device. Check your access, then retry.'
         : status === 'storage-error'
@@ -2801,6 +2801,7 @@
         : 'Your answers are kept on this device until the quiz is saved.';
       return <div role={retryable ? 'alert' : 'status'} aria-live="polite" className={`text-sm my-4 ${success ? 'text-green-700' : 'text-amber-800'}`}>
         <p>{message}</p>
+        {state?.summaryOnly && <p className="mt-1">Detailed colour choices are not uploaded by this legacy save path.</p>}
         {state?.warning && <p className="mt-1">{state.warning}</p>}
         {retryable && ['KG_QUIZ_ACCESS_UNVERIFIED','KG_QUIZ_CONTEXT_REQUIRED','KG_QUIZ_STALE_REVISION',
           'KG_QUIZ_OFFLINE_DEFERRED','KG_QUIZ_ATOMIC_LIMIT'].includes(state?.error?.code) &&
@@ -2819,7 +2820,7 @@
         <h3 className="font-bold text-amber-900">Quiz results waiting to be saved</h3>
         {saving.recoveryError && <p role="alert" className="text-sm mt-2">Saved recovery records could not be read. Keep this page open; no records were removed.</p>}
         {saving.pending.map(draft => <div key={draft.id} className="mt-3 border-t border-amber-200 pt-3">
-          <p className="text-sm font-medium">{({word:'Word quiz', sentence:'Sentence quiz', typing:'Timed typing', speaking:'Timed speaking'})[draft.kind]} · {draft.session.correct_answers}/{draft.session.total_questions}{draft.kind === 'typing' ? ' completed' : ''} · {new Date(draft.session.completed_at).toLocaleString()}</p>
+          <p className="text-sm font-medium">{({word:'Word quiz', sentence:'Sentence quiz', typing:'Timed typing', speaking:'Timed speaking', colour:'Colour quiz'})[draft.kind]} · {draft.session.correct_answers}/{draft.session.total_questions}{draft.kind === 'typing' ? ' completed' : ''} · {new Date(draft.session.completed_at).toLocaleString()}</p>
           <QuizSaveStatus state={['idle', 'retained'].includes(quizSaveStates.get(draft.id)?.status)
               ? { status: 'pending' } : quizSaveStates.get(draft.id) || { status: 'pending' }}
             onRetry={() => saving.retry(draft)} onDownload={() => saving.download(draft)} />
@@ -2871,7 +2872,7 @@
             onRate(answer.vocabulary_id, 5);
         }
         // A partial run must not contribute to a later level check on this device.
-        if (MCQ_QUIZ_TYPES.includes(draft.session.quiz_type) && !quizSaveStore.list(user.id, languageCode).length) {
+        if (MCQ_QUIZ_TYPES.includes(draft.session.quiz_type) && !quizSaveStore.list(user.id, languageCode).some(draft => draft.kind !== 'colour')) {
           const up = await lv.afterQuiz(); if (up && isCurrent()) setLevelUp(up);
         }
       } });
@@ -5126,6 +5127,9 @@
       const [phase, setPhase] = useState('setup'); // setup | run | done
       const startedAt = React.useRef(0);
       const savedRun = React.useRef(false);
+      const saving = useQuizSaving({ user, languageCode, kind: 'colour' });
+      const recordedTargets = React.useRef(new Set());
+      const advanced = React.useRef(new Set());
       const [flagPhrase, setFlagPhrase] = useState(null);
 
       useEffect(() => { saveToStorage(COLOUR_SETTINGS_KEY, { type: qType, count }); }, [qType, count]);
@@ -5145,7 +5149,7 @@
             // A colour the app can't paint would come out grey, the same as any other such colour: leave those phrases out
             const painted = rows.filter(p => p.hex);
             if (painted.length < rows.length) console.warn('Colour quiz: no colour hex for', [...new Set(rows.filter(p => !p.hex).map(p => p.colour))].join(', '), '(add colorCode to that colour word)');
-            setPhrases(painted);
+            setPhrases([...new Map(painted.map(p => [p.id, p])).values()]);
           });
         return () => { cancelled = true; };
       }, [languageCode]);
@@ -5165,9 +5169,15 @@
         while (out.length < Math.min(4, all.length)) add(pick(all, out));
         return shuffleArr(out);
       };
+      const targetCount = Math.min(count || all.length, all.length);
+      const tooLarge = saving.restricted && targetCount > window.KGQuizSave.atomicLimit;
+      const seconds = () => Math.max(0, Math.round((Date.now() - startedAt.current) / 1000));
       const start = () => {
+        if (tooLarge || all.length < 4) return;
         savedRun.current = false;
-        const chosen = shuffleArr(all).slice(0, count || all.length);
+        recordedTargets.current = new Set(); advanced.current = new Set();
+        saving.begin({ topic_id: null, quiz_type: 'colour_phrase', time_spent_seconds: 0 }, qType);
+        const chosen = shuffleArr(all).slice(0, targetCount);
         setItems(chosen.map(p => ({ p, options: optionsFor(p) })));
         setIdx(0); setPicked(null); setScore({ correct: 0, total: 0 });
         startedAt.current = Date.now();
@@ -5176,22 +5186,23 @@
       const item = items[idx];
       useEffect(() => { if (phase === 'run' && item && isListen && !picked) window.KGAudio.play(item.p.native, languageCode, { silent: true, resource: colourAudioResource(item.p, languageCode) }); }, [phase, idx]);
       const choose = (o) => {
-        if (picked || !item) return;
+        if (picked || !item || savedRun.current || recordedTargets.current.has(item.p.id) ||
+            !item.options.some(option => option.id === o.id)) return;
+        saving.record({ phrase_id: item.p.id, selected_phrase_id: o.id,
+          option_ids: item.options.map(option => option.id), answered_at: new Date().toISOString() }, seconds());
+        recordedTargets.current.add(item.p.id);
         setPicked(o);
         setScore(s => ({ correct: s.correct + (o.id === item.p.id ? 1 : 0), total: s.total + 1 }));
         window.KGAudio.autoPlay(item.p.native, languageCode, undefined, colourAudioResource(item.p, languageCode));
       };
-      const next = async () => {
+      const next = () => {
+        if (!picked || savedRun.current || advanced.current.has(idx)) return;
+        advanced.current.add(idx);
         if (idx + 1 < items.length) { setIdx(i => i + 1); setPicked(null); return; }
+        savedRun.current = true;
         setPhase('done');
         window.KGAudio.stop();
-        if (savedRun.current) return; // Enter held / double tap on the last question
-        savedRun.current = true;
-        if (user) await supabase.from(TABLES.quizSessions).insert({
-          user_id: user.id, language_code: languageCode, topic_id: null, quiz_type: 'colour_phrase',
-          total_questions: score.total, correct_answers: score.correct,
-          time_spent_seconds: Math.round((Date.now() - startedAt.current) / 1000), completed_at: new Date().toISOString(),
-        });
+        if (user) saving.finishTimed(seconds());
       };
       useEffect(() => {
         if (phase !== 'run') return;
@@ -5226,6 +5237,7 @@
                 <h2 className="text-3xl font-bold text-gray-800">Quiz Mode</h2>
               </div>
               {modeToggle}
+              <QuizRecoveryPanel saving={saving} />
               {phrases === null ? <LoadingSpinner /> : loadError ? (
                 <div className="bg-yellow-50 text-yellow-800 rounded-2xl p-4 text-sm">Colour phrases aren't set up yet. Run <span className="font-mono">kg-chart-colour-phrases.sql</span> in the Supabase SQL editor, then reload.</div>
               ) : all.length < 4 ? (
@@ -5254,7 +5266,7 @@
                       ))}
                     </div>
                   </div>
-                  <button onClick={start} className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700">Start Quiz ({Math.min(count || all.length, all.length)} phrases)</button>
+                  <button onClick={start} disabled={tooLarge} className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">{tooLarge ? 'Choose a smaller target (maximum 500 phrases)' : `Start Quiz (${targetCount} phrases)`}</button>
                   <p className="text-xs text-gray-400 text-center">The wrong choices differ by colour or by thing. Doesn't count toward unlocking topics.</p>
                 </div>
               )}
@@ -5272,6 +5284,8 @@
               <div className="text-6xl mb-3">{pct >= 80 ? '🎉' : pct >= 50 ? '👏' : '💪'}</div>
               <h2 className="text-2xl font-bold text-gray-800 mb-1">{score.correct} / {score.total}</h2>
               <p className="text-gray-500 mb-6">{pct}% correct</p>
+              {user && score.total > 0 && <QuizSaveStatus state={saving.state} onRetry={saving.saveCurrent}
+                onDownload={saving.draft ? () => saving.download(saving.draft) : null} />}
               <div className="flex gap-3 justify-center">
                 <button onClick={() => setPhase('setup')} className="px-6 py-3 border-2 border-gray-200 rounded-full font-medium">Back to Setup</button>
                 <button onClick={start} className="px-6 py-3 bg-jade-600 text-white rounded-full font-bold hover:bg-jade-700">↺ Again</button>
@@ -5289,7 +5303,9 @@
             <button onClick={() => { window.KGAudio.stop(); setPhase('setup'); }} className="text-gray-500 hover:text-gray-700 font-medium">← Back</button>
             <div className="text-sm text-gray-500">{idx + 1} / {items.length} · ✓ {score.correct}</div>
           </div>
-          <div className="bg-white rounded-3xl shadow-xl p-6 sm:p-8 mb-6 text-center">
+          {saving.state.status === 'storage-error' && <QuizSaveStatus state={saving.state} onRetry={saving.checkpoint}
+            onDownload={saving.draft ? () => saving.download(saving.draft) : null} />}
+          <div data-colour-target={p.id} className="bg-white rounded-3xl shadow-xl p-6 sm:p-8 mb-6 text-center">
             {toText ? (
               <div className="w-40 h-40 mx-auto bg-slate-100 rounded-3xl p-3"><ColourPicture item={p} size="w-32 h-32" /></div>
             ) : isListen && !picked ? (
@@ -5306,7 +5322,7 @@
             {item.options.map((o, i) => {
               const state = !picked ? 'border-gray-200 hover:border-jade-400' : o.id === p.id ? 'border-green-500 bg-green-50' : o.id === picked.id ? 'border-red-400 bg-red-50' : 'border-gray-100 opacity-60';
               return (
-                <button key={o.id} onClick={() => choose(o)} disabled={!!picked} className={`relative rounded-2xl border-2 p-3 transition-all bg-white ${state}`}>
+                <button key={o.id} data-colour-option={o.id} onClick={() => choose(o)} disabled={!!picked} className={`relative rounded-2xl border-2 p-3 transition-all bg-white ${state}`}>
                   <span className="absolute top-1 left-2 text-xs text-gray-300">{i + 1}</span>
                   {toText ? <div className="py-2"><PhraseText p={o} size="text-xl" /></div> : <div className="bg-slate-100 rounded-xl p-2"><ColourPicture item={o} /></div>}
                   {picked && !toText && <div className="text-xs text-gray-500 mt-2">{o.meaning}</div>}

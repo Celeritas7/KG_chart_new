@@ -7,8 +7,9 @@ import {execFileSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 
 const ranges = [
-  // F2E1b: explicitly reviewed timed producers only; keep colour, Say It,
-  // pronunciation, settings, preference helpers and authorization outside.
+  // F2E1b/c: explicitly reviewed timed and colour producers only; keep Say It,
+  // pronunciation, colour rendering helpers, preferences and authorization outside.
+  ['    function ColourQuizView(', '\n    // ==========================================\n    // TYPING TEST (timed)'],
   ['    function SpeakView(', '\n    // ==========================================\n    // COLOUR + NOUN QUIZ'],
   ['    function TypingView(', '\n    // ==========================================\n    // CARDS:'],
   ['    function useLevels(', '\n    // ==========================================\n    // WORD BUILDER QUIZ\n'],
@@ -53,7 +54,7 @@ export function normalizeF1Source(input) {
 export function assertF1ReviewScope(before, after) {
   assert(after.includes('const U3C1_SCOPED_UI_ENABLED = false;'), 'Restricted UI activation must remain OFF');
   assert.equal(normalizeF1Source(after), normalizeF1Source(before),
-    'Learner source outside the reviewed F1/F2E1b quiz/level/recovery regions changed; separate review is required');
+    'Learner source outside the reviewed F1/F2E1b/c quiz/level/recovery regions changed; separate review is required');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

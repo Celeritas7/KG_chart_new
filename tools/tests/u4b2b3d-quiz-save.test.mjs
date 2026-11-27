@@ -873,3 +873,158 @@ test('F2E1b: legacy timed recovery keeps sentence identity and uses stable direc
   assert.equal(f.client.tables[SESSION_TABLE].get(d.id).correct_answers,1);
   assert.equal(f.client.tables[ANSWER_TABLE].get(d.answers[0].id).sentence_id,'sentence-1');
 });
+
+
+// F2E1c: the private evidence RPC accepts ordered phrase IDs, not answer rows.
+function colourFixture(mode = 'phrase_to_picture', provenance = {state:'restricted',revision:31}) {
+  const f=setup(), store=f.reload();
+  const ids=Array.from({length:4},(_,i)=>'44000000-0000-4000-8000-'+String(i+1).padStart(12,'0'));
+  let d=store.start({ownerId:OWNER,languageCode:'my',kind:'colour',colourMode:mode,
+    session:{topic_id:null,quiz_type:'colour_phrase',time_spent_seconds:0},
+    saveContext:API.captureContext(provenance)});
+  d=store.append(d,{phrase_id:ids[0],selected_phrase_id:ids[0],option_ids:[ids[2],ids[0],ids[1],ids[3]],answered_at:AT},2);
+  d=store.append(d,{phrase_id:ids[1],selected_phrase_id:ids[3],option_ids:[ids[3],ids[1],ids[0],ids[2]],answered_at:AT},7);
+  store.write(d);
+  let policy=provenance,fault=null;
+  const requests=[],receipts=new Map();
+  const client={auth:f.client.auth,from(){throw Error('Restricted colour may not write a summary or ordinary answers directly');},
+    async rpc(name,args) {
+      assert.equal(name,'kg_chart_f2_save_colour_quiz');
+      requests.push(copy(args));
+      const s=args.p_session,q=args.p_questions;
+      assert.equal(args.p_expected_revision,31);
+      assert.equal(args.p_mode,mode);
+      assert.equal(s.user_id,OWNER);
+      assert.equal(s.total_questions,q.length);
+      assert.equal(s.correct_answers,q.filter(row=>row.phrase_id===row.selected_phrase_id).length);
+      assert.ok(q.every(row=>Object.keys(row).sort().join(',')==='answered_at,option_ids,phrase_id,selected_phrase_id'));
+      if(fault==='deny')return {error:{code:'42501'}};
+      if(fault==='stale')return {error:{code:'40001'}};
+      if(fault==='missing')return {error:{code:'PGRST202'}};
+      if(fault==='summary-only')return {error:{code:'23505'}};
+      if(receipts.has(s.id))assert.deepEqual(receipts.get(s.id),copy(args));
+      else receipts.set(s.id,copy(args));
+      if(fault==='lost')throw Error('Synthetic lost colour acknowledgement');
+      if(fault==='switch')f.client.ownerId=OTHER;
+      const data={session_id:s.id,question_count:q.length,correct_answers:s.correct_answers,
+        expected_revision:31,time_spent_seconds:s.time_spent_seconds};
+      if(fault==='count')data.question_count++;
+      if(fault==='score')data.correct_answers++;
+      if(fault==='revision')data.expected_revision++;
+      if(fault==='duration')data.time_spent_seconds++;
+      return {data,error:null,...(fault==='device'?{saveDestination:'device'}:{})};
+    }};
+  return {f,store,d,ids,requests,receipts,client,set policy(value){policy=value;},set fault(value){fault=value;},
+    retained(){return f.reload().list(OWNER,'my','colour')[0];},
+    save(value=d,options={}){return API.save({client,draft:value,store:f.reload(),getAccess:()=>policy,...options});}};
+}
+for(const mode of ['phrase_to_picture','listen_to_picture','picture_to_phrase']) {
+  test('F2E1c '+mode+': exact ordered evidence and original duration survive lost receipt and reload',async()=>{
+    const f=colourFixture(mode);
+    const draft=f.store.finishTiming(f.d,12);
+    assert.equal(draft.session.correct_answers,1);
+    assert.equal(draft.session.total_questions,2);
+    f.store.write(draft);
+    f.fault='lost';
+    assert.equal((await f.save(draft)).status,'pending');
+    const retained=f.retained();
+    assert.equal(retained.sealed,true);
+    assert.equal(retained.colourMode,mode);
+    assert.deepEqual(copy(retained.answers),copy(draft.answers));
+    assert.equal(retained.session.time_spent_seconds,12);
+    f.fault=null;
+    const result=await f.save(retained);
+    assert.equal(result.status,'saved');
+    assert.equal(result.summaryOnly,undefined);
+    assert.equal(f.receipts.size,1);
+    assert.deepEqual(f.requests[0],f.requests[1]);
+    assert.equal(f.retained(),undefined);
+  });
+}
+test('F2E1c: deny, stale, missing, summary conflict and mismatched receipts retain evidence',async()=>{
+  for(const [fault,status] of [['deny','blocked'],['stale','blocked'],['missing','pending'],
+    ['summary-only','pending'],['count','pending'],['score','pending'],['revision','pending'],
+    ['duration','pending'],['device','pending'],['switch','blocked']]){
+    const f=colourFixture();
+    f.fault=fault;
+    assert.equal((await f.save()).status,status,fault);
+    assert.deepEqual(copy(f.retained().answers),copy(f.d.answers),fault);
+    assert.equal(f.retained().saveContext.revision,31);
+  }
+});
+test('F2E1c: invalid evidence cannot be synthesized or silently dropped',async()=>{
+  const f=colourFixture(),invalidDrafts=[];
+  for(const edit of [
+    d=>{d.colourMode='unknown';},
+    d=>{d.answers=[];}, // historical summary without actual evidence
+    d=>{d.answers[0].option_ids=[f.ids[0],f.ids[0]];},
+    d=>{d.answers[0].option_ids=[f.ids[1],f.ids[2]];},
+    d=>{d.answers[0].selected_phrase_id='44000000-0000-4000-8000-000000000099';},
+    d=>{d.answers[1].phrase_id=d.answers[0].phrase_id;},
+    d=>{d.answers[0].answered_at='2025-01-01T00:00:00Z';},
+    d=>{d.session.correct_answers=2;},
+    d=>{d.answers[0].vocabulary_id=f.ids[0];}
+  ]){const d=copy(f.d);edit(d);invalidDrafts.push(d);}
+  for(const d of invalidDrafts){
+    assert.throws(()=>API.validateDraft(d));
+    assert.equal((await f.save(d)).status,'blocked');
+  }
+  assert.equal(f.requests.length,0);
+  assert.deepEqual(copy(f.retained().answers),copy(f.d.answers));
+});
+test('F2E1c: namespace, owner, immutable mode, order and permission revision are preserved',async()=>{
+  const f=colourFixture();
+  assert.ok([...f.f.storage.entries.keys()].some(k=>k.startsWith(API.colourStoragePrefix)));
+  assert.equal(f.store.list(OWNER,'my','word').length,1);
+  assert.equal(f.store.list(OWNER,'my','typing').length,0);
+  assert.equal(f.store.list(OTHER,'my','colour').length,0);
+  assert.throws(()=>f.store.write({...f.d,colourMode:'picture_to_phrase'}));
+  const altered=copy(f.d);altered.answers[0].option_ids.reverse();
+  assert.throws(()=>f.store.write(altered));
+  f.policy={state:'restricted',revision:32};
+  assert.equal((await f.save()).error.code,'KG_QUIZ_STALE_REVISION');
+  f.policy={state:'legacy'};
+  assert.equal((await f.save(f.retained())).error.code,'KG_QUIZ_CONTEXT_REQUIRED');
+  f.policy={state:'restricted',revision:31};
+  assert.equal((await f.save(f.retained(),{offlineClient:true})).error.code,'KG_QUIZ_OFFLINE_DEFERRED');
+  assert.equal(f.requests.length,0);
+});
+test('F2E1c: storage and account failures precede the atomic call; concurrent retries share one request',async()=>{
+  const f=colourFixture();
+  f.f.storage.failSet=true;
+  assert.equal((await f.save()).status,'storage-error');
+  f.f.storage.failSet=false;
+  f.f.client.ownerId=OTHER;
+  assert.equal((await f.save()).status,'blocked');
+  assert.equal(f.requests.length,0);
+  f.f.client.ownerId=OWNER;
+  const [a,b]=await Promise.all([f.save(f.retained()),f.save(f.retained())]);
+  assert.equal(a.status,'saved');assert.equal(b.status,'saved');
+  assert.equal(f.requests.length,1);
+});
+test('F2E1c: oversized recorded run is held intact, not split',async()=>{
+  const f=colourFixture();
+  let d=f.d;
+  for(let i=2;i<=API.atomicLimit;i++){
+    const id='55000000-0000-4000-8000-'+String(i).padStart(12,'0');
+    d=f.store.append(d,{phrase_id:id,selected_phrase_id:id,option_ids:[id],answered_at:AT},8);
+  }
+  f.store.write(d);
+  assert.equal((await f.save(d)).error.code,'KG_QUIZ_ATOMIC_LIMIT');
+  assert.equal(f.retained().answers.length,API.atomicLimit+1);
+  assert.equal(f.requests.length,0);
+});
+test('F2E1c: legacy and device routes acknowledge only stable summaries; never invent ordinary answers',async()=>{
+  for(const destination of [undefined,'device']){
+    const f=colourFixture('phrase_to_picture',{state:'legacy'}),client=fakeClient({destination});
+    client.failNext(SESSION_TABLE,'insert',{error:lost,commit:true});
+    assert.equal((await f.save(f.d,{client})).status,'pending');
+    assert.deepEqual(copy(f.retained().answers),copy(f.d.answers));
+    const result=await f.save(f.retained(),{client});
+    assert.equal(result.status,destination?'queued':'saved');
+    assert.equal(result.summaryOnly,true);
+    assert.equal(client.tables[SESSION_TABLE].size,1);
+    assert.equal(client.tables[ANSWER_TABLE].size,0);
+    assert.equal(client.tables[SESSION_TABLE].get(f.d.id).correct_answers,1);
+  }
+});
