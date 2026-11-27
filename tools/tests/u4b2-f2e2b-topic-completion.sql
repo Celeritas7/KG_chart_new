@@ -19,6 +19,10 @@ CREATE TABLE kg_u4b2b_test_private.f2e2b_path_evidence (
 CREATE TABLE kg_u4b2b_test_private.f2e2b_completion_events (
   owner_id uuid NOT NULL,event_id uuid NOT NULL,permission_revision bigint NOT NULL,
   reset_at timestamptz,evidence_at timestamptz NOT NULL,
+  -- Capture the old projection before a new confirmed event replaces it.
+  -- This preserves unverified legacy timestamps without inventing receipts
+  -- or migrating historical rows into current learning-path evidence.
+  prior_completion jsonb,
   PRIMARY KEY(owner_id,event_id)
 );
 ALTER TABLE kg_u4b2b_test_private.f2e2b_path_evidence ENABLE ROW LEVEL SECURITY;
@@ -169,11 +173,14 @@ $$;
 -- the same shared gate/profile lock; completion commits hold it exclusively.
 CREATE FUNCTION kg_u4b2b_test_private.f2e2b_snapshot(p_revision bigint,p_lang text,p_asof timestamptz)
 RETURNS jsonb LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=pg_catalog SET timezone='UTC' AS $$
-DECLARE controls jsonb; rules jsonb; cutoff timestamptz; result jsonb;
+DECLARE controls jsonb; rules jsonb; cutoff timestamptz; result jsonb; observed_at timestamptz;
 BEGIN
   controls:=public.kg_chart_f2_my_path_controls(p_revision,p_lang);
   rules:=kg_u4b2b_test_private.f2e2b_rules(p_lang);
   cutoff:=(controls->>'reset_at')::timestamptz;
+  -- p_asof freezes eligibility for an exact original retry. It must not
+  -- hide a newer current completion while checking that old evidence.
+  observed_at:=clock_timestamp();
   WITH permitted AS MATERIALIZED (
     SELECT t.id::text AS id FROM public.kg_chart_topics t
     WHERE public.kg_chart_u3b1_can_topic(p_lang,t.id) IS TRUE
@@ -193,7 +200,18 @@ BEGIN
       THEN max(evidence_at) END AS eligible_at FROM required GROUP BY topic
   ), topic_rows AS (
     SELECT p.id AS topic_id,coalesce(v.version,0) AS version,c.completed_at,
-      (c.completed_at IS NOT NULL AND (cutoff IS NULL OR c.completed_at>cutoff)) AS complete,
+      (c.completed_at IS NOT NULL AND isfinite(c.completed_at) AND c.completed_at<=observed_at
+        AND (cutoff IS NULL OR (c.completed_at>cutoff AND EXISTS (
+          SELECT 1 FROM kg_u4b2b_test_private.f2e2b_completion_events ce
+          JOIN kg_u4b2b_test_private.f2c_receipts cr
+            ON cr.owner_id=ce.owner_id AND cr.event_id=ce.event_id
+          WHERE ce.owner_id=auth.uid() AND ce.reset_at IS NOT DISTINCT FROM cutoff
+            AND ce.evidence_at=c.completed_at AND cr.event_version=v.version
+            AND cr.event_version=(cr.request->>'expected_version')::bigint+1
+            AND cr.request->>'operation'='completion_upsert'
+            AND cr.request->>'language_code'=p_lang AND cr.request->>'target'=p.id
+            AND (cr.request->>'completed_at')::timestamptz=ce.evidence_at
+        )))) AS complete,
       CASE WHEN public.kg_chart_u3b2_can_completion(p_lang,p.id) IS TRUE
         AND public.kg_chart_u3b3b1_can_private_session(p_lang,p.id) IS TRUE
         THEN e.eligible_at END AS eligible_at
@@ -268,13 +286,17 @@ BEGIN
     IF (topic->>'version')::bigint IS DISTINCT FROM p_expected_version THEN
       RAISE EXCEPTION 'F2E2b stale completion version' USING ERRCODE='40001';
     END IF;
-    IF topic->>'completed_at' IS NOT NULL AND (cutoff IS NULL OR (topic->>'completed_at')::timestamptz>cutoff) THEN
+    IF (topic->>'complete')::boolean IS TRUE THEN
       RAISE EXCEPTION 'F2E2b already completed; refresh' USING ERRCODE='40001';
     END IF;
     IF (topic->>'eligible_at')::timestamptz IS DISTINCT FROM p_evidence_at THEN
       RAISE EXCEPTION 'F2E2b no matching confirmed eligibility' USING ERRCODE='42501';
     END IF;
-    INSERT INTO kg_u4b2b_test_private.f2e2b_completion_events VALUES(uid,p_event_id,p_expected_revision,p_reset_at,p_evidence_at);
+    INSERT INTO kg_u4b2b_test_private.f2e2b_completion_events
+      (owner_id,event_id,permission_revision,reset_at,evidence_at,prior_completion)
+    VALUES(uid,p_event_id,p_expected_revision,p_reset_at,p_evidence_at,
+      (SELECT to_jsonb(c) FROM public.kg_chart_topic_completions c
+       WHERE c.user_id=uid AND c.language_code=p_language_code AND c.topic_id=p_topic_id));
   END IF;
   -- Use original server evidence time, NOT client or retry time. F2C binds the
   -- event ID, topic, version and timestamp and atomically advances the version.

@@ -38,7 +38,8 @@ function installFakeClient() {
   let state = JSON.parse(localStorage.getItem(KEY) || 'null') || {
     owner, permitted: true, destination: null, faults: [], requests: [], callbacks: 0,
     levelCalls: 0, ratingCalls: 0, colourReceipts: {}, ratingVersions: {}, ratingReceipts: {}, ratingRequests: [],
-    pathRevision:17,pathReset:null,pathVersion:0,pathComplete:false,pathEligible:'2026-11-27T12:00:00.123456+00:00',pathReceipts:{},pathRequests:[],
+    pathRevision:17,pathReset:null,pathVersion:0,pathComplete:false,pathCompletedAt:null,
+    pathEligible:'2026-11-27T12:00:00.123456+00:00',pathReceipts:{},pathRequests:[],
     tables: {
       kg_chart_quiz_sessions: [], kg_chart_quiz_answers: [],
       kg_chart_sentences: sentences,
@@ -73,7 +74,8 @@ function installFakeClient() {
     callback: () => { state.callbacks++; persist(); },
     rate: () => { state.ratingCalls++; persist(); },
     externalRating: (id,value)=>changeRating(id,value,'2026-11-27T12:00:00Z','2026-11-27T12:00:00Z'),
-    resetPath:()=>{state.pathRevision++;state.pathReset='2026-11-27T13:00:00.123457+00:00';state.pathComplete=false;state.pathEligible=null;persist();},
+    resetPath:(at='2026-11-27T13:00:00.123457+00:00')=>{state.pathRevision++;state.pathReset=at;state.pathComplete=false;state.pathEligible=null;persist();},
+    eligiblePath:at=>{state.pathEligible=at;persist();},
     words, user: {id: owner, email: 'fixture@example.invalid'},
   };
   window.__kgF1 = api;
@@ -85,7 +87,7 @@ function installFakeClient() {
         state.pathRequests.push({name,args:copy(args)});persist();
         if(args.p_expected_revision!==state.pathRevision)return {error:{code:'40001'}};
         const topic={topic_id:'food',version:state.pathVersion,complete:state.pathComplete,
-          completed_at:state.pathComplete?state.pathEligible:null,eligible_at:state.pathEligible};
+          completed_at:state.pathCompletedAt,eligible_at:state.pathEligible};
         if(name==='kg_chart_f2_my_completion_path')return {data:{
           owner_id:owner,language_code:'my',permission_revision:state.pathRevision,reset_at:state.pathReset,
           bypass:false,unlocks:[],rules:{min_attempts:1,quiz_types:['native_to_image']},
@@ -101,11 +103,13 @@ function installFakeClient() {
         assertFixture(args.p_topic_id==='food'&&args.p_language_code==='my','Unexpected path scope');
         if(fault?.mode==='hold')await new Promise(resolve=>{release=resolve;});
         if(fault?.mode==='deny')return {error:{code:'42501'}};
-        state.pathComplete=true;state.pathVersion++;
+        if(fault?.mode==='fail')return {error:{message:'Synthetic uncertain completion reply'}};
+        state.pathComplete=true;state.pathCompletedAt=state.pathEligible;state.pathVersion++;
         const ack={event_id:args.p_event_id,owner_id:owner,language_code:'my',topic_id:'food',
           permission_revision:state.pathRevision,reset_at:state.pathReset,completed_at:state.pathEligible,
           event_version:state.pathVersion,current_version:state.pathVersion,replayed:false};
         state.pathReceipts[args.p_event_id]={args:copy(args),ack:copy(ack)};persist();
+        if(fault?.mode==='reset-before-reply')api.resetPath('2026-11-27T12:00:00.123900+00:00');
         return fault?.mode==='lost-ack'?{error:{message:'Synthetic lost completion receipt'}}:{data:ack,error:null};
       }
       if(name==='kg_chart_f2_my_progress_state'||name==='kg_chart_f2_save_progress'){
@@ -716,6 +720,82 @@ try {
     await region.getByRole('button',{name:'Archive obsolete completion'}).click();
     await region.getByText(/Obsolete request archived/).waitFor();
     assert.equal(await page.evaluate(()=>Object.keys(localStorage).filter(k=>k.startsWith('kg-chart-completion-archive-v1:')).length),1);
+    assert.equal(await region.getByRole('button',{name:'Confirm completion',exact:true}).count(),0);
+  },true);
+  for(const [label,resetAt,obsolete] of [
+    ['earlier','2026-11-27T12:00:00.123455+00:00',false],
+    ['equal','2026-11-27T21:00:00.123456+09:00',true],
+    ['later','2026-11-27T12:00:00.123457+00:00',true],
+  ])await scenario(`F2E2b-R1 actual recovery: ${label} microsecond reset boundary`, 'path', async page=>{
+    const region=page.getByRole('region',{name:'Topic completion recovery'});
+    const localEvents=prefix=>page.evaluate(p=>Object.keys(localStorage).filter(k=>k.startsWith(p))
+      .map(k=>JSON.parse(localStorage.getItem(k))),prefix);
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_f2_complete_topic','fail'));
+    await region.getByRole('button',{name:'Confirm completion',exact:true}).click();
+    await region.getByText(/server did not confirm completion/i).waitFor();
+    const [original]=await localEvents('kg-chart-completion-recovery-v1:');
+    assert.equal((await snapshot(page)).pathVersion,0,'No newer version may mask a timestamp comparison failure');
+    await page.evaluate(at=>window.__kgF1.resetPath(at),resetAt);
+    await page.reload({waitUntil:'load'});
+    await page.locator('[data-path-ready="yes"][data-food-complete="no"][data-next-unlocked="no"][data-celebrated="no"]').waitFor({state:'attached'});
+    await region.getByRole('button',{name:'Review current progress'}).click();
+    await region.getByText(/Current state: not confirmed/).waitFor();
+    const archive=region.getByRole('button',{name:'Archive obsolete completion'});
+    assert.equal(await archive.count(),obsolete?1:0);
+    assert.deepEqual(await localEvents('kg-chart-completion-recovery-v1:'),[original]);
+    if(!obsolete){
+      assert.equal((await localEvents('kg-chart-completion-archive-v1:')).length,0);
+      assert.equal((await snapshot(page)).pathRequests.filter(r=>r.name==='kg_chart_f2_complete_topic').length,1);
+      return;
+    }
+    await archive.click();
+    await region.getByText(/Obsolete request archived/).waitFor();
+    const [archived]=await localEvents('kg-chart-completion-archive-v1:');
+    assert.deepEqual(archived.event,original);
+    assert.equal(archived.observed.reset_at,resetAt);
+    assert.equal((await localEvents('kg-chart-completion-recovery-v1:')).length,0);
+    await page.evaluate(()=>window.__kgF1.eligiblePath('2026-11-27T12:00:00.123901+00:00'));
+    await region.getByRole('button',{name:'Refresh confirmed progress'}).click();
+    await region.getByRole('button',{name:'Confirm completion',exact:true}).click();
+    await region.getByText('Topic completion confirmed by the server.',{exact:true}).waitFor();
+    await page.locator('[data-food-complete="yes"][data-next-unlocked="yes"][data-celebrated="yes"]').waitFor({state:'attached'});
+    const writes=(await snapshot(page)).pathRequests.filter(r=>r.name==='kg_chart_f2_complete_topic');
+    assert.equal(writes.length,2);assert.notEqual(writes[1].args.p_event_id,original.eventId);
+    assert.equal(writes[1].args.p_reset_at,resetAt);assert.equal(writes[1].args.p_expected_revision,18);
+    assert.equal(writes[1].args.p_expected_version,0);
+    assert.equal(writes[1].args.p_evidence_at,'2026-11-27T12:00:00.123901+00:00');
+    assert.deepEqual((await localEvents('kg-chart-completion-archive-v1:'))[0].event,original);
+  },true);
+  await scenario('F2E2b-R1 actual recovery: no-reset lost reply remains pending and retries unchanged', 'path', async page=>{
+    const region=page.getByRole('region',{name:'Topic completion recovery'});
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_f2_complete_topic','fail'));
+    await region.getByRole('button',{name:'Confirm completion',exact:true}).click();
+    await region.getByText(/server did not confirm completion/i).waitFor();
+    await page.reload({waitUntil:'load'});
+    await page.locator('[data-path-ready="yes"]').waitFor({state:'attached'});
+    await region.getByRole('button',{name:'Review current progress'}).click();
+    await region.getByText(/Current state: not confirmed/).waitFor();
+    assert.equal(await region.getByRole('button',{name:'Archive obsolete completion'}).count(),0);
+    assert.equal(await region.getByRole('button',{name:'Confirm completion',exact:true}).count(),0);
+    await region.getByRole('button',{name:'Retry original completion'}).click();
+    await region.getByText('Topic completion confirmed by the server.',{exact:true}).waitFor();
+    const writes=(await snapshot(page)).pathRequests.filter(r=>r.name==='kg_chart_f2_complete_topic');
+    assert.equal(writes.length,2);assert.deepEqual(writes[0],writes[1]);
+  },true);
+  await scenario('F2E2b-R1 actual path: a receipt overtaken by reset cannot unlock or celebrate', 'path', async page=>{
+    const region=page.getByRole('region',{name:'Topic completion recovery'});
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_f2_complete_topic','reset-before-reply'));
+    await region.getByRole('button',{name:'Confirm completion',exact:true}).click();
+    await region.getByText(/original completion pending/).waitFor();
+    await region.getByText(/Learning path unavailable:/).waitFor();
+    await page.locator('[data-food-complete="no"][data-next-unlocked="no"][data-celebrated="no"]').waitFor({state:'attached'});
+    assert.equal(await region.getByText('Topic completion confirmed by the server.',{exact:true}).count(),0);
+    await page.reload({waitUntil:'load'});
+    await page.locator('[data-path-ready="yes"][data-food-complete="no"][data-next-unlocked="no"][data-celebrated="no"]').waitFor({state:'attached'});
+    const db=await snapshot(page);
+    assert.equal(db.pathVersion,1);assert.equal(db.pathCompletedAt,'2026-11-27T12:00:00.123456+00:00');
+    assert.equal(db.pathReset,'2026-11-27T12:00:00.123900+00:00');
+    assert.equal(db.pathRequests.filter(r=>r.name==='kg_chart_f2_complete_topic').length,1);
     assert.equal(await region.getByRole('button',{name:'Confirm completion',exact:true}).count(),0);
   },true);
   console.log(`U4B2B3D_RENDERED_QUIZ_UI_PASS: ${passed} scenarios; isolated fictional clients; physical devices not tested`);

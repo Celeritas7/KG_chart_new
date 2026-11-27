@@ -6572,7 +6572,7 @@
         {flow.events.map(event=>{
           const obs=flow.observed?.eventId===event.eventId?flow.observed.snapshot:null;
           const row=obs?.topics.find(t=>t.topic_id===event.topicId);
-          const obsolete=obs&&(row?.version>event.expectedVersion||obs.reset_at!==null&&Date.parse(obs.reset_at)>Date.parse(event.evidenceAt));
+          const obsolete=obs&&window.KGCompletionSave.canArchive(event,obs);
           return <div key={event.eventId} className="border-t border-amber-200 py-3">
             <p className="font-medium">{name(event.topicId)} · original completion pending</p>
             <p>Original version {event.expectedVersion} · permission revision {event.revision}</p>
