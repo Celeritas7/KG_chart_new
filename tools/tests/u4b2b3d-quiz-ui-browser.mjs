@@ -37,17 +37,31 @@ function installFakeClient() {
   }));
   let state = JSON.parse(localStorage.getItem(KEY) || 'null') || {
     owner, permitted: true, destination: null, faults: [], requests: [], callbacks: 0,
-    levelCalls: 0, ratingCalls: 0, colourReceipts: {},
+    levelCalls: 0, ratingCalls: 0, colourReceipts: {}, ratingVersions: {}, ratingReceipts: {}, ratingRequests: [],
     tables: {
       kg_chart_quiz_sessions: [], kg_chart_quiz_answers: [],
       kg_chart_sentences: sentences,
       kg_chart_colour_phrases: phrases,
+      kg_chart_user_ratings: [],
       kg_chart_user_levels: [{email: 'fixture@example.invalid', language_code: 'my', level: 1, unlocked: 1}],
     },
   };
   const assertFixture = (condition, message) => { if (!condition) throw Error(message); };
   const persist = () => localStorage.setItem(KEY, JSON.stringify(state));
   persist();
+  const ratingState=id=>{
+    const row=state.tables.kg_chart_user_ratings.find(r=>r.vocabulary_id===id);
+    return {version:state.ratingVersions[id]||0,state:row?{
+      rating:row.rating,last_reviewed_at:row.last_reviewed_at,updated_at:row.updated_at}:null};
+  };
+  const changeRating=(id,value,reviewed,updated)=>{
+    state.ratingVersions[id]=(state.ratingVersions[id]||0)+1;
+    state.tables.kg_chart_user_ratings=state.tables.kg_chart_user_ratings.filter(r=>r.vocabulary_id!==id);
+    if(value!==null)state.tables.kg_chart_user_ratings.push({user_id:owner,language_code:'my',
+      vocabulary_id:id,rating:value,last_reviewed_at:reviewed,updated_at:updated});
+    persist();
+    return state.ratingVersions[id];
+  };
   let release;
   const api = {
     snapshot: () => copy(state),
@@ -57,12 +71,40 @@ function installFakeClient() {
     release: () => { release?.(); release = null; },
     callback: () => { state.callbacks++; persist(); },
     rate: () => { state.ratingCalls++; persist(); },
+    externalRating: (id,value)=>changeRating(id,value,'2026-11-27T12:00:00Z','2026-11-27T12:00:00Z'),
     words, user: {id: owner, email: 'fixture@example.invalid'},
   };
   window.__kgF1 = api;
   window.__fakeClient = {
     auth: {async getSession() { return {data: {session: {user: {id: state.owner}}}, error: null}; }},
     async rpc(name, args) {
+      if(name==='kg_chart_f2_my_progress_state'||name==='kg_chart_f2_save_progress'){
+        const id=args.p_vocabulary_id;
+        state.ratingRequests.push({name,args:copy(args)});persist();
+        assertFixture(args.p_expected_revision===17&&args.p_language_code==='my'&&
+          args.p_topic_id===null&&words.some(w=>w.id===id),'Unexpected rating scope');
+        if(!state.permitted)return {error:{code:'42501'}};
+        const before=ratingState(id);
+        if(name==='kg_chart_f2_my_progress_state'){
+          assertFixture(args.p_kind==='rating','Wrong baseline kind');
+          return {data:{...before,permission_revision:17},error:null};
+        }
+        const i=state.faults.findIndex(f=>f.table===name),fault=i<0?null:state.faults.splice(i,1)[0];persist();
+        if(fault?.mode==='deny')return {error:{code:'42501'}};
+        const prior=state.ratingReceipts[args.p_event_id];
+        if(prior){
+          if(JSON.stringify(prior.args)!==JSON.stringify(args))return {error:{code:'23505'}};
+          return {data:{event_id:args.p_event_id,event_version:prior.version,current_version:before.version,replayed:true},error:null};
+        }
+        if(args.p_expected_version!==before.version)return {error:{code:'40001'}};
+        assertFixture(args.p_completed_at===null&&
+          (args.p_operation==='rating_delete'?args.p_rating===null&&args.p_updated_at===null&&args.p_last_reviewed_at===null:
+            args.p_operation==='rating_upsert'&&args.p_rating>=1&&args.p_rating<=5),'Unexpected rating operation');
+        const version=changeRating(id,args.p_rating,args.p_last_reviewed_at,args.p_updated_at);
+        state.ratingReceipts[args.p_event_id]={args:copy(args),version};persist();
+        if(fault?.mode==='lost-ack')return {error:{message:'Synthetic lost rating receipt'}};
+        return {data:{event_id:args.p_event_id,event_version:version,current_version:version,replayed:false},error:null};
+      }
       if (name === 'kg_chart_f2_save_colour_quiz') {
         const s=args.p_session,q=args.p_questions;
         state.requests.push({table:name,args:copy(args)});persist();
@@ -175,6 +217,21 @@ const harness = `
     const fixtureRules = { ...resolveRules(null), loaded: true };
     const fixturePrivate = { topics: new Set(), groups: new Set(), loaded: true };
     const fixtureSentenceAccess = window.KGSentenceAccess.parseGroupSnapshot(null, { state: 'legacy' }, 'my');
+    function RatingFixture({policy,cards}){
+      const rating=useUserRatings('my',policy), id=fixtureWords[0].id;
+      const topics=[{id:'food',icon:'🍎',translation:{title_native:'Food'}}];
+      return <>
+        <RatingRecoveryPanel flow={rating.ratingFlow} vocabulary={fixtureWords}/>
+        <div data-fixture-rating={rating.ratings[id]?.rating??'none'} data-ratings-loaded={rating.ratingsLoaded?'yes':'no'}/>
+        {cards?<FlashcardView topics={topics} vocabulary={fixtureWords} ratings={rating.ratings}
+          ratingsLoaded={rating.ratingsLoaded} onRate={rating.updateRating} onClearRating={rating.clearRating}
+          languageCode="my" user={fixtureUser} restrictedRatings/>:
+          <div>
+            <button disabled={!rating.ratingsLoaded} onClick={()=>rating.updateRating(id,4)}>Rate fixture word</button>
+            <button disabled={!rating.ratingsLoaded} onClick={()=>rating.clearRating(id)}>Clear fixture rating</button>
+          </div>}
+      </>;
+    }
     function QuizFixture() {
       const [shown, setShown] = useState(true);
       const kind = new URLSearchParams(location.search).get('kind') || 'word';
@@ -198,6 +255,7 @@ const harness = `
               : kind === 'speaking' ? <SpeakView languageCode="my" user={fixtureUser} meaningName="English"
                   sentenceAccess={fixtureSentenceAccess} />
               : kind === 'colour' ? <ColourQuizView languageCode="my" user={fixtureUser} />
+              : kind === 'ratings' || kind === 'rating-cards' ? <RatingFixture policy={scope?.policy} cards={kind==='rating-cards'}/>
               : <SentenceQuizView languageCode="my" user={fixtureUser} meaningName="English"
                   sentenceAccess={fixtureSentenceAccess} onSessionSaved={window.__kgF1.callback} />
               : <p>Outside quiz</p>}
@@ -252,6 +310,7 @@ async function scenario(name, kind, run, restricted = false) {
     await page.goto(`${origin}/?kind=${kind}${restricted ? '&restricted=yes' : ''}`, {waitUntil: 'load'});
     if (kind==='typing') await page.getByRole('button', {name:'Start',exact:true}).waitFor();
     else if (kind==='speaking') await page.getByRole('button', {name:/Whole paragraph/}).waitFor();
+    else if(kind==='ratings'||kind==='rating-cards')await page.locator('[data-ratings-loaded="yes"]').waitFor({state:'attached'});
     else await page.getByRole('button', {name: /^Start Quiz/}).waitFor();
     await run(page);
     assert.deepEqual(errors, [], 'No uncaught errors in rendered canonical quiz');
@@ -523,6 +582,66 @@ try {
     assert.equal(db.requests[0].args.p_questions.length,1);
     assert.equal(db.requests[0].args.p_questions[0].phrase_id,target);
     assert.equal(db.tables[answers].length,0);
+  },true);
+  const ratingWrites=db=>db.ratingRequests.filter(r=>r.name==='kg_chart_f2_save_progress');
+  const ratingRegion=page=>page.getByRole('region',{name:'Rating recovery'});
+  const dialog=page=>page.getByRole('dialog',{name:'Confirm rating change'});
+  await scenario('F2E2a actual rating hook: baseline conflict is retained, reviewed and archived explicitly', 'ratings', async page=>{
+    await page.getByRole('button',{name:'Rate fixture word'}).click();
+    await dialog(page).getByText(/Current server rating: Not rated · version 0/).waitFor();
+    assert.equal(ratingWrites(await snapshot(page)).length,0,'No mutation before confirmation');
+    await page.evaluate(()=>window.__kgF1.externalRating(window.__kgF1.words[0].id,2));
+    await dialog(page).getByRole('button',{name:'Confirm rating',exact:true}).click();
+    await ratingRegion(page).getByText(/original rating or permission version conflicts/i).waitFor();
+    assert.equal(ratingWrites(await snapshot(page))[0].args.p_expected_version,0);
+    await ratingRegion(page).getByRole('button',{name:'Review current rating'}).click();
+    await ratingRegion(page).getByText(/Current server rating: Can't use in conversation · version 1/).waitFor();
+    await ratingRegion(page).getByRole('button',{name:'Keep server rating and archive change'}).click();
+    await ratingRegion(page).getByText(/Original change archived/).waitFor();
+    assert.equal(await page.evaluate(()=>Object.keys(localStorage).filter(k=>k.startsWith('kg-chart-rating-archive-v1:')).length),1);
+    await page.getByRole('button',{name:'Rate fixture word'}).click();
+    await dialog(page).getByText(/version 1/).waitFor();
+    await dialog(page).getByRole('button',{name:'Confirm rating',exact:true}).click();
+    await ratingRegion(page).getByText('Rating confirmed.',{exact:true}).waitFor();
+    const db=await snapshot(page),writes=ratingWrites(db);
+    assert.equal(writes.length,2);
+    assert.equal(writes[1].args.p_expected_version,1);
+    assert.notEqual(writes[0].args.p_event_id,writes[1].args.p_event_id);
+    assert.equal(db.tables.kg_chart_user_ratings[0].rating,4);
+    assert.equal(db.requests.length,0,'No raw rating mutation');
+  },true);
+  await scenario('F2E2a actual rating hook: lost response, reload and historical acknowledgement never restore old state', 'ratings', async page=>{
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_f2_save_progress','lost-ack'));
+    await page.getByRole('button',{name:'Rate fixture word'}).click();
+    await dialog(page).getByRole('button',{name:'Confirm rating',exact:true}).click();
+    await ratingRegion(page).getByText(/rating server did not confirm/i).waitFor();
+    await page.evaluate(()=>window.__kgF1.externalRating(window.__kgF1.words[0].id,1));
+    await page.reload({waitUntil:'load'});
+    await ratingRegion(page).getByRole('button',{name:'Retry original rating'}).click();
+    await ratingRegion(page).getByText(/newer server rating is shown/).waitFor();
+    const db=await snapshot(page),writes=ratingWrites(db);
+    assert.deepEqual(writes[0],writes[1]);
+    assert.equal(db.tables.kg_chart_user_ratings[0].rating,1);
+    assert.equal(await page.locator('[data-fixture-rating]').getAttribute('data-fixture-rating'),'1');
+    assert.equal(Object.keys(db.ratingReceipts).length,1);
+  },true);
+  await scenario('F2E2a actual Cards: no optimistic sort, confirmed rating and versioned Undo deletion', 'rating-cards', async page=>{
+    await page.locator('.flip-card').first().waitFor();
+    await page.keyboard.press('Space');await page.keyboard.press('5');
+    await dialog(page).getByText(/version 0/).waitFor();
+    assert.equal(await page.getByRole('button',{name:/To sort \(4\)/}).count(),1);
+    await dialog(page).getByRole('button',{name:'Confirm rating',exact:true}).click();
+    await page.getByRole('button',{name:/To sort \(3\)/}).waitFor();
+    await page.getByRole('button',{name:/Undo/}).click();
+    await dialog(page).getByText(/version 1/).waitFor();
+    await dialog(page).getByText('New rating: Not rated',{exact:true}).waitFor();
+    await dialog(page).getByRole('button',{name:'Confirm rating',exact:true}).click();
+    await page.getByRole('button',{name:/To sort \(4\)/}).waitFor();
+    const db=await snapshot(page),writes=ratingWrites(db);
+    assert.equal(writes.length,2);assert.equal(writes[1].args.p_operation,'rating_delete');
+    assert.equal(writes[1].args.p_expected_version,1);
+    assert.equal(db.tables.kg_chart_user_ratings.length,0);
+    assert.equal(db.ratingVersions[writes[1].args.p_vocabulary_id],2);
   },true);
   console.log(`U4B2B3D_RENDERED_QUIZ_UI_PASS: ${passed} scenarios; isolated fictional clients; physical devices not tested`);
 } finally {
