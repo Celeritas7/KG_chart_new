@@ -642,3 +642,171 @@
   }
   root.KGRatingSave={createStore,read,save,validate,storagePrefix:PREFIX,archivePrefix:ARCHIVE};
 })(typeof window !== 'undefined' ? window : globalThis);
+
+
+// F2E2b: a completion is a versioned server evidence receipt, not a new
+// client timestamp. Keep it separate from quiz/rating drafts and never
+// migrate legacy outbox entries into this restricted protocol.
+(function(root){
+  'use strict';
+  const PREFIX='kg-chart-completion-recovery-v1:',ARCHIVE='kg-chart-completion-archive-v1:';
+  const cp=x=>JSON.parse(JSON.stringify(x));
+  const obj=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
+  const uuid=x=>typeof x==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(x);
+  const lang=x=>typeof x==='string'&&/^[a-z]{2,3}$/.test(x);
+  const topic=x=>typeof x==='string'&&x.length>0&&x.length<=150&&!/[\u0000-\u001f]/.test(x);
+  const version=x=>Number.isSafeInteger(x)&&x>=0;
+  const time=x=>typeof x==='string'&&Number.isFinite(Date.parse(x));
+  const nullableTime=x=>x===null||time(x);
+  const TYPES=['native_to_image','image_to_native','devanagari_to_image','english_to_native',
+    'listen_to_image','listen_to_native','word_builder','type_word','typing_recall'];
+  const err=(message,code,status='pending')=>Object.assign(Error(message),{code,status});
+  const invalid=()=>err('Invalid completion recovery data. Nothing was uploaded.','KG_PATH_INVALID','blocked');
+  const scope=x=>obj(x)&&uuid(x.ownerId)&&lang(x.languageCode)&&version(x.revision)&&x.revision>0;
+  function parseSnapshot(data,t){
+    if(!scope(t)||!obj(data)||data.owner_id!==t.ownerId||data.language_code!==t.languageCode||
+       data.permission_revision!==t.revision||data.bypass!==false||!nullableTime(data.reset_at)||
+       !Array.isArray(data.unlocks)||!data.unlocks.every(topic)||!Array.isArray(data.topics)||
+       !Array.isArray(data.counts)||!obj(data.rules)||!Number.isInteger(data.rules.min_attempts)||
+       data.rules.min_attempts<1||data.rules.min_attempts>3||!Array.isArray(data.rules.quiz_types)||
+       !data.rules.quiz_types.length||!data.rules.quiz_types.every(x=>TYPES.includes(x))||
+       new Set(data.rules.quiz_types).size!==data.rules.quiz_types.length)
+      throw err('The server did not confirm the learning path.','KG_PATH_SNAPSHOT');
+    const ids=new Set(),seen=new Set();
+    for(const row of data.topics){
+      if(!obj(row)||!topic(row.topic_id)||ids.has(row.topic_id)||!version(row.version)||
+         !nullableTime(row.completed_at)||!nullableTime(row.eligible_at)||typeof row.complete!=='boolean'||
+         (row.complete&&row.completed_at===null))
+        throw err('Invalid completion state from server.','KG_PATH_SNAPSHOT');
+      ids.add(row.topic_id);
+    }
+    if(data.unlocks.some(id=>!ids.has(id)))throw err('Invalid scoped unlock state.','KG_PATH_SNAPSHOT');
+    for(const row of data.counts){
+      const k=JSON.stringify([row?.vocabulary_id,row?.quiz_type]);
+      if(!obj(row)||!uuid(row.vocabulary_id)||!TYPES.includes(row.quiz_type)||!version(row.count)||
+         row.count===0||seen.has(k))throw err('Invalid confirmed evidence counts.','KG_PATH_SNAPSHOT');
+      seen.add(k);
+    }
+    return cp(data);
+  }
+  function validate(e){
+    if(!scope(e)||e.contract!==1||!uuid(e.eventId)||!topic(e.topicId)||
+       !version(e.expectedVersion)||e.expectedVersion>=Number.MAX_SAFE_INTEGER||
+       !nullableTime(e.resetAt)||!time(e.evidenceAt))throw invalid();
+    return e;
+  }
+  const prefix=(ownerId,languageCode)=>PREFIX+ownerId+':'+languageCode+':';
+  const key=e=>prefix(e.ownerId,e.languageCode)+e.eventId;
+  const archiveKey=e=>ARCHIVE+e.ownerId+':'+e.languageCode+':'+e.eventId;
+  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  function createStore({storage,makeId=()=>root.crypto.randomUUID()}={}){
+    const target=storage||root.localStorage;
+    const load=k=>{
+      const raw=target.getItem(k);
+      if(raw===null)return null;
+      const e=validate(JSON.parse(raw));if(key(e)!==k)throw invalid();return e;
+    };
+    const list=(ownerId,languageCode)=>{
+      if(!uuid(ownerId)||!lang(languageCode))return [];
+      const p=prefix(ownerId,languageCode),out=[];
+      for(let i=0;i<target.length;i++){const k=target.key(i);
+        if(typeof k==='string'&&k.startsWith(p)){const e=load(k);if(!e)throw invalid();out.push(e);}}
+      return out;
+    };
+    const sameStored=e=>{
+      validate(e);const old=load(key(e));
+      if(!old||!same(old,e))throw err('Original completion event is missing or changed.','KG_PATH_STORAGE','storage-error');
+    };
+    return {
+      make(t,snapshot,id){
+        const snap=parseSnapshot(snapshot,t),row=snap.topics.find(x=>x.topic_id===id);
+        if(!row||row.complete||row.eligible_at===null)throw err('No matching confirmed eligibility.','KG_PATH_INELIGIBLE','blocked');
+        return validate({contract:1,ownerId:t.ownerId,languageCode:t.languageCode,revision:t.revision,
+          eventId:makeId(),topicId:id,expectedVersion:row.version,resetAt:snap.reset_at,evidenceAt:row.eligible_at});
+      },
+      put(e){
+        validate(e);const old=load(key(e));
+        if(old){if(!same(old,e))throw invalid();return cp(e);}
+        if(target.getItem(archiveKey(e))!==null||list(e.ownerId,e.languageCode).some(x=>x.topicId===e.topicId))
+          throw err('Resolve the original pending completion first.','KG_PATH_PENDING_KEY','blocked');
+        target.setItem(key(e),JSON.stringify(e));sameStored(e);return cp(e);
+      },
+      list,sameStored,remove(e){sameStored(e);target.removeItem(key(e));},
+      archive(e,current,t){
+        sameStored(e);const snap=parseSnapshot(current,t),row=snap.topics.find(x=>x.topic_id===e.topicId);
+        if(t.ownerId!==e.ownerId||t.languageCode!==e.languageCode||
+           !(row&&row.version>e.expectedVersion||snap.reset_at!==null&&
+             Date.parse(snap.reset_at)>Date.parse(e.evidenceAt)))
+          throw err('The old request may still be awaiting acknowledgement. Retry or retain it.','KG_PATH_ARCHIVE_UNCERTAIN','blocked');
+        const k=archiveKey(e),old=target.getItem(k);
+        if(old!==null&&!same(JSON.parse(old).event,e))throw invalid();
+        if(old===null)target.setItem(k,JSON.stringify({event:cp(e),observed:{reset_at:snap.reset_at,topic:row||null,
+          permission_revision:snap.permission_revision}}));
+        sameStored(e);target.removeItem(key(e));
+      }
+    };
+  }
+  function check(o,t){
+    const s=o.getScope?.();
+    if(!scope(t)||s?.ownerId!==t.ownerId||s?.languageCode!==t.languageCode||
+       s?.policy?.state!=='restricted'||s.policy.revision!==t.revision)
+      throw err('Account, language or permission revision changed. Original completion retained.','KG_PATH_SCOPE','blocked');
+    if(o.offlineClient)throw err('Restricted offline completion reconciliation is not available yet.','KG_PATH_OFFLINE','blocked');
+  }
+  const rpcError=e=>{
+    if(['40001','23505'].includes(e?.code))return err('Original completion conflicts with the current version or reset. It is retained.',e.code,'conflict');
+    if(['42501','PGRST301','PGRST302'].includes(e?.code)||[401,403].includes(e?.status))
+      return err('Completion is not currently permitted. Original request retained.','KG_PATH_DENIED','blocked');
+    return err('The server did not confirm completion. Retry the original request.',e?.code||'KG_PATH_RPC');
+  };
+  async function owner(o,t){
+    check(o,t);const result=await o.client.auth.getSession();check(o,t);
+    if(result?.error)throw rpcError(result.error);
+    if(result?.data?.session?.user?.id!==t.ownerId)throw err('Signed-in account changed.','KG_PATH_OWNER','blocked');
+  }
+  async function call(o,t,name,args){
+    await owner(o,t);let result,thrown;
+    try{result=await o.client.rpc(name,args);}catch(e){thrown=e;}
+    await owner(o,t);
+    if(thrown)throw rpcError(thrown);
+    if(result?.error)throw rpcError(result.error);
+    if(result?.saveDestination==='device')throw err('A local queue is not a restricted server receipt.','KG_PATH_RECEIPT');
+    return result?.data;
+  }
+  async function read(o,t){
+    return parseSnapshot(await call(o,t,'kg_chart_f2_my_completion_path',{
+      p_expected_revision:t.revision,p_lang:t.languageCode}),t);
+  }
+  const flights=new Map();
+  async function perform(o,e){
+    try{
+      validate(e);check(o,e);
+      try{o.store.sameStored(e);}catch(_){throw err('A durable original completion event is required.','KG_PATH_STORAGE','storage-error');}
+      const a=await call(o,e,'kg_chart_f2_complete_topic',{
+        p_expected_revision:e.revision,p_event_id:e.eventId,p_expected_version:e.expectedVersion,
+        p_language_code:e.languageCode,p_topic_id:e.topicId,p_reset_at:e.resetAt,p_evidence_at:e.evidenceAt});
+      if(!obj(a)||a.event_id!==e.eventId||a.owner_id!==e.ownerId||a.language_code!==e.languageCode||
+         a.topic_id!==e.topicId||a.permission_revision!==e.revision||a.reset_at!==e.resetAt||
+         a.completed_at!==e.evidenceAt||a.event_version!==e.expectedVersion+1||
+         !version(a.current_version)||a.current_version<a.event_version||typeof a.replayed!=='boolean'||
+         (!a.replayed&&a.current_version!==a.event_version))
+        throw err('The original completion receipt could not be verified.','KG_PATH_RECEIPT');
+      const current=await read(o,e),row=current.topics.find(x=>x.topic_id===e.topicId);
+      if(current.reset_at!==e.resetAt||!row||!row.complete||row.version<a.current_version||
+         (row.version===a.event_version&&row.completed_at!==e.evidenceAt))
+        throw err('Current completion does not match the original receipt.','KG_PATH_READBACK','conflict');
+      try{o.store.remove(e);}catch(_){throw err('Completion was acknowledged but recovery could not be cleared. Retry the original event.','KG_PATH_STORAGE','storage-error');}
+      return {status:row.version>a.event_version?'superseded':'saved',event:cp(e),current,receipt:cp(a)};
+    }catch(error){return {status:error?.status||'pending',event:cp(e),error:{
+      code:error?.code||'KG_PATH_FAILED',message:error?.message||'Completion not confirmed.'}};}
+  }
+  function save(o,e){
+    try{validate(e);}catch(error){return Promise.resolve({status:'blocked',error:{message:error.message,code:error.code}});}
+    const k=key(e),prior=flights.get(k);
+    if(prior)return prior.client===o.client&&same(prior.event,e)?prior.task:
+      Promise.resolve({status:'blocked',error:{message:'A different completion is already in flight.',code:'KG_PATH_INFLIGHT'}});
+    const original=cp(e),task=perform(o,original).finally(()=>{if(flights.get(k)?.task===task)flights.delete(k);});
+    flights.set(k,{client:o.client,event:original,task});return task;
+  }
+  root.KGCompletionSave={createStore,parseSnapshot,read,save,validate,storagePrefix:PREFIX,archivePrefix:ARCHIVE};
+})(typeof window!=='undefined'?window:globalThis);

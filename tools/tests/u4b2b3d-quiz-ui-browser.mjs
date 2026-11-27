@@ -38,6 +38,7 @@ function installFakeClient() {
   let state = JSON.parse(localStorage.getItem(KEY) || 'null') || {
     owner, permitted: true, destination: null, faults: [], requests: [], callbacks: 0,
     levelCalls: 0, ratingCalls: 0, colourReceipts: {}, ratingVersions: {}, ratingReceipts: {}, ratingRequests: [],
+    pathRevision:17,pathReset:null,pathVersion:0,pathComplete:false,pathEligible:'2026-11-27T12:00:00.123456+00:00',pathReceipts:{},pathRequests:[],
     tables: {
       kg_chart_quiz_sessions: [], kg_chart_quiz_answers: [],
       kg_chart_sentences: sentences,
@@ -72,12 +73,41 @@ function installFakeClient() {
     callback: () => { state.callbacks++; persist(); },
     rate: () => { state.ratingCalls++; persist(); },
     externalRating: (id,value)=>changeRating(id,value,'2026-11-27T12:00:00Z','2026-11-27T12:00:00Z'),
+    resetPath:()=>{state.pathRevision++;state.pathReset='2026-11-27T13:00:00.123457+00:00';state.pathComplete=false;state.pathEligible=null;persist();},
     words, user: {id: owner, email: 'fixture@example.invalid'},
   };
   window.__kgF1 = api;
   window.__fakeClient = {
     auth: {async getSession() { return {data: {session: {user: {id: state.owner}}}, error: null}; }},
     async rpc(name, args) {
+      if(name==='kg_chart_my_answers')return {data:[],error:null};
+      if(name==='kg_chart_f2_my_completion_path'||name==='kg_chart_f2_complete_topic'){
+        state.pathRequests.push({name,args:copy(args)});persist();
+        if(args.p_expected_revision!==state.pathRevision)return {error:{code:'40001'}};
+        const topic={topic_id:'food',version:state.pathVersion,complete:state.pathComplete,
+          completed_at:state.pathComplete?state.pathEligible:null,eligible_at:state.pathEligible};
+        if(name==='kg_chart_f2_my_completion_path')return {data:{
+          owner_id:owner,language_code:'my',permission_revision:state.pathRevision,reset_at:state.pathReset,
+          bypass:false,unlocks:[],rules:{min_attempts:1,quiz_types:['native_to_image']},
+          topics:[topic,{topic_id:'next',version:0,complete:false,completed_at:null,eligible_at:null}],
+          counts:state.pathEligible?words.map(w=>({vocabulary_id:w.id,quiz_type:'native_to_image',count:1})):[]},error:null};
+        if(args.p_reset_at!==state.pathReset)return {error:{code:'40001'}};
+        const i=state.faults.findIndex(f=>f.table===name),fault=i<0?null:state.faults.splice(i,1)[0];persist();
+        const prior=state.pathReceipts[args.p_event_id];
+        if(prior){assertFixture(JSON.stringify(prior.args)===JSON.stringify(args),'Changed completion retry');
+          return {data:{...prior.ack,current_version:state.pathVersion,replayed:true},error:null};}
+        if(args.p_expected_version!==state.pathVersion)return {error:{code:'40001'}};
+        if(state.pathComplete||args.p_evidence_at!==state.pathEligible||!state.pathEligible)return {error:{code:'42501'}};
+        assertFixture(args.p_topic_id==='food'&&args.p_language_code==='my','Unexpected path scope');
+        if(fault?.mode==='hold')await new Promise(resolve=>{release=resolve;});
+        if(fault?.mode==='deny')return {error:{code:'42501'}};
+        state.pathComplete=true;state.pathVersion++;
+        const ack={event_id:args.p_event_id,owner_id:owner,language_code:'my',topic_id:'food',
+          permission_revision:state.pathRevision,reset_at:state.pathReset,completed_at:state.pathEligible,
+          event_version:state.pathVersion,current_version:state.pathVersion,replayed:false};
+        state.pathReceipts[args.p_event_id]={args:copy(args),ack:copy(ack)};persist();
+        return fault?.mode==='lost-ack'?{error:{message:'Synthetic lost completion receipt'}}:{data:ack,error:null};
+      }
       if(name==='kg_chart_f2_my_progress_state'||name==='kg_chart_f2_save_progress'){
         const id=args.p_vocabulary_id;
         state.ratingRequests.push({name,args:copy(args)});persist();
@@ -232,11 +262,21 @@ const harness = `
           </div>}
       </>;
     }
+    function PathFixture({policy}){
+      const topics=[{id:'food',icon:'🍎',translation:{title_native:'Food'}},{id:'next',icon:'🌱',translation:{title_native:'Next topic'}}];
+      const vocab=[...fixtureWords,{...fixtureWords[0],id:'55000000-0000-4000-8000-000000000001',topic_id:'next'}];
+      const path=useLearningPath({user:fixtureUser,languageCode:'my',topics,vocabulary:vocab,rules:fixtureRules,policy});
+      return <>
+        <CompletionRecoveryPanel flow={path.completionFlow} topics={topics}/>
+        <div data-path-ready={path.loading?'no':'yes'} data-food-complete={path.status.food?.complete?'yes':'no'}
+          data-next-unlocked={path.status.next?.unlocked?'yes':'no'} data-celebrated={path.celebration?'yes':'no'}/>
+      </>;
+    }
     function QuizFixture() {
       const [shown, setShown] = useState(true);
       const kind = new URLSearchParams(location.search).get('kind') || 'word';
       const restricted = new URLSearchParams(location.search).get('restricted') === 'yes';
-      const scope = restricted ? {ownerId:fixtureUser.id, policy:{state:'restricted', revision:17}} : null;
+      const scope = restricted ? {ownerId:fixtureUser.id, policy:{state:'restricted', revision:kind==='path'?window.__kgF1.snapshot().pathRevision:17}} : null;
       return <AuthContext.Provider value={{ user: fixtureUser }}>
         <KGMediaScopeContext.Provider value={scope}>
         <RulesContext.Provider value={fixtureRules}>
@@ -256,6 +296,7 @@ const harness = `
                   sentenceAccess={fixtureSentenceAccess} />
               : kind === 'colour' ? <ColourQuizView languageCode="my" user={fixtureUser} />
               : kind === 'ratings' || kind === 'rating-cards' ? <RatingFixture policy={scope?.policy} cards={kind==='rating-cards'}/>
+              : kind === 'path' ? <PathFixture policy={scope?.policy}/>
               : <SentenceQuizView languageCode="my" user={fixtureUser} meaningName="English"
                   sentenceAccess={fixtureSentenceAccess} onSessionSaved={window.__kgF1.callback} />
               : <p>Outside quiz</p>}
@@ -311,6 +352,7 @@ async function scenario(name, kind, run, restricted = false) {
     if (kind==='typing') await page.getByRole('button', {name:'Start',exact:true}).waitFor();
     else if (kind==='speaking') await page.getByRole('button', {name:/Whole paragraph/}).waitFor();
     else if(kind==='ratings'||kind==='rating-cards')await page.locator('[data-ratings-loaded="yes"]').waitFor({state:'attached'});
+    else if(kind==='path')await page.locator('[data-path-ready="yes"]').waitFor({state:'attached'});
     else await page.getByRole('button', {name: /^Start Quiz/}).waitFor();
     await run(page);
     assert.deepEqual(errors, [], 'No uncaught errors in rendered canonical quiz');
@@ -642,6 +684,39 @@ try {
     assert.equal(writes[1].args.p_expected_version,1);
     assert.equal(db.tables.kg_chart_user_ratings.length,0);
     assert.equal(db.ratingVersions[writes[1].args.p_vocabulary_id],2);
+  },true);
+  await scenario('F2E2b actual path: no local completion, unlock or celebration until server readback', 'path', async page=>{
+    const region=page.getByRole('region',{name:'Topic completion recovery'});
+    const state=page.locator('[data-path-ready]');
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_f2_complete_topic','hold'));
+    await region.getByRole('button',{name:'Confirm completion',exact:true}).click();
+    await page.waitForFunction(()=>window.__kgF1.snapshot().pathRequests.some(r=>r.name==='kg_chart_f2_complete_topic'));
+    assert.equal(await state.getAttribute('data-food-complete'),'no');
+    assert.equal(await state.getAttribute('data-next-unlocked'),'no');
+    assert.equal(await state.getAttribute('data-celebrated'),'no');
+    await page.evaluate(()=>window.__kgF1.release());
+    await region.getByText('Topic completion confirmed by the server.',{exact:true}).waitFor();
+    await page.locator('[data-food-complete="yes"][data-next-unlocked="yes"][data-celebrated="yes"]').waitFor({state:'attached'});
+    assert.equal((await snapshot(page)).pathVersion,1);
+  },true);
+  await scenario('F2E2b actual path: lost response then reset keeps pending original without automatic rebasing', 'path', async page=>{
+    const region=page.getByRole('region',{name:'Topic completion recovery'});
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_f2_complete_topic','lost-ack'));
+    await region.getByRole('button',{name:'Confirm completion',exact:true}).click();
+    await region.getByText(/original completion pending/).waitFor();
+    await region.getByText(/server did not confirm completion/i).waitFor();
+    await page.evaluate(()=>window.__kgF1.resetPath());
+    await page.reload({waitUntil:'load'});
+    await page.locator('[data-path-ready="yes"][data-food-complete="no"][data-next-unlocked="no"]').waitFor({state:'attached'});
+    await region.getByRole('button',{name:'Retry original completion'}).click();
+    await region.getByText(/permission revision changed/i).waitFor();
+    const db=await snapshot(page);
+    assert.equal(db.pathRequests.filter(r=>r.name==='kg_chart_f2_complete_topic').length,1);
+    await region.getByRole('button',{name:'Review current progress'}).click();
+    await region.getByRole('button',{name:'Archive obsolete completion'}).click();
+    await region.getByText(/Obsolete request archived/).waitFor();
+    assert.equal(await page.evaluate(()=>Object.keys(localStorage).filter(k=>k.startsWith('kg-chart-completion-archive-v1:')).length),1);
+    assert.equal(await region.getByRole('button',{name:'Confirm completion',exact:true}).count(),0);
   },true);
   console.log(`U4B2B3D_RENDERED_QUIZ_UI_PASS: ${passed} scenarios; isolated fictional clients; physical devices not tested`);
 } finally {

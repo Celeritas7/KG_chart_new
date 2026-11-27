@@ -1150,3 +1150,110 @@ test('F2E2a: storage before network, duplicate in flight and independent words',
   assert.equal(f.calls.filter(x=>x.name==='kg_chart_f2_save_progress').length,2);
   assert.equal(f.current(RATING_WORD).state.rating,3);assert.equal(f.current(RATING_WORD2).state.rating,1);
 });
+
+
+// F2E2b: exact evidence/record version and reset boundary, no invented
+// completion timestamp after a lost or denied receipt.
+const CompletionAPI=context.window.KGCompletionSave;
+const PATH_AT='2026-11-27T12:00:00.123456+00:00';
+const PATH_RESET='2026-11-27T13:00:00.123457+00:00';
+function completionFixture(){
+  const storage=memoryStorage(),store=CompletionAPI.createStore({storage,makeId:uuid});
+  const target={ownerId:OWNER,languageCode:'my',revision:17};
+  let owner=OWNER,policy={state:'restricted',revision:17},fault=null;
+  let snap={owner_id:OWNER,language_code:'my',permission_revision:17,reset_at:null,bypass:false,unlocks:[],
+    rules:{min_attempts:1,quiz_types:['native_to_image']},
+    topics:[{topic_id:'food',version:0,complete:false,completed_at:null,eligible_at:PATH_AT}],
+    counts:[{vocabulary_id:RATING_WORD,quiz_type:'native_to_image',count:1}]};
+  const receipts=new Map(),calls=[];
+  const client={auth:{async getSession(){return {data:{session:{user:{id:owner}}}};}},
+    from(){throw Error('No direct completion mutation');},
+    async rpc(name,args){
+      calls.push({name,args:copy(args)});
+      if(args.p_expected_revision!==snap.permission_revision)return {error:{code:'40001'}};
+      if(fault==='deny')return {error:{code:'42501'}};
+      if(name==='kg_chart_f2_my_completion_path'){
+        if(fault==='readback'&&receipts.size)return {error:lost};
+        return {data:copy(snap)};
+      }
+      assert.equal(name,'kg_chart_f2_complete_topic');
+      if(fault==='missing')return {error:{code:'PGRST202'}};
+      const row=snap.topics[0],prior=receipts.get(args.p_event_id);
+      if(args.p_reset_at!==snap.reset_at)return {error:{code:'40001'}};
+      if(prior){
+        assert.deepEqual(prior.args,copy(args));
+        return {data:{...prior.ack,current_version:row.version,replayed:true}};
+      }
+      if(args.p_expected_version!==row.version)return {error:{code:'40001'}};
+      if(row.complete||args.p_evidence_at!==row.eligible_at)return {error:{code:'42501'}};
+      row.complete=true;row.completed_at=args.p_evidence_at;row.version++;
+      const ack={event_id:args.p_event_id,owner_id:OWNER,language_code:'my',topic_id:'food',
+        permission_revision:17,reset_at:snap.reset_at,completed_at:row.completed_at,
+        event_version:row.version,current_version:row.version,replayed:false};
+      receipts.set(args.p_event_id,{args:copy(args),ack:copy(ack)});
+      if(fault==='lost')return {error:lost};
+      if(fault==='switch')owner=OTHER;
+      if(fault==='malformed')ack.completed_at=PATH_RESET;
+      return {data:ack};
+    }};
+  const options={client,store,getScope:()=>({ownerId:owner,languageCode:'my',policy})};
+  return {storage,store,target,options,calls,receipts,get snapshot(){return copy(snap);},
+    set fault(v){fault=v;},set owner(v){owner=v;},set policy(v){policy=v;},
+    reset(){snap.reset_at=PATH_RESET;snap.permission_revision++;snap.topics[0].complete=false;
+      snap.topics[0].eligible_at=null;snap.counts=[];policy={state:'restricted',revision:snap.permission_revision};},
+    async make(){return store.make(target,await CompletionAPI.read(options,target),'food');},
+    save:e=>CompletionAPI.save(options,e)};
+}
+test('F2E2b: exact receipt and readback before removing durable completion',async()=>{
+  const f=completionFixture(),e=await f.make();
+  assert.equal(e.evidenceAt,PATH_AT);assert.equal(e.expectedVersion,0);
+  assert.equal((await f.save(e)).status,'storage-error');
+  f.store.put(e);
+  const [a,b]=await Promise.all([f.save(e),f.save(e)]);
+  assert.equal(a.status,'saved');assert.equal(b.status,'saved');
+  assert.equal(a.current.topics[0].complete,true);assert.equal(f.receipts.size,1);
+  assert.equal(f.calls.filter(c=>c.name==='kg_chart_f2_complete_topic').length,1);
+  assert.equal(f.store.list(OWNER,'my').length,0);
+});
+test('F2E2b: lost receipt retries the original event and microsecond timestamp after reload',async()=>{
+  const f=completionFixture(),e=await f.make();f.store.put(e);f.fault='lost';
+  assert.equal((await f.save(e)).status,'pending');
+  const reopened=CompletionAPI.createStore({storage:f.storage,makeId:uuid});
+  const retained=reopened.list(OWNER,'my')[0];
+  f.fault=null;
+  const result=await CompletionAPI.save({...f.options,store:reopened},retained);
+  assert.equal(result.status,'saved');assert.equal(result.receipt.replayed,true);
+  const writes=f.calls.filter(c=>c.name==='kg_chart_f2_complete_topic');
+  assert.deepEqual(writes[0],writes[1]);assert.equal(writes[0].args.p_evidence_at,PATH_AT);
+});
+test('F2E2b: reset does not rebase old completion; explicit archive preserves request',async()=>{
+  const f=completionFixture(),e=await f.make();f.store.put(e);
+  assert.throws(()=>f.store.archive(e,f.snapshot,f.target));
+  f.reset();assert.equal((await f.save(e)).status,'blocked');
+  assert.equal(f.calls.filter(c=>c.name==='kg_chart_f2_complete_topic').length,0);
+  const target={...f.target,revision:18};
+  assert.throws(()=>f.store.make(target,f.snapshot,'food'));
+  f.store.archive(e,f.snapshot,target);
+  assert.equal(f.store.list(OWNER,'my').length,0);
+  assert.ok([...f.storage.entries.keys()].some(k=>k.startsWith(CompletionAPI.archivePrefix)));
+  assert.throws(()=>f.store.put(e));
+});
+test('F2E2b: denied, missing RPC, bad receipt, missing readback and owner change retain original',async()=>{
+  for(const [fault,status] of [['deny','blocked'],['missing','pending'],['malformed','pending'],
+    ['readback','pending'],['switch','blocked']]){
+    const f=completionFixture(),e=await f.make();f.store.put(e);f.fault=fault;
+    assert.equal((await f.save(e)).status,status,fault);
+    assert.deepEqual(copy(f.store.list(OWNER,'my')[0]),copy(e));
+  }
+});
+test('F2E2b: no offline facade, foreign snapshot, duplicate topic, or invented eligibility',async()=>{
+  const f=completionFixture(),e=await f.make();f.store.put(e);
+  assert.equal((await CompletionAPI.save({...f.options,offlineClient:true},e)).status,'blocked');
+  assert.throws(()=>CompletionAPI.parseSnapshot({...f.snapshot,owner_id:OTHER},f.target));
+  assert.throws(()=>CompletionAPI.parseSnapshot({...f.snapshot,topics:[...f.snapshot.topics,...f.snapshot.topics]},f.target));
+  assert.throws(()=>f.store.make(f.target,f.snapshot,'unpermitted'));
+  assert.equal(f.store.list(OTHER,'my').length,0);
+  f.storage.failSet=true;
+  assert.throws(()=>f.store.put({...e,eventId:uuid(),topicId:'other'}));
+  assert.equal(f.calls.filter(c=>c.name==='kg_chart_f2_complete_topic').length,0);
+});
