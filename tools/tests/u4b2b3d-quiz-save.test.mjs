@@ -635,3 +635,125 @@ test('Missing quiz_level compatibility keeps the original typed level in recover
   assert.equal(client.tables[ANSWER_TABLE].size, 1);
   assert.equal(Object.hasOwn(client.tables[SESSION_TABLE].get(draft.id), 'quiz_level'), false);
 });
+
+
+// F2E1a: fictional atomic receipt contract; no network or real learner data.
+function atomicFixture(kind = 'word') {
+  const f = setup(kind);
+  const policy = { state: 'restricted', revision: 17 };
+  let draft = f.store.start({ ownerId: OWNER, languageCode: 'my', kind,
+    session: {topic_id: kind === 'word' ? 'food' : null,
+      quiz_type: kind === 'word' ? 'native_to_image' : 'sentence_to_meaning'},
+    saveContext: API.captureContext(policy) });
+  for (const answer of f.draft.answers) draft = f.store.append(draft, answer);
+  // append generates fresh IDs but preserves the original answer content.
+  f.store.write(draft);
+  let current = policy, serverRevision = 17, fault = null;
+  const requests = [], commits = new Map();
+  const client = {
+    auth: f.client.auth,
+    from() { throw new Error('Restricted quiz must never use the direct INSERT route'); },
+    async rpc(name, args) {
+      assert.equal(name, 'kg_chart_f2_save_recovery_quiz');
+      requests.push(copy(args));
+      const wire = args.p_draft;
+      assert.equal(wire.sealed, true);
+      assert.equal(Object.hasOwn(wire, 'saveContext'), false);
+      assert.equal(wire.ownerId, OWNER);
+      const error = fault; fault = null;
+      if (args.p_expected_revision !== serverRevision) return {error: {code: '40001'}};
+      if (error === 'denied') return {error: {code: '42501'}};
+      if (error === 'missing') return {error: {code: 'PGRST202'}};
+      if (error === 'before') throw Error('Synthetic pre-commit transport failure');
+      if (commits.has(wire.id)) assert.deepEqual(copy(commits.get(wire.id)), copy(wire));
+      else commits.set(wire.id, copy(wire));
+      if (error === 'lost') throw Error('Synthetic lost atomic response');
+      const data = {session_id: wire.id, answer_count: wire.answers.length, expected_revision: args.p_expected_revision};
+      if (error === 'malformed') data.answer_count--;
+      if (error === 'device') return {data, saveDestination: 'device'};
+      if (error === 'switch') f.client.ownerId = OTHER;
+      if (error === 'revisionChanged') current = {state: 'restricted', revision: 18};
+      return {data, error: null};
+    },
+  };
+  return {...f, legacyDraft: f.draft, draft, requests, commits, client, get current() {return current;},
+    set current(value) { current = value; }, set serverRevision(value) {serverRevision = value;},
+    set fault(value) {fault = value;},
+    set owner(value) {f.client.ownerId = value;},
+    saveAtomic(value = draft, options = {}) {
+      return API.save({client, draft: value, store: f.reload(), getAccess: () => current, ...options});
+    },
+    retained() {return f.reload().list(OWNER, 'my', kind).find(value => value.id === draft.id);},
+  };
+}
+for (const kind of ['word', 'sentence']) {
+  test('F2E1a ' + kind + ': sealed wire draft survives lost reply and reload without duplicates', async () => {
+    const f = atomicFixture(kind);
+    f.fault = 'lost';
+    assert.equal((await f.saveAtomic()).status, 'pending');
+    const original = copy(f.retained());
+    assert.equal(original.sealed, true);
+    assert.equal(original.saveContext.revision, 17);
+    assert.equal((await f.saveAtomic(original)).status, 'saved');
+    assert.equal(f.commits.size, 1);
+    assert.deepEqual(f.requests[0], f.requests[1]);
+    assert.equal(f.retained(), undefined);
+  });
+  test('F2E1a ' + kind + ': concurrent identical attempts use one atomic RPC', async () => {
+    const f = atomicFixture(kind);
+    const [a,b] = await Promise.all([f.saveAtomic(), f.saveAtomic(copy(f.draft))]);
+    assert.equal(a.status, 'saved'); assert.equal(b.status, 'saved');
+    assert.equal(f.requests.length, 1);
+  });
+  test('F2E1a ' + kind + ': denied and malformed acknowledgements retain the original payload', async () => {
+    for (const [fault, status] of [['denied','blocked'], ['malformed','pending'], ['missing','pending'],
+      ['before','pending'], ['device','pending'], ['switch','blocked'], ['revisionChanged','blocked']]) {
+      const f = atomicFixture(kind);
+      f.fault = fault;
+      assert.equal((await f.saveAtomic()).status, status, fault);
+      assert.equal(f.retained().saveContext.revision, 17);
+      assert.deepEqual(copy(f.retained().answers), copy(f.draft.answers));
+      assert.equal(f.requests.length, 1);
+    }
+  });
+  test('F2E1a ' + kind + ': newer revision, missing provenance, mode change and offline facade never fall back', async () => {
+    const f = atomicFixture(kind);
+    f.current = {state: 'restricted', revision: 18};
+    assert.equal((await f.saveAtomic()).error.code, 'KG_QUIZ_STALE_REVISION');
+    f.current = {state: 'legacy'};
+    assert.equal((await f.saveAtomic(f.retained())).error.code, 'KG_QUIZ_CONTEXT_REQUIRED');
+    f.current = {state: 'restricted', revision: 17};
+    assert.equal((await f.saveAtomic(f.retained(), {offlineClient: true})).error.code, 'KG_QUIZ_OFFLINE_DEFERRED');
+    assert.equal((await f.saveAtomic(f.legacyDraft)).error.code, 'KG_QUIZ_CONTEXT_REQUIRED');
+    assert.equal(f.requests.length, 0);
+    f.serverRevision = 18;
+    assert.equal((await f.saveAtomic(f.retained())).error.code, 'KG_QUIZ_STALE_REVISION');
+    assert.equal(f.requests[0].p_expected_revision, 17);
+    assert.equal(f.retained().saveContext.revision, 17);
+    assert.equal(f.commits.size, 0);
+  });
+}
+test('F2E1a: no RPC begins if owner or durable storage is unavailable', async () => {
+  const f = atomicFixture();
+  f.storage.failSet = true;
+  assert.equal((await f.saveAtomic()).status, 'storage-error');
+  f.storage.failSet = false;
+  f.owner = OTHER;
+  assert.equal((await f.saveAtomic()).status, 'blocked');
+  assert.equal(f.requests.length, 0);
+});
+test('F2E1a: an existing draft cannot be rewritten with a new permission revision', () => {
+  const f = atomicFixture();
+  assert.throws(() => f.store.write({...f.draft, saveContext: {mode:'restricted', revision:18}}));
+  assert.equal(f.retained().saveContext.revision, 17);
+});
+test('F2E1a: an oversized historical draft is retained without splitting', async () => {
+  const f = atomicFixture();
+  let d = f.draft;
+  for (let i = d.answers.length; i <= API.atomicLimit; i++)
+    d = f.store.append(d, d.answers[0]);
+  f.store.write(d);
+  assert.equal((await f.saveAtomic(d)).error.code, 'KG_QUIZ_ATOMIC_LIMIT');
+  assert.equal(f.retained().answers.length, API.atomicLimit + 1);
+  assert.equal(f.requests.length, 0);
+});

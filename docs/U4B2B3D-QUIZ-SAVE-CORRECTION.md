@@ -315,3 +315,19 @@ each against current source when scheduling; none is part of F1.
 - [Draft administration RPC](../sql/kg-chart-u2-access-draft.sql)
 - [Content-access helpers](../sql/kg-chart-u3b1-restrictive-content-rls.sql)
 - [History RPC](../sql/kg-chart-u3b3b1-legacy-private-write-rpc.sql)
+
+## F2E1a — restricted online word and sentence integration candidate
+
+Reviewed base: `7753db59c72a90449dcea060ad7a9ea0942ff72f`. The F2D3A endpoint exists in the disposable SQL fixture only. No production endpoint, activation flag, migration, real learner or offline outbox is changed in this increment.
+
+The canonical F1 hook captures local-only permission provenance at quiz start from the owner-matching verified policy. Restricted drafts retain that exact revision across answer checkpoints, sealing, retries and reload. The RPC receives the original v1 envelope (without local-only saveContext) and the captured revision; its receipt must match session ID, answer count and expected revision. No direct table fallback, optional-column omission or duplicate readback is permitted for the restricted route. Missing RPC, denied/stale access, malformed receipt, storage failure, and account changes retain the original draft. The normal legacy F1 and installed offline device queue paths stay unchanged while activation is OFF. Restricted offline-facade requests are held rather than misreported as server saves; F2E3/E4 own that integration. The restricted saved result does not invoke older automatic progress/rating/level consumers; F2E2 owns their conversion.
+
+### F3 lifecycle assumptions and reconciliation gate
+
+* Restricted provenance is immutable; a missing, unverified, legacy-to-restricted, restricted-to-legacy or newer-revision baseline is not inferred or rebased. Existing v1 drafts without provenance are held on the restricted route, with the original download/recovery preserved. A server revision rejection does not authorize a fresh event.
+* F3 must provide atomic enrollment, an explicit durable revoked/disabled identity and revision continuity across removal, regrant, email reuse and mode transitions. Until those rules are implemented and verified, a no-profile legacy snapshot is not evidence of a safe historical transition. Legacy compatibility is retained only within the existing activation-off boundary. F3C and F2E3/E4 must settle historical partials, lifecycle reconciliation and queue receipts before activation.
+* The fixture accepts 1–500 answers (and its own request-size bound). New restricted runs over 500 require a smaller target; old oversized drafts are held in full, not split or truncated. The server remains authoritative for shape and payload bounds.
+
+### Verification requirements
+
+The existing F1 unit and browser suites now include fictional atomic RPC cases for both actual word/sentence producers, lost response and reload, malformed/device receipt, owner/storage failures, concurrent retries, missing endpoint, stale/unknown revision, mode change, oversized drafts and no direct fallback. Existing fixture SQL tests remain in place. Verify the exact PR head in both-editions and database CI. These tests do not prove real PostgREST, final schema, lifecycle, offline synchronization or physical-device acceptance; no restricted release authorization. Next bounded consumer: F2E1b timed typing and speaking after this phase is reviewed and merged.
