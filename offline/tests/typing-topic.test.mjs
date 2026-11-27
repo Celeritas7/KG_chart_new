@@ -14,7 +14,7 @@ const other = {id:'food-id',topic_id:'food',english_text:'Food',translation:{nat
 // Exercise the actual component's setup and Start handlers without network/storage.
 function page(saved, languageCode='my') {
   const states=[];let cursor=0;
-  const bestKeys=[];
+  const bestKeys=[], begun=[];
   const rules={quizTypes:[]}, priv={groups:new Set()};
   const React={
     createElement:(type,props,...children)=>({type,props:props||{},children}),
@@ -27,10 +27,15 @@ function page(saved, languageCode='my') {
     loadFromStorage:key=>key==='settings'?saved:new Proxy({}, {get:(_,k)=>{bestKeys.push(k);return undefined;}}),
     languageName:()=> 'Burmese',shuffleArr:items=>items,Date,
     mmCanon:s=>s,typingMatch:()=>({ok:0,wrong:false}),
+    // This fixture deliberately exercises only topic selection and Start,
+    // without an authenticated learner or storage. The canonical Chromium
+    // and quiz-saving suites exercise the real recovery hook and writes.
+    useQuizSaving:()=>({restricted:false,state:{status:'idle'},begin:session=>begun.push(session)}),
+    QuizRecoveryPanel:()=>null,QuizSaveStatus:()=>null,
     LoadingSpinner:()=>null,SpeakButton:()=>null,console};
   vm.runInNewContext(code,ctx);
   const topics=[{id:'friends_names',icon:'👥'},{id:'food',icon:'🍚'},{id:'locked',locked:true}];
-  return {bestKeys,render(){cursor=0;return ctx.TypingView({topics,vocabulary:[name,other],languageCode,user:null});}};
+  return {bestKeys,begun,render(){cursor=0;return ctx.TypingView({topics,vocabulary:[name,other],languageCode,user:null});}};
 }
 const flatten=n=>!n||typeof n!=='object'?[]:Array.isArray(n)?n.flatMap(flatten):[n,...n.children.flatMap(flatten)];
 const text=n=>n==null?'':typeof n!=='object'?String(n):Array.isArray(n)?n.map(text).join(''):n.children.map(text).join('');
@@ -44,6 +49,9 @@ test('one saved names topic starts copy and recall practice with only that name'
     assert.equal(find(setup,n=>n.type==='select').props.value,'friends_names');
     assert(p.bestKeys.includes(`my|${mode}|words|friends_names`));
     find(setup,n=>n.type==='button'&&text(n)==='Start').props.onClick();
+    assert.equal(p.begun.length,1);
+    assert.equal(p.begun[0].quiz_type, 'typing_'+mode);
+    assert.equal(p.begun[0].time_spent_seconds,0);
     const run=p.render();
     assert.match(text(run),mode==='copy'?/နမူနာ/:/Example friend/);
     assert.doesNotMatch(text(run),/အစားအစာ|Food/);

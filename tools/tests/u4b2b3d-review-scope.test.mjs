@@ -17,6 +17,8 @@ for (const [label, before, after] of [
   ['authorization logic', 'function useLearnerAccess(user) {', 'function useLearnerAccess(user) { return { state: "legacy" };'],
   ['navigation scope', 'function Header({', 'function Header(/* changed */{'],
   ['unrelated quiz mode', 'function ColourQuizView({', 'function ColourQuizView(/* changed */{'],
+  ['preference helper', 'async function syncTypingBests(user, local) {', 'async function syncTypingBests(user, local) { return {};'],
+  ['pronunciation helper', 'const PRON_MAX_SECONDS = 15;', 'const PRON_MAX_SECONDS = 16;'],
   ['unrelated script', '  <script src="./js/kg-sentence-access.js"></script>', '  <script src="./js/kg-sentence-access.js"></script><script src="./unexpected.js"></script>'],
 ]) test(`F1 scope rejects ${label}`, () => {
   const edited = source.replace(before, after);

@@ -57,6 +57,21 @@ function installFakeClient() {
   window.__fakeClient = {
     auth: {async getSession() { return {data: {session: {user: {id: state.owner}}}, error: null}; }},
     async rpc(name, args) {
+      if (name === 'kg_chart_f2_save_timed_quiz') {
+        const session = args.p_session, answers = args.p_answers;
+        state.requests.push({table:name,args:copy(args)}); persist();
+        assertFixture(session.user_id === state.owner && args.p_expected_revision === 17 &&
+          session.total_questions === answers.length && answers.every(a=>a.session_id===session.id), 'Unexpected timed payload');
+        const i=state.faults.findIndex(f=>f.table===name);
+        const fault=i<0?null:state.faults.splice(i,1)[0];persist();
+        if(fault?.mode==='deny') return {error:{code:'42501'}};
+        if(fault?.mode==='fail') return {error:{message:'synthetic failure'}};
+        if(!state.tables.kg_chart_quiz_sessions.some(row=>row.id===session.id)) {
+          state.tables.kg_chart_quiz_sessions.push(copy(session));state.tables.kg_chart_quiz_answers.push(...copy(answers));persist();
+        }
+        if(fault?.mode==='lost-ack') return {error:{message:'synthetic timed reply lost'}};
+        return {data:{session_id:session.id,answer_count:answers.length,expected_revision:17,time_spent_seconds:session.time_spent_seconds},error:null};
+      }
       if (name === 'kg_chart_f2_save_recovery_quiz') {
         const d = args.p_draft;
         state.requests.push({table: name, args: copy(args)}); persist();
@@ -156,6 +171,10 @@ const harness = `
                   vocabulary={fixtureWords} poolVocabulary={fixtureWords} ratings={{}}
                   onRate={window.__kgF1.rate} languageCode="my" user={fixtureUser}
                   onSessionSaved={window.__kgF1.callback} meaningName="English" />
+              : kind === 'typing' ? <TypingView topics={[{id:'food',translation:{title_native:'Food'}}]}
+                  vocabulary={fixtureWords} languageCode="my" user={fixtureUser} meaningName="English" accessPolicy={scope?.policy} />
+              : kind === 'speaking' ? <SpeakView languageCode="my" user={fixtureUser} meaningName="English"
+                  sentenceAccess={fixtureSentenceAccess} />
               : <SentenceQuizView languageCode="my" user={fixtureUser} meaningName="English"
                   sentenceAccess={fixtureSentenceAccess} onSessionSaved={window.__kgF1.callback} />
               : <p>Outside quiz</p>}
@@ -208,7 +227,9 @@ async function scenario(name, kind, run, restricted = false) {
   page.on('pageerror', error => errors.push(error.message));
   try {
     await page.goto(`${origin}/?kind=${kind}${restricted ? '&restricted=yes' : ''}`, {waitUntil: 'load'});
-    await page.getByRole('button', {name: /^Start Quiz/}).waitFor();
+    if (kind==='typing') await page.getByRole('button', {name:'Start',exact:true}).waitFor();
+    else if (kind==='speaking') await page.getByRole('button', {name:/Whole paragraph/}).waitFor();
+    else await page.getByRole('button', {name: /^Start Quiz/}).waitFor();
     await run(page);
     assert.deepEqual(errors, [], 'No uncaught errors in rendered canonical quiz');
     passed++;
@@ -388,6 +409,49 @@ try {
       assert.equal(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('kg-chart-quiz-recovery-v1:')).length), 0);
     }, true);
   }
+  await scenario('F2E1b actual typing copy: corrected mistake is completed, original timed draft retries after reload', 'typing', async page => {
+    const rpc='kg_chart_f2_save_timed_quiz';
+    await page.evaluate(name=>window.__kgF1.fault(name,'lost-ack'),rpc);
+    await page.getByRole('button',{name:'Start',exact:true}).click();
+    const target=await page.locator('[aria-label^="Native "]').getAttribute('aria-label');
+    await page.getByRole('textbox',{name:'Type here'}).fill('wrong');
+    await page.getByRole('textbox',{name:'Type here'}).fill(target);
+    await page.getByRole('button',{name:'← Back',exact:true}).click();
+    await unsaved(page);
+    let db=await snapshot(page);
+    assert.equal(db.requests.length,1);
+    const first=db.requests[0];
+    assert.equal(first.table,rpc);
+    assert.equal(first.args.p_session.correct_answers,1);
+    assert.equal(first.args.p_answers[0].is_correct,false);
+    assert.equal(first.args.p_answers[0].answer_text,'wrong');
+    await page.reload({waitUntil:'load'});
+    await page.getByRole('region',{name:'Quiz save recovery'}).getByRole('button',{name:'Retry save',exact:true}).click();
+    await page.getByText('✓ Results saved',{exact:true}).waitFor();
+    db=await snapshot(page);
+    assert.deepEqual(db.requests[0],db.requests[1]);
+    assert.equal(db.tables[sessions].length,1);
+    assert.equal(db.tables[answers].length,1);
+  },true);
+  await scenario('F2E1b actual speaking paragraph: denied receipt retained; retry preserves duration and evidence', 'speaking', async page => {
+    const rpc='kg_chart_f2_save_timed_quiz';
+    await page.evaluate(name=>window.__kgF1.fault(name,'deny'),rpc);
+    await page.getByRole('button',{name:/Whole paragraph/}).click();
+    await page.getByTitle('Peek at this line').first().click();
+    await page.getByRole('button',{name:/Reveal all and check/}).click();
+    await page.getByRole('button',{name:/I said it all/}).click();
+    await unsaved(page,true);
+    let db=await snapshot(page);
+    assert.equal(db.requests.length,1);
+    assert.equal(db.requests[0].args.p_session.correct_answers,3);
+    assert.equal(db.requests[0].args.p_session.total_questions,4);
+    assert.equal(db.tables[sessions].length,0);
+    await page.getByRole('button',{name:'Retry save',exact:true}).click();
+    await page.getByText('✓ Results saved',{exact:true}).waitFor();
+    db=await snapshot(page);
+    assert.deepEqual(db.requests[0],db.requests[1]);
+    assert.equal(db.tables[answers].length,4);
+  },true);
   console.log(`U4B2B3D_RENDERED_QUIZ_UI_PASS: ${passed} scenarios; isolated fictional clients; physical devices not tested`);
 } finally {
   await browser?.close();
