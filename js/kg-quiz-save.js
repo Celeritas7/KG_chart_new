@@ -10,6 +10,9 @@
   const PREFIX = 'kg-chart-quiz-recovery-v1:';
   // Keep timed records separate so older builds can still open their F1 records.
   const TIMED_PREFIX = 'kg-chart-timed-quiz-recovery-v1:';
+  const COLOUR_PREFIX = 'kg-chart-colour-quiz-recovery-v1:';
+  const COLOUR_MODES = new Set(['phrase_to_picture', 'listen_to_picture', 'picture_to_phrase']);
+  const COLOUR_KEYS = new Set(['phrase_id', 'selected_phrase_id', 'option_ids', 'answered_at']);
   const TABLES = { session: 'kg_chart_quiz_sessions', answers: 'kg_chart_quiz_answers' };
   const OPTIONAL = { session: ['quiz_level', 'difficulty'], answers: ['answer_text', 'answered_at'] };
   const SESSION_KEYS = new Set(['id', 'user_id', 'language_code', 'topic_id', 'quiz_type',
@@ -22,6 +25,7 @@
     sentence: ['sentence_to_meaning', 'meaning_to_sentence', 'build_sentence'],
     typing: ['typing_copy', 'typing_recall'],
     speaking: ['speak_lines', 'speak_paragraph'],
+    colour: ['colour_phrase'],
   };
   const inFlight = new Map();
   const ATOMIC_LIMIT = 500;
@@ -36,11 +40,15 @@
   const fail = (message, code, status = 'pending') => Object.assign(new Error(message), { code, status });
   const invalid = () => fail('This quiz recovery record is invalid. It has been retained without uploading.',
     'KG_QUIZ_INVALID_DRAFT', 'blocked');
-  const timed = kind => kind === 'typing' || kind === 'speaking';
+  const colour = kind => kind === 'colour';
+  const timed = kind => kind === 'typing' || kind === 'speaking' || colour(kind);
+  const prefixFor = kind => colour(kind) ? COLOUR_PREFIX : timed(kind) ? TIMED_PREFIX : PREFIX;
   const ownerPrefix = (ownerId, prefix = PREFIX) => prefix + encodeURIComponent(ownerId) + ':';
-  const draftKey = draft => ownerPrefix(draft.ownerId, timed(draft.kind) ? TIMED_PREFIX : PREFIX) + encodeURIComponent(draft.id);
-  const tally = (kind, answers) => answers.filter(answer => kind === 'typing'
-    ? answer.selected_vocabulary_id != null : answer.is_correct).length;
+  const draftKey = draft => ownerPrefix(draft.ownerId, prefixFor(draft.kind)) + encodeURIComponent(draft.id);
+  const phraseId = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
+  const tally = (kind, answers) => answers.filter(answer => colour(kind)
+    ? answer.phrase_id === answer.selected_phrase_id : kind === 'typing'
+      ? answer.selected_vocabulary_id != null : answer.is_correct).length;
   const validSeconds = value => Number.isSafeInteger(value) && value >= 0 && value <= 2147483647;
 
   // Local-only authorization provenance. The F2D3A wire envelope stays v1.
@@ -79,13 +87,34 @@
     if (timed(draft.kind) ? (!validSeconds(session.time_spent_seconds) || session.quiz_level != null ||
         session.difficulty != null || Date.parse(session.completed_at) < Date.parse(session.created_at)) :
         owns(session, 'time_spent_seconds')) throw invalid();
+    if (colour(draft.kind)) {
+      if (!COLOUR_MODES.has(draft.colourMode) || session.topic_id !== null ||
+          owns(session, 'quiz_level') || owns(session, 'difficulty')) throw invalid();
+    } else if (owns(draft, 'colourMode')) throw invalid();
     for (const type of ['session', 'answers']) {
       const omitted = draft.omittedColumns[type];
       if (!Array.isArray(omitted) || new Set(omitted).size !== omitted.length ||
-          omitted.some(column => !OPTIONAL[type].includes(column))) throw invalid();
+          omitted.some(column => !OPTIONAL[type].includes(column)) ||
+          (colour(draft.kind) && omitted.length)) throw invalid();
     }
     const ids = new Set();
     for (const answer of draft.answers) {
+      if (colour(draft.kind)) {
+        // These are the actual ordered phrase choices, not vocabulary answers.
+        if (!record(answer) || !keysAllowed(answer, COLOUR_KEYS) ||
+            !phraseId(answer.phrase_id) || !phraseId(answer.selected_phrase_id) ||
+            ids.has(answer.phrase_id) || !Array.isArray(answer.option_ids) ||
+            answer.option_ids.length < 1 || answer.option_ids.length > 4 ||
+            !answer.option_ids.every(phraseId) ||
+            new Set(answer.option_ids).size !== answer.option_ids.length ||
+            !answer.option_ids.includes(answer.phrase_id) ||
+            !answer.option_ids.includes(answer.selected_phrase_id) ||
+            !timestamp(answer.answered_at) ||
+            Date.parse(answer.answered_at) < Date.parse(session.created_at) ||
+            Date.parse(answer.answered_at) > Date.parse(session.completed_at)) throw invalid();
+        ids.add(answer.phrase_id);
+        continue;
+      }
       if (!record(answer) || !keysAllowed(answer, ANSWER_KEYS) || !text(answer.id) ||
           answer.id === draft.id || ids.has(answer.id) || answer.session_id !== draft.id ||
           typeof answer.is_correct !== 'boolean' || !timestamp(answer.answered_at) ||
@@ -113,6 +142,7 @@
   function samePayload(left, right) {
     return record(left) && record(right) && left.id === right.id && left.ownerId === right.ownerId &&
       left.languageCode === right.languageCode && left.kind === right.kind &&
+      left.colourMode === right.colourMode &&
       sameContext(left.saveContext, right.saveContext) &&
       JSON.stringify(left.session) === JSON.stringify(right.session) &&
       JSON.stringify(left.answers) === JSON.stringify(right.answers);
@@ -130,7 +160,7 @@
       return draft;
     };
     return {
-      start({ ownerId, languageCode, kind, session, saveContext }) {
+      start({ ownerId, languageCode, kind, session, saveContext, colourMode }) {
         const at = now(), id = uuid();
         const draft = {
           version: 1, id, ownerId, languageCode, kind,
@@ -138,6 +168,7 @@
             total_questions: 0, correct_answers: 0, created_at: at, completed_at: at },
           answers: [], sealed: false, omittedColumns: { session: [], answers: [] },
           ...(saveContext === undefined ? {} : { saveContext: copy(saveContext) }),
+          ...(colourMode === undefined ? {} : { colourMode }),
         };
         return validateDraft(copy(draft));
       },
@@ -146,7 +177,9 @@
         if (draft.sealed) throw fail('This quiz has already entered saving. Its recorded answers cannot be changed.',
           'KG_QUIZ_SEALED', 'blocked');
         const next = copy(draft);
-        const row = { ...answer, id: uuid(), session_id: draft.id, answered_at: answer.answered_at || now() };
+        const row = colour(draft.kind)
+          ? { ...copy(answer), answered_at: answer.answered_at || now() }
+          : { ...answer, id: uuid(), session_id: draft.id, answered_at: answer.answered_at || now() };
         next.answers.push(row);
         next.session.total_questions = next.answers.length;
         next.session.correct_answers = tally(draft.kind, next.answers);
@@ -172,6 +205,11 @@
           // A stale component/tab must not replace a frozen request with a
           // different score or set of answers while that request is in flight.
           if (prior && (!sameContext(prior.saveContext, draft.saveContext) ||
+              (colour(draft.kind) && (prior.colourMode !== draft.colourMode ||
+                prior.session.created_at !== draft.session.created_at ||
+                prior.session.time_spent_seconds > draft.session.time_spent_seconds ||
+                prior.answers.length > draft.answers.length ||
+                prior.answers.some((row, i) => JSON.stringify(row) !== JSON.stringify(draft.answers[i])))) ||
               (prior.sealed && (!draft.sealed || !samePayload(prior, draft)))))
             throw fail('Another save has already frozen this quiz. The existing recovery copy was preserved.',
               'KG_QUIZ_DRAFT_CONFLICT', 'storage-error');
@@ -182,8 +220,8 @@
       list(ownerId, languageCode, kind) {
         if (!text(ownerId)) return [];
         try {
-          const drafts = [], prefixes = kind == null ? [ownerPrefix(ownerId), ownerPrefix(ownerId, TIMED_PREFIX)]
-            : [ownerPrefix(ownerId, timed(kind) ? TIMED_PREFIX : PREFIX)];
+          const drafts = [], prefixes = kind == null ? [PREFIX, TIMED_PREFIX, COLOUR_PREFIX].map(prefix => ownerPrefix(ownerId, prefix))
+            : [ownerPrefix(ownerId, prefixFor(kind))];
           for (let index = 0; index < target.length; index++) {
             const key = target.key(index);
             if (typeof key !== 'string' || !prefixes.some(prefix => key.startsWith(prefix))) continue;
@@ -298,6 +336,10 @@
       const revision = saveContext.revision;
       const result = await asOwner(() => {
         if (checkRoute() !== 'atomic') throw blocked('Quiz save route changed.', 'KG_QUIZ_CONTEXT_REQUIRED');
+        if (colour(draft.kind)) {
+          return client.rpc('kg_chart_f2_save_colour_quiz', { p_expected_revision: revision,
+            p_session: wireDraft.session, p_mode: wireDraft.colourMode, p_questions: wireDraft.answers });
+        }
         if (timed(draft.kind)) {
           if (draft.kind === 'typing' && draft.answers.some(answer => !answer.vocabulary_id || answer.sentence_id != null))
             throw blocked('Restricted timed typing requires original word identities. This draft is retained.', 'KG_QUIZ_CONTEXT_REQUIRED');
@@ -314,7 +356,9 @@
       }
       const receipt = result?.data;
       if (result?.saveDestination === 'device' || !record(receipt) ||
-          receipt.session_id !== draft.id || receipt.answer_count !== draft.answers.length ||
+          receipt.session_id !== draft.id ||
+          receipt[colour(draft.kind) ? 'question_count' : 'answer_count'] !== draft.answers.length ||
+          (colour(draft.kind) && receipt.correct_answers !== draft.session.correct_answers) ||
           receipt.expected_revision !== revision || (timed(draft.kind) &&
             receipt.time_spent_seconds !== draft.session.time_spent_seconds))
         throw fail('The atomic server receipt did not confirm this quiz. Your recovery copy is retained.', 'KG_QUIZ_UNCONFIRMED');
@@ -377,16 +421,19 @@
       if (route === 'atomic') await saveAtomic();
       else {
         await insert('session', [draft.session]);
-        await insert('answers', draft.answers);
+        // Legacy schemas and the old offline outbox support only colour summaries.
+        // Never misrepresent phrase evidence as ordinary vocabulary answers.
+        if (!colour(draft.kind)) await insert('answers', draft.answers);
       }
       await assertOwner();
       if (checkRoute() !== route) throw blocked('Quiz save route changed. The recovery copy is retained.', 'KG_QUIZ_CONTEXT_REQUIRED');
       const status = destination === 'device' ? 'queued' : 'saved';
+      const summaryOnly = colour(draft.kind) && route === 'legacy';
       try { store.remove(draft); }
       catch (_) {
-        return { status, draft, warning: 'Results were saved, but the recovery copy could not be removed. A later retry will reuse the same record IDs.' };
+        return { status, draft, ...(summaryOnly ? {summaryOnly:true} : {}), warning: 'Results were saved, but the recovery copy could not be removed. A later retry will reuse the same record IDs.' };
       }
-      return { status, draft };
+      return { status, draft, ...(summaryOnly ? {summaryOnly:true} : {}) };
     } catch (error) {
       return { status: permissionDenied(error) ? 'blocked' : error?.status === 'storage-error' ? 'storage-error' : 'pending',
         draft, error: { code: error?.code || 'KG_QUIZ_SAVE_FAILED',
@@ -415,5 +462,5 @@
   }
 
   root.KGQuizSave = { createStore, save, validateDraft, sameField, missingOptionalColumn,
-    captureContext, atomicLimit: ATOMIC_LIMIT, storagePrefix: PREFIX, timedStoragePrefix: TIMED_PREFIX };
+    captureContext, atomicLimit: ATOMIC_LIMIT, storagePrefix: PREFIX, timedStoragePrefix: TIMED_PREFIX, colourStoragePrefix: COLOUR_PREFIX };
 })(typeof window !== 'undefined' ? window : globalThis);

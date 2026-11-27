@@ -30,12 +30,18 @@ function installFakeClient() {
     language_code: 'my', group_name: 'Fictional group', native_text: `Sentence ${i}`,
     english_text: `Meaning ${i}`, sort_order: i, created_at: '2026-11-26T10:00:00.000Z',
   }));
+  const phrases = ['Red','Blue','Green','Yellow'].map((colour,i)=>({
+    id:'44000000-0000-4000-8000-'+String(i+1).padStart(12,'0'),
+    language_code:'my',native_text:'Colour fixture '+i,picture:'🍎',
+    colour:{english_text:colour,extra_data:{}},noun:{english_text:'Apple'}
+  }));
   let state = JSON.parse(localStorage.getItem(KEY) || 'null') || {
     owner, permitted: true, destination: null, faults: [], requests: [], callbacks: 0,
-    levelCalls: 0, ratingCalls: 0,
+    levelCalls: 0, ratingCalls: 0, colourReceipts: {},
     tables: {
       kg_chart_quiz_sessions: [], kg_chart_quiz_answers: [],
       kg_chart_sentences: sentences,
+      kg_chart_colour_phrases: phrases,
       kg_chart_user_levels: [{email: 'fixture@example.invalid', language_code: 'my', level: 1, unlocked: 1}],
     },
   };
@@ -57,6 +63,22 @@ function installFakeClient() {
   window.__fakeClient = {
     auth: {async getSession() { return {data: {session: {user: {id: state.owner}}}, error: null}; }},
     async rpc(name, args) {
+      if (name === 'kg_chart_f2_save_colour_quiz') {
+        const s=args.p_session,q=args.p_questions;
+        state.requests.push({table:name,args:copy(args)});persist();
+        assertFixture(s.user_id===state.owner && args.p_expected_revision===17 &&
+          s.total_questions===q.length && s.correct_answers===q.filter(row=>row.phrase_id===row.selected_phrase_id).length,
+          'Unexpected colour envelope');
+        const i=state.faults.findIndex(f=>f.table===name);
+        const fault=i<0?null:state.faults.splice(i,1)[0];persist();
+        if(fault?.mode==='deny')return {error:{code:'42501'}};
+        if(fault?.mode==='fail')return {error:{message:'Synthetic colour failure'}};
+        if(state.colourReceipts[s.id])assertFixture(JSON.stringify(state.colourReceipts[s.id])===JSON.stringify(args),'Changed evidence on retry');
+        else {state.colourReceipts[s.id]=copy(args);state.tables.kg_chart_quiz_sessions.push(copy(s));persist();}
+        if(fault?.mode==='lost-ack')return {error:{message:'Synthetic lost colour receipt'}};
+        return {data:{session_id:s.id,question_count:q.length,correct_answers:s.correct_answers,
+          expected_revision:17,time_spent_seconds:s.time_spent_seconds},error:null};
+      }
       if (name === 'kg_chart_f2_save_timed_quiz') {
         const session = args.p_session, answers = args.p_answers;
         state.requests.push({table:name,args:copy(args)}); persist();
@@ -175,6 +197,7 @@ const harness = `
                   vocabulary={fixtureWords} languageCode="my" user={fixtureUser} meaningName="English" accessPolicy={scope?.policy} />
               : kind === 'speaking' ? <SpeakView languageCode="my" user={fixtureUser} meaningName="English"
                   sentenceAccess={fixtureSentenceAccess} />
+              : kind === 'colour' ? <ColourQuizView languageCode="my" user={fixtureUser} />
               : <SentenceQuizView languageCode="my" user={fixtureUser} meaningName="English"
                   sentenceAccess={fixtureSentenceAccess} onSessionSaved={window.__kgF1.callback} />
               : <p>Outside quiz</p>}
@@ -451,6 +474,55 @@ try {
     db=await snapshot(page);
     assert.deepEqual(db.requests[0],db.requests[1]);
     assert.equal(db.tables[answers].length,4);
+  },true);
+  for(const [mode,label] of [['phrase_to_picture','Phrase → Picture'],['listen_to_picture','Listen → Picture'],['picture_to_phrase','Picture → Phrase']]) {
+    await scenario('F2E1c actual '+mode+': ordered visible options survive lost acknowledgement and reload', 'colour', async page => {
+      const rpc='kg_chart_f2_save_colour_quiz';
+      await page.evaluate(name=>window.__kgF1.fault(name,'lost-ack'),rpc);
+      await page.getByRole('button',{name:new RegExp(label)}).click();
+      await page.getByRole('button',{name:/^Start Quiz/}).click();
+      const evidence=[];
+      for(let i=0;i<4;i++){
+        const target=await page.locator('[data-colour-target]').getAttribute('data-colour-target');
+        const opts=await page.locator('[data-colour-option]').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('data-colour-option')));
+        const selected=opts[i%opts.length];
+        evidence.push({phrase_id:target,selected_phrase_id:selected,option_ids:opts});
+        await page.locator('[data-colour-option]').nth(i%opts.length).click();
+        await page.getByRole('button',{name:i===3?/See Results/:/Next →/}).click();
+      }
+      await unsaved(page);
+      let db=await snapshot(page);
+      assert.equal(db.requests.length,1);
+      const original=db.requests[0];
+      assert.equal(original.table,rpc);
+      assert.equal(original.args.p_mode,mode);
+      assert.deepEqual(original.args.p_questions.map(({answered_at,...q})=>q),evidence);
+      assert.equal(original.args.p_session.correct_answers,evidence.filter(q=>q.phrase_id===q.selected_phrase_id).length);
+      assert.equal(db.tables[answers].length,0);
+      await page.reload({waitUntil:'load'});
+      await page.getByRole('region',{name:'Quiz save recovery'}).getByRole('button',{name:'Retry save',exact:true}).click();
+      await page.getByText('✓ Results saved',{exact:true}).waitFor();
+      db=await snapshot(page);
+      assert.deepEqual(db.requests[0],db.requests[1]);
+      assert.equal(db.tables[sessions].length,1);
+      assert.equal(db.tables[answers].length,0);
+      assert.equal(Object.keys(db.colourReceipts).length,1);
+    },true);
+  }
+  await scenario('F2E1c actual colour: partial evidence is recoverable after leaving, without invented questions', 'colour', async page => {
+    await page.getByRole('button',{name:/^Start Quiz/}).click();
+    const target=await page.locator('[data-colour-target]').getAttribute('data-colour-target');
+    await page.locator('[data-colour-option]').first().click();
+    await page.getByRole('button',{name:'← Back',exact:true}).click();
+    await page.getByRole('region',{name:'Quiz save recovery'}).waitFor();
+    await page.reload({waitUntil:'load'});
+    await page.getByRole('region',{name:'Quiz save recovery'}).getByRole('button',{name:'Retry save',exact:true}).click();
+    await page.getByText('✓ Results saved',{exact:true}).waitFor();
+    const db=await snapshot(page);
+    assert.equal(db.requests.length,1);
+    assert.equal(db.requests[0].args.p_questions.length,1);
+    assert.equal(db.requests[0].args.p_questions[0].phrase_id,target);
+    assert.equal(db.tables[answers].length,0);
   },true);
   console.log(`U4B2B3D_RENDERED_QUIZ_UI_PASS: ${passed} scenarios; isolated fictional clients; physical devices not tested`);
 } finally {
