@@ -2939,6 +2939,10 @@
           else if (success) setRecoveryResult(result);
           refresh();
         }
+        if(result.status==='saved'&&result.draft.saveContext?.mode==='restricted'&&
+           (result.draft.kind==='word'||result.draft.session.quiz_type==='typing_recall'))
+          window.dispatchEvent(new CustomEvent('kg-path-evidence-confirmed',{detail:{ownerId:result.draft.ownerId,
+            languageCode:result.draft.languageCode,revision:result.draft.saveContext.revision}}));
         // Saving is already complete. A later progress-refresh error must not repeat the writes.
         // Restricted automatic ratings/advancement/topic writes still use older
         // consumers. F2E2 must integrate them before restricted activation.
@@ -6402,17 +6406,202 @@
       }, [scope, snapshot]);
     }
 
-    function useLearningPath({ user, languageCode, topics, vocabulary, rules }) {
+    // F2E2b: this hook is inactive for the activation-off legacy path.
+    function useRestrictedCompletionPath({user,languageCode,policy}) {
+      const restricted=policy?.state==='restricted';
+      const identity=JSON.stringify([user?.id,languageCode,policy?.state,policy?.revision]);
+      const live=React.useRef(null),mounted=React.useRef(true);
+      const token=live.current?.identity===identity?live.current.token:{};
+      live.current={identity,token,ownerId:user?.id,languageCode,policy};
+      const current=k=>mounted.current&&live.current.token===k;
+      const [record,setRecord]=useState(null),[pending,setPending]=useState(null);
+      const [notice,setNotice]=useState(null),[busy,setBusy]=useState(false);
+      const [confirmation,setConfirmation]=useState(null),[observed,setObserved]=useState(null);
+      const [tick,setTick]=useState(0);
+      const action=React.useRef(null),loadSequence=React.useRef(0);
+      const store=useMemo(()=>window.KGCompletionSave.createStore({storage:{
+        get length(){return window.localStorage.length;},key:i=>window.localStorage.key(i),
+        getItem:k=>window.localStorage.getItem(k),setItem:(k,v)=>window.localStorage.setItem(k,v),
+        removeItem:k=>window.localStorage.removeItem(k)
+      }}),[]);
+      const target={ownerId:user?.id,languageCode,revision:policy?.revision};
+      const options=k=>({client:supabase,store,getScope:()=>current(k)?live.current:null,
+        offlineClient:window.KGOffline?.client===supabase});
+      const report=(k,message)=>{if(current(k))setNotice({token:k,message});};
+      const refresh=useCallback(()=>{setConfirmation(null);setTick(n=>n+1);},[]);
+      const refreshPending=useCallback(()=>{
+        if(!restricted||!user?.id||!languageCode||!current(token))return;
+        try{setPending({token,events:store.list(user.id,languageCode),error:false});}
+        catch(_){setPending({token,events:[],error:true});}
+      },[token]);
+      useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+      useEffect(()=>{
+        setBusy(false);refreshPending();
+        if(!restricted)return;
+        const evidence=event=>{
+          const d=event.detail;
+          if(d?.ownerId===user?.id&&d.languageCode===languageCode&&d.revision===policy.revision)refresh();
+        };
+        window.addEventListener('kg-path-evidence-confirmed',evidence);
+        window.addEventListener('focus',refresh);
+        window.addEventListener('online',refresh);
+        window.addEventListener('storage',refreshPending);
+        return ()=>{
+          window.removeEventListener('kg-path-evidence-confirmed',evidence);
+          window.removeEventListener('focus',refresh);window.removeEventListener('online',refresh);
+          window.removeEventListener('storage',refreshPending);
+          if(action.current?.token===token)action.current=null;
+        };
+      },[token]);
+      useEffect(()=>{
+        if(!restricted||!user?.id||!languageCode)return;
+        const n=++loadSequence.current;let cancelled=false;
+        const valid=()=>!cancelled&&current(token)&&loadSequence.current===n;
+        (async()=>{
+          try{
+            const o=options(token),snapshot=await window.KGCompletionSave.read(o,target);
+            // Historical answers remain a separate strength/history source,
+            // never evidence for a new restricted completion.
+            const ans=await supabase.rpc('kg_chart_my_answers',{p_lang:languageCode});
+            const verified=await supabase.auth.getSession();
+            if(!valid())return;
+            if(verified?.error||verified?.data?.session?.user?.id!==user.id)
+              throw Error('Signed-in account changed.');
+            setRecord({token,snapshot,answers:!ans.error&&Array.isArray(ans.data)?ans.data:[],error:null});
+            if(ans.error)report(token,'Completion state verified; historical answers could not be loaded.');
+          }catch(error){
+            if(valid())setRecord({token,snapshot:null,answers:[],error:error?.message||'Learning path unavailable.'});
+          }
+        })();
+        return()=>{cancelled=true;};
+      },[token,tick]);
+      const state=record?.token===token?record:null;
+      const snapshot=state?.snapshot||null;
+      const events=pending?.token===token?pending.events:[];
+      const begin=()=>{
+        if(!restricted||!current(token)||action.current)return null;
+        const x={token};action.current=x;setBusy(true);return x;
+      };
+      const end=x=>{
+        if(action.current===x){action.current=null;if(current(token))setBusy(false);}
+      };
+      const apply=(x,snap)=>{
+        if(!current(x.token))return;
+        // Invalidate any earlier load so an old snapshot cannot overwrite
+        // the verified readback after a completion or reset.
+        ++loadSequence.current;
+        setRecord(old=>({token:x.token,snapshot:snap,answers:old?.token===x.token?old.answers:[],error:null}));
+      };
+      const finish=async(x,event)=>{
+        const result=await window.KGCompletionSave.save(options(x.token),event);
+        if(!current(x.token))return;
+        if(result.status==='saved'||result.status==='superseded'){
+          apply(x,result.current);
+          report(x.token,result.status==='saved'?'Topic completion confirmed by the server.':'Original completion acknowledged; newer confirmed state shown.');
+          if(result.status==='saved')setConfirmation({token:x.token,event,version:result.receipt.event_version});
+        }else{
+          setConfirmation(null);
+          report(x.token,result.error?.message||'Original completion retained.');
+          // Recheck current state without ever replacing the pending event.
+          try{const snap=await window.KGCompletionSave.read(options(x.token),target);apply(x,snap);}
+          catch(error){if(current(x.token))setRecord({token:x.token,snapshot:null,answers:[],error:error?.message||'Learning path unavailable.'});}
+        }
+        refreshPending();
+      };
+      const complete=async id=>{
+        if(!snapshot)return;
+        const x=begin();if(!x)return;
+        try{
+          // Freeze the displayed server baseline, never a newly generated
+          // client clock timestamp. No RPC if durable storage fails.
+          const event=store.put(store.make(target,snapshot,id));
+          refreshPending();
+          await finish(x,event);
+        }catch(error){report(x.token,'No new completion was confirmed. '+(error?.message||'Recovery storage unavailable.'));refreshPending();}
+        finally{end(x);}
+      };
+      const retry=async event=>{
+        if(event.ownerId!==user?.id||event.languageCode!==languageCode)return;
+        const x=begin();if(!x)return;
+        try{await finish(x,event);}finally{end(x);}
+      };
+      const inspect=async(event,archive=false)=>{
+        if(event.ownerId!==user?.id||event.languageCode!==languageCode)return;
+        const x=begin();if(!x)return;
+        try{
+          const snap=await window.KGCompletionSave.read(options(x.token),target);
+          if(!current(x.token))return;
+          apply(x,snap);setConfirmation(null);
+          if(archive){
+            const row=snap.topics.find(t=>t.topic_id===event.topicId);
+            if(observed?.token!==token||observed.eventId!==event.eventId||
+               observed.snapshot.reset_at!==snap.reset_at||
+               observed.snapshot.topics.find(t=>t.topic_id===event.topicId)?.version!==row?.version)
+              throw Error('State changed; review it again. Original request retained.');
+            store.archive(event,snap,target);setObserved(null);refreshPending();
+            report(x.token,'Obsolete request archived on this device. Current server progress kept.');
+          }else setObserved({token,eventId:event.eventId,snapshot:snap});
+        }catch(error){report(x.token,error?.message||'Unable to verify current progress.');}
+        finally{end(x);}
+      };
+      const download=event=>{
+        const url=URL.createObjectURL(new Blob([JSON.stringify(event,null,2)],{type:'application/json'}));
+        const a=document.createElement('a');a.href=url;a.download='kg-completion-'+event.eventId+'.json';
+        a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+      };
+      return {restricted,snapshot,answers:state?.answers||[],loading:restricted&&!!user?.id&&!!languageCode&&!state,
+        error:state?.error||null,events,storageError:pending?.token===token&&pending.error,
+        notice:notice?.token===token?notice.message:null,busy,complete,retry,inspect,download,refresh,
+        observed:observed?.token===token?observed:null,confirmation:confirmation?.token===token?confirmation:null,
+        dismiss:()=>setConfirmation(null)};
+    }
+
+    function CompletionRecoveryPanel({flow,topics}) {
+      if(!flow?.restricted)return null;
+      const name=id=>topics.find(t=>t.id===id)?.translation?.title_native||'Selected topic';
+      const ready=(flow.snapshot?.topics||[]).filter(t=>!t.complete&&t.eligible_at!==null&&
+        topics.some(topic=>topic.id===t.topic_id)&&!flow.events.some(e=>e.topicId===t.topic_id));
+      return <section aria-label="Topic completion recovery" className="max-w-3xl mx-auto my-3 p-4 rounded-xl border border-amber-200 bg-amber-50 text-sm">
+        {flow.error&&<p role="alert">Learning path unavailable: {flow.error} Your saved work has not been cleared.</p>}
+        {flow.storageError&&<p role="alert">Completion recovery could not be read. No records were removed.</p>}
+        {flow.notice&&<p role="status">{flow.notice}</p>}
+        {ready.map(t=><div key={t.topic_id} className="py-2">
+          <p>{name(t.topic_id)} · required confirmed answers reached.</p>
+          <button disabled={flow.busy||flow.storageError} onClick={()=>flow.complete(t.topic_id)} className="mt-2 px-3 py-2 bg-jade-600 text-white rounded-lg">Confirm completion</button>
+        </div>)}
+        {flow.events.map(event=>{
+          const obs=flow.observed?.eventId===event.eventId?flow.observed.snapshot:null;
+          const row=obs?.topics.find(t=>t.topic_id===event.topicId);
+          const obsolete=obs&&(row?.version>event.expectedVersion||obs.reset_at!==null&&Date.parse(obs.reset_at)>Date.parse(event.evidenceAt));
+          return <div key={event.eventId} className="border-t border-amber-200 py-3">
+            <p className="font-medium">{name(event.topicId)} · original completion pending</p>
+            <p>Original version {event.expectedVersion} · permission revision {event.revision}</p>
+            <div className="flex flex-wrap gap-2 mt-2">
+              <button disabled={flow.busy} onClick={()=>flow.retry(event)} className="px-3 py-2 bg-amber-100 rounded-lg">Retry original completion</button>
+              <button disabled={flow.busy} onClick={()=>flow.inspect(event)} className="px-3 py-2 bg-white rounded-lg">Review current progress</button>
+              <button onClick={()=>flow.download(event)} className="px-3 py-2 bg-white rounded-lg">Download pending completion</button>
+            </div>
+            {obs&&<p className="mt-2">Current state: {row?.complete?'confirmed complete':'not confirmed'} · version {row?.version??'unavailable'}</p>}
+            {obsolete&&<button disabled={flow.busy} onClick={()=>flow.inspect(event,true)} className="mt-2 px-3 py-2 bg-white rounded-lg">Archive obsolete completion</button>}
+          </div>;
+        })}
+        <button disabled={flow.busy} onClick={flow.refresh} className="mt-2 px-3 py-2 bg-white rounded-lg">Refresh confirmed progress</button>
+      </section>;
+    }
+
+    function useLearningPath({ user, languageCode, topics, vocabulary, rules, policy }) {
+      const completionFlow=useRestrictedCompletionPath({user,languageCode,policy});
+      const restricted=completionFlow.restricted;
       const [raw, setRaw] = useState(null);
       const [tick, setTick] = useState(0);
       const [celebration, setCelebration] = useState(null);
       const recordedRef = React.useRef(new Set());
-      const refresh = useCallback(() => setTick(n => n + 1), []);
+      const refresh = useCallback(() => {if(restricted)completionFlow.refresh();else setTick(n => n + 1);},[restricted,completionFlow.refresh]);
 
-      useEffect(() => { setRaw(null); recordedRef.current = new Set(); }, [user?.id, languageCode]);
+      useEffect(() => { setRaw(null); recordedRef.current = new Set(); setCelebration(null); }, [user?.id, languageCode, restricted, policy?.revision]);
 
       useEffect(() => {
-        if (!user || !languageCode) return;
+        if (restricted || !user || !languageCode) return;
         let cancelled = false;
         const email = (user.email || '').toLowerCase();
         Promise.all([
@@ -6436,28 +6625,38 @@
           });
         });
         return () => { cancelled = true; };
-      }, [user, languageCode, tick]);
+      }, [user, languageCode, tick, restricted, policy?.revision]);
 
+      const verifiedPath=completionFlow.snapshot;
       const computed = useMemo(() => {
-        const visible = topics.filter(t => !t.is_hidden);
+        const permitted=restricted?new Set((verifiedPath?.topics||[]).map(t=>t.topic_id)):null;
+        const visible = topics.filter(t => !t.is_hidden&&(!restricted||permitted.has(t.id)));
+        const activeRules=restricted&&verifiedPath
+          ? {quizTypes:verifiedPath.rules.quiz_types,minAttempts:verifiedPath.rules.min_attempts}
+          : rules;
         const visibleIds = new Set(visible.map(t => t.id));
         const visibleVocab = vocabulary.filter(v => visibleIds.has(v.topic_id));
         const resetAt = raw?.resetAt || 0;
         const attempts = {};
         const counts = {}; // word id -> quiz type -> answers since last reset (drives unlocking)
-        (raw?.answers || []).forEach(a => {
+        (restricted?completionFlow.answers:(raw?.answers || [])).forEach(a => {
           if (STRENGTH_IGNORED_TYPES.includes(a.quiz_type)) return;
           const id = String(a.vocabulary_id);
           const ts = Date.parse(a.answered_at) || 0;
           const w = (attempts[id] = attempts[id] || {});
           (w[a.quiz_type] = w[a.quiz_type] || []).push({ c: !!a.is_correct, t: ts });
-          if (ts > resetAt) { const c = (counts[id] = counts[id] || {}); c[a.quiz_type] = (c[a.quiz_type] || 0) + 1; }
+          if (!restricted&&ts > resetAt) { const c = (counts[id] = counts[id] || {}); c[a.quiz_type] = (c[a.quiz_type] || 0) + 1; }
         });
-        const stepsPerWord = rules.quizTypes.length * rules.minAttempts;
-        const wordSteps = (id) => rules.quizTypes.reduce((s, q) => s + Math.min(counts[id]?.[q] || 0, rules.minAttempts), 0);
+        if(restricted)for(const row of verifiedPath?.counts||[]){
+          const c=counts[row.vocabulary_id]||(counts[row.vocabulary_id]={});c[row.quiz_type]=row.count;
+        }
+        const stepsPerWord = activeRules.quizTypes.length * activeRules.minAttempts;
+        const wordSteps = (id) => activeRules.quizTypes.reduce((s, q) => s + Math.min(counts[id]?.[q] || 0, activeRules.minAttempts), 0);
         const wordDone = (id) => wordSteps(id) === stepsPerWord;
-        const open = !raw?.ready || raw?.bypass;
-        const done = new Set((raw?.completions || []).filter(c => (Date.parse(c.completed_at) || 0) > resetAt).map(c => c.topic_id));
+        const open = !restricted&&(!raw?.ready || raw?.bypass);
+        const done = new Set(restricted?(verifiedPath?.topics||[]).filter(t=>t.complete).map(t=>t.topic_id):
+          (raw?.completions || []).filter(c => (Date.parse(c.completed_at) || 0) > resetAt).map(c => c.topic_id));
+        const manualIds=restricted?new Set(verifiedPath?.unlocks||[]):raw?.unlocks;
         const status = {};
         const newlyComplete = [];
         let prevComplete = true;
@@ -6466,9 +6665,9 @@
           if (!words.length) { status[t.id] = { unlocked: true, complete: true, faced: 0, total: 0, steps: 0, stepsTotal: 0, empty: true }; return; }
           const facedCount = words.filter(w => wordDone(String(w.id))).length;
           const steps = words.reduce((s, w) => s + wordSteps(String(w.id)), 0);
-          const nowComplete = raw?.ready && facedCount === words.length;
+          const nowComplete = !restricted&&raw?.ready && facedCount === words.length;
           const complete = done.has(t.id) || !!nowComplete;
-          const manual = !!raw?.unlocks?.has(t.id);
+          const manual = !!manualIds?.has(t.id);
           if (nowComplete && !done.has(t.id)) newlyComplete.push(t.id);
           status[t.id] = { unlocked: open || prevComplete || manual || complete, complete, faced: facedCount, total: words.length, steps, stepsTotal: words.length * stepsPerWord, manual };
           // Personal name typing is extra practice; it must not gate the next regular topic.
@@ -6477,11 +6676,11 @@
         const annotated = visible.map(t => ({ ...t, locked: !status[t.id].unlocked }));
         const unlockedIds = new Set(annotated.filter(t => !t.locked).map(t => t.id));
         const unlockedVocab = visibleVocab.filter(v => unlockedIds.has(v.topic_id));
-        return { topics: annotated, status, attempts, counts, visibleVocab, unlockedVocab, newlyComplete, enabled: !!raw?.ready && !raw?.bypass, bypass: !!raw?.bypass };
-      }, [topics, vocabulary, raw, rules]);
+        return { topics: annotated, status, attempts, counts, visibleVocab, unlockedVocab, newlyComplete, enabled: restricted?!!verifiedPath:!!raw?.ready && !raw?.bypass, bypass: !restricted&&!!raw?.bypass };
+      }, [topics, vocabulary, raw, rules, restricted, verifiedPath, completionFlow.answers]);
 
       useEffect(() => {
-        if (!user || !computed.newlyComplete.length) return;
+        if (restricted || !user || !computed.newlyComplete.length) return;
         const fresh = computed.newlyComplete.filter(id => !recordedRef.current.has(id));
         if (!fresh.length) return;
         fresh.forEach(id => recordedRef.current.add(id));
@@ -6492,9 +6691,23 @@
         const idx = computed.topics.findIndex(t => t.id === fresh[fresh.length - 1]);
         const next = computed.topics.slice(idx + 1).find(t => !computed.status[t.id].complete && !computed.status[t.id].empty);
         setCelebration({ topic: computed.topics[idx], next });
-      }, [computed]);
+      }, [computed, restricted]);
 
-      return { ...computed, loading: !!user && !raw, refresh, celebration, dismissCelebration: () => setCelebration(null) };
+      // Only present a restricted celebration for the exact current
+      // acknowledged completion; an old receipt or a reset cannot reopen it.
+      let confirmedCelebration=null;
+      const conf=completionFlow.confirmation;
+      if(restricted&&conf&&verifiedPath?.reset_at===conf.event.resetAt){
+        const row=verifiedPath.topics.find(t=>t.topic_id===conf.event.topicId);
+        const idx=computed.topics.findIndex(t=>t.id===conf.event.topicId);
+        if(row?.complete&&row.version===conf.version&&row.completed_at===conf.event.evidenceAt&&idx>=0){
+          const next=computed.topics.slice(idx+1).find(t=>!computed.status[t.id].empty&&!computed.status[t.id].complete);
+          confirmedCelebration={topic:computed.topics[idx],next:next&&!next.locked?next:null};
+        }
+      }
+      return {...computed,completionFlow,loading:restricted?completionFlow.loading:!!user&&!raw,
+        error:restricted?completionFlow.error:null,refresh,celebration:restricted?confirmedCelebration:celebration,
+        dismissCelebration:restricted?completionFlow.dismiss:()=>setCelebration(null)};
     }
 
     function LockedTopicPanel({ topic, prevTopic, prevStatus, fontClass, onGoQuiz }) {
@@ -6804,7 +7017,7 @@
           .filter(v => !priv.topics.has(v.topic_id)) : [],
           [policy, selectedLanguage, allVocabulary, topics, priv]);
       const { ratings, ratingsLoaded, updateRating, clearRating, ratingFlow } = useUserRatings(selectedLanguage, policy);
-      const path = useLearningPath({ user, languageCode: selectedLanguage, topics, vocabulary, rules });
+      const path = useLearningPath({ user, languageCode: selectedLanguage, topics, vocabulary, rules, policy });
       const visibleTopics = path.topics;
       const fontClassApp = LANGUAGE_FONTS[selectedLanguage] || 'font-body';
 
@@ -6869,6 +7082,7 @@
 
           <PictureDownloads vocabulary={vocabulary} loading={loadingVocab || !priv.loaded} />
           <RatingRecoveryPanel flow={ratingFlow} vocabulary={vocabulary} />
+          <CompletionRecoveryPanel flow={path.completionFlow} topics={topics} />
 
           {selectedView === 'chart' && !loadingTopics && visibleTopics.length > 0 && (
             <TopicNav topics={visibleTopics} activeTopic={activeTopic} onSelect={setActiveTopic} showEnglish={showEnglish} pathStatus={path.enabled ? path.status : null} />
@@ -6881,6 +7095,8 @@
                 <strong>Private lesson access could not be verified.</strong>
                 <p className="mt-2 text-sm">Reconnect and reopen this study page. Your progress and downloaded packs have not been cleared.</p>
               </div>
+            ) : path.error ? (
+              <div role="alert" className="max-w-2xl mx-auto p-6">Confirmed learning path unavailable. Reconnect and refresh progress.</div>
             ) : (loadingTopics || loadingVocab || path.loading || !priv.loaded || !rules.loaded) ? (
               <div className="py-12"><LoadingSpinner message="Loading vocabulary..." /></div>
             ) : (

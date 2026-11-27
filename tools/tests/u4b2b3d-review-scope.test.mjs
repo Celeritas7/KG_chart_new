@@ -47,3 +47,10 @@ test('F2E2a admits reviewed rating hook and exact wiring only',()=>{
   assert.throws(()=>assertF1ReviewScope(source,source.replace('    function useUserRatings(','    function RenamedRatings(')));
   assert.throws(()=>assertF1ReviewScope(source,source.replace("restrictedRatings={policy.state === 'restricted'}","restrictedRatings={true}")));
 });
+
+test('F2E2b keeps the path recovery change bounded',()=>{
+  const edited=source.replace('Topic completion confirmed by the server.','Confirmed topic completion.');
+  assert.notEqual(edited,source);
+  assert.doesNotThrow(()=>assertF1ReviewScope(source,edited));
+  assert.throws(()=>assertF1ReviewScope(source,source.replace('function LockedTopicPanel({','function LockedTopicPanel(/* changed */{')));
+});

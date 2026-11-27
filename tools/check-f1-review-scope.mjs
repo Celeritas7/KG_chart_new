@@ -7,6 +7,7 @@ import {execFileSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 
 const ranges = [
+  ['    function useLearningPath(', '\n    function LockedTopicPanel('],
   ['    function useUserRatings(', '\n    // ==========================================\n    // COMPONENTS'],
   ['    function FlashcardView(', '\n    function ProgressView('],
   // F2E1b/c: explicitly reviewed timed and colour producers only; keep Say It,
@@ -57,6 +58,25 @@ export function normalizeF1Source(input) {
     [" restrictedRatings={policy.state === 'restricted'} />",' />'],
   ];
   for(const [next,old] of ratingWiring){
+    uniquePosition(source,next,true);source=source.replace(next,old);
+  }
+  // F2E2b: restricted path helper and recovery panel, exact callsite only.
+  const completionStart = '    // F2E2b: this hook is inactive for the activation-off legacy path.';
+  const at = uniquePosition(source, completionStart, true);
+  if(at!==-1){
+    // Locate the end via the unchanged LockedTopicPanel boundary rather than
+    // any other reviewed component placeholder.
+    const boundary=uniquePosition(source,'\n    function LockedTopicPanel(');
+    assert(boundary>at);
+    source=source.slice(0,at)+'    /* reviewed F1 component */\n'+source.slice(boundary);
+  }
+  const completionWiring=[
+    ['const path = useLearningPath({ user, languageCode: selectedLanguage, topics, vocabulary, rules, policy });',
+      'const path = useLearningPath({ user, languageCode: selectedLanguage, topics, vocabulary, rules });'],
+    ['          <CompletionRecoveryPanel flow={path.completionFlow} topics={topics} />\n',''],
+    ['            ) : path.error ? (\n              <div role="alert" className="max-w-2xl mx-auto p-6">Confirmed learning path unavailable. Reconnect and refresh progress.</div>\n',''],
+  ];
+  for(const [next,old] of completionWiring){
     uniquePosition(source,next,true);source=source.replace(next,old);
   }
   uniquePosition(source, sentenceWiring, true);
