@@ -91,6 +91,8 @@ def main():
     denied(IDENTITY+f"SELECT {READ}({rev},'*');","42501")
     denied(ADMIN+call(1,"manual_unlock",[unlock(rev,topic="friends_names")]),"42501")
     denied(ADMIN+call(1,"manual_unlock",[unlock(rev,lang="ja")]),"42501")
+    # Canonically equivalent UUID spellings are still the same target.
+    denied(ADMIN+call(1,"manual_unlock",[unlock(rev),unlock(rev,owner=UID.upper())]),"22023")
     absent(1)
     # Atomic batch: valid first target + invalid second baseline rolls back.
     pair=[unlock(rev,lang="*"),unlock(other-1,OTHER,topic="colours")]
@@ -220,8 +222,10 @@ def main():
           OR EXISTS(SELECT 1 FROM {U} WHERE email='{OTHER_EMAIL}')
         THEN RAISE EXCEPTION 'legacy path history isolation failed'; END IF;
       END $$; ROLLBACK;""")
-    assert row_count(E)==9
-    assert row_count(E,f"actor_id='{ADMIN_ID}'")==9
+    expected_ids=sorted(event(n) for n in (2,3,4,5,7,9,10,11))
+    actual_ids=json.loads(value(f"SELECT jsonb_agg(event_id ORDER BY event_id) FROM {E} WHERE actor_id='{ADMIN_ID}';"))
+    assert actual_ids==expected_ids,actual_ids
+    assert row_count(E)==len(expected_ids)
     print("F2D3E2_ADMIN_BYPASS_AUDIT_LEGACY_AND_TARGETED_REVISION_PASS")
     print("F2D3E2_FIXTURE_ONLY_PASS: no live data, admin control or permission changes")
 

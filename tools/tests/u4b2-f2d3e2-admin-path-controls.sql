@@ -335,7 +335,7 @@ BEGIN
     results:=jsonb_build_array(jsonb_build_object('changed',changed,'before',before_state,
       'after',jsonb_build_object('enabled',enabled,'version',bypass_version)));
   ELSE
-    IF (SELECT count(DISTINCT value->>'owner_id') FROM jsonb_array_elements(p_changes))<>jsonb_array_length(p_changes) THEN
+    IF (SELECT count(DISTINCT (value->>'owner_id')::uuid) FROM jsonb_array_elements(p_changes))<>jsonb_array_length(p_changes) THEN
       RAISE EXCEPTION 'F2D3E2 one change per owner required' USING ERRCODE='22023';
     END IF;
     FOR item IN SELECT value FROM jsonb_array_elements(p_changes) ORDER BY (value->>'owner_id')::uuid LOOP
