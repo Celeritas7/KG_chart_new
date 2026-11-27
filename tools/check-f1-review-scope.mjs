@@ -7,6 +7,8 @@ import {execFileSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 
 const ranges = [
+  ['    function useUserRatings(', '\n    // ==========================================\n    // COMPONENTS'],
+  ['    function FlashcardView(', '\n    function ProgressView('],
   // F2E1b/c: explicitly reviewed timed and colour producers only; keep Say It,
   // pronunciation, colour rendering helpers, preferences and authorization outside.
   ['    function ColourQuizView(', '\n    // ==========================================\n    // TYPING TEST (timed)'],
@@ -45,6 +47,18 @@ export function normalizeF1Source(input) {
     assert(end > start, 'Invalid F1 source range: ' + startMarker);
     source = source.slice(0, start) + '    /* reviewed F1 component */\n' + source.slice(end);
   }
+  // Only the exact F2E2a AppContent rating wiring may change.
+  const ratingWiring = [
+    ['const { ratings, ratingsLoaded, updateRating, clearRating, ratingFlow } = useUserRatings(selectedLanguage, policy);',
+      'const { ratings, ratingsLoaded, updateRating, clearRating } = useUserRatings(selectedLanguage);'],
+    ['          <RatingRecoveryPanel flow={ratingFlow} vocabulary={vocabulary} />\n',''],
+    ["<FlashcardView key={\`${user?.id || 'guest'}:${selectedLanguage}:${policy.state === 'restricted' ? policy.revision : 'legacy'}\`} topics=",
+      '<FlashcardView key={selectedLanguage} topics='],
+    [" restrictedRatings={policy.state === 'restricted'} />",' />'],
+  ];
+  for(const [next,old] of ratingWiring){
+    uniquePosition(source,next,true);source=source.replace(next,old);
+  }
   uniquePosition(source, sentenceWiring, true);
   source = source.replace(sentenceWiring, 'sentenceAccess={props.sentenceAccess} />');
   uniquePosition(source, keyedQuiz, true);
@@ -54,7 +68,7 @@ export function normalizeF1Source(input) {
 export function assertF1ReviewScope(before, after) {
   assert(after.includes('const U3C1_SCOPED_UI_ENABLED = false;'), 'Restricted UI activation must remain OFF');
   assert.equal(normalizeF1Source(after), normalizeF1Source(before),
-    'Learner source outside the reviewed F1/F2E1b/c quiz/level/recovery regions changed; separate review is required');
+    'Learner source outside the reviewed F1/F2E1b/c/F2E2a quiz/level/rating/recovery regions changed; separate review is required');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
