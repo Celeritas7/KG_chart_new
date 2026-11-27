@@ -142,6 +142,11 @@ jobs:
           docker exec -i kg-u4b2-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d kg_u4b2_fixture < tools/tests/u4b2-f2d3d2-pronunciation-assessment.sql
           timeout 240s python3 tools/tests/u4b2-f2d3d2-pronunciation-assessment.py
           node --experimental-strip-types --test tools/tests/u4b2-f2d3d2-pronunciation-edge.test.mjs
+      - name: Verify F2D3D3 personal preferences candidate
+        run: |
+          set -euo pipefail
+          docker exec -i kg-u4b2-test-db psql -X -v ON_ERROR_STOP=1 -U postgres -d kg_u4b2_fixture < tools/tests/u4b2-f2d3d3-personal-preferences.sql
+          timeout 240s python3 tools/tests/u4b2-f2d3d3-personal-preferences.py
       - name: Destroy synthetic database
         if: always()
         run: docker rm -f kg-u4b2-test-db || true
