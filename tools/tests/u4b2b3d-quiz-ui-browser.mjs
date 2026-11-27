@@ -39,6 +39,7 @@ function installFakeClient() {
       kg_chart_user_levels: [{email: 'fixture@example.invalid', language_code: 'my', level: 1, unlocked: 1}],
     },
   };
+  const assertFixture = (condition, message) => { if (!condition) throw Error(message); };
   const persist = () => localStorage.setItem(KEY, JSON.stringify(state));
   persist();
   let release;
@@ -55,7 +56,24 @@ function installFakeClient() {
   window.__kgF1 = api;
   window.__fakeClient = {
     auth: {async getSession() { return {data: {session: {user: {id: state.owner}}}, error: null}; }},
-    async rpc(name) {
+    async rpc(name, args) {
+      if (name === 'kg_chart_f2_save_recovery_quiz') {
+        const d = args.p_draft;
+        state.requests.push({table: name, args: copy(args)}); persist();
+        assertFixture(d.sealed && args.p_expected_revision === 17 && d.ownerId === state.owner &&
+          !Object.hasOwn(d, 'saveContext'), 'Unexpected restricted wire envelope');
+        const faultIndex = state.faults.findIndex(fault => fault.table === name);
+        const fault = faultIndex >= 0 ? state.faults.splice(faultIndex, 1)[0] : null;
+        persist();
+        if (fault?.mode === 'deny') return {data: null, error: {code:'42501'}};
+        if (fault?.mode === 'fail') return {data: null, error: {message:'Synthetic connection failure'}};
+        if (!state.tables.kg_chart_quiz_sessions.some(row => row.id === d.id)) {
+          state.tables.kg_chart_quiz_sessions.push(copy(d.session));
+          state.tables.kg_chart_quiz_answers.push(...copy(d.answers)); persist();
+        }
+        if (fault?.mode === 'lost-ack') return {data: null, error: {message:'Synthetic atomic reply lost'}};
+        return {data:{session_id:d.id, answer_count:d.answers.length, expected_revision:17}, error:null};
+      }
       if (name !== 'kg_chart_check_level_up') throw Error('Unexpected fixture RPC: ' + name);
       state.levelCalls++; persist();
       return {data: 1, error: null};
@@ -123,7 +141,10 @@ const harness = `
     function QuizFixture() {
       const [shown, setShown] = useState(true);
       const kind = new URLSearchParams(location.search).get('kind') || 'word';
+      const restricted = new URLSearchParams(location.search).get('restricted') === 'yes';
+      const scope = restricted ? {ownerId:fixtureUser.id, policy:{state:'restricted', revision:17}} : null;
       return <AuthContext.Provider value={{ user: fixtureUser }}>
+        <KGMediaScopeContext.Provider value={scope}>
         <RulesContext.Provider value={fixtureRules}>
           <PrivateLessonsContext.Provider value={fixturePrivate}>
             <div aria-label="Fixture navigation">
@@ -140,6 +161,7 @@ const harness = `
               : <p>Outside quiz</p>}
           </PrivateLessonsContext.Provider>
         </RulesContext.Provider>
+        </KGMediaScopeContext.Provider>
       </AuthContext.Provider>;
     }
     ReactDOM.createRoot(document.getElementById('root')).render(<QuizFixture />);
@@ -175,7 +197,7 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 let browser;
 let passed = 0;
 const sessions = 'kg_chart_quiz_sessions', answers = 'kg_chart_quiz_answers';
-async function scenario(name, kind, run) {
+async function scenario(name, kind, run, restricted = false) {
   const context = await browser.newContext({serviceWorkers: 'block'});
   // Route applies to the whole disposable context. Only this local server may
   // receive requests; canonical converter startup requests are aborted.
@@ -185,7 +207,7 @@ async function scenario(name, kind, run) {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   try {
-    await page.goto(`${origin}/?kind=${kind}`, {waitUntil: 'load'});
+    await page.goto(`${origin}/?kind=${kind}${restricted ? '&restricted=yes' : ''}`, {waitUntil: 'load'});
     await page.getByRole('button', {name: /^Start Quiz/}).waitFor();
     await run(page);
     assert.deepEqual(errors, [], 'No uncaught errors in rendered canonical quiz');
@@ -342,6 +364,30 @@ try {
     await page.getByRole('button', {name: 'Retry save', exact: true}).click();
     await saved(page, 'word');
   });
+  for (const kind of ['word', 'sentence']) {
+    await scenario('F2E1a ' + kind + ': actual quiz uses atomic RPC and recovers a lost reply after reload', kind, async page => {
+      const rpc = 'kg_chart_f2_save_recovery_quiz';
+      await page.evaluate(name => window.__kgF1.fault(name, 'lost-ack'), rpc);
+      await complete(page, kind);
+      const pending = await unsaved(page);
+      assert.equal(pending.requests.length, 1);
+      assert.equal(pending.requests[0].table, rpc);
+      assert.equal(pending.tables[sessions].length, 1);
+      assert.equal(pending.tables[answers].length, 4);
+      await page.reload({waitUntil:'load'});
+      await page.getByRole('button', {name: /Retry save/}).first().click();
+      await page.getByText('✓ Results saved', {exact:true}).waitFor();
+      const db = await snapshot(page);
+      assert.equal(db.requests.length, 2);
+      assert.deepEqual(db.requests[0], db.requests[1]);
+      assert.equal(db.tables[sessions].length, 1);
+      assert.equal(db.tables[answers].length, 4);
+      assert.equal(db.callbacks, 0, 'Restricted progress consumers remain deferred to F2E2');
+      assert.equal(db.ratingCalls, 0);
+      assert.equal(db.levelCalls, 0);
+      assert.equal(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('kg-chart-quiz-recovery-v1:')).length), 0);
+    }, true);
+  }
   console.log(`U4B2B3D_RENDERED_QUIZ_UI_PASS: ${passed} scenarios; isolated fictional clients; physical devices not tested`);
 } finally {
   await browser?.close();

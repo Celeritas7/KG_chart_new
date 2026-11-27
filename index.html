@@ -2663,6 +2663,11 @@
 
     function useQuizSaving({ user, languageCode, kind, onSaved }) {
       const draftRef = React.useRef(null);
+      const scope = useContext(KGMediaScopeContext);
+      const accessRef = React.useRef(null);
+      accessRef.current = scope?.ownerId === user?.id && scope?.policy ? scope.policy
+        : !U3C1_SCOPED_UI_ENABLED && !scope ? U3C1_LEGACY_POLICY : null;
+      const restricted = accessRef.current?.state === 'restricted';
       const mounted = React.useRef(true);
       const onSavedRef = React.useRef(onSaved);
       onSavedRef.current = onSaved;
@@ -2695,7 +2700,8 @@
       }, [refresh]);
 
       const begin = session => {
-        draftRef.current = user ? quizSaveStore.start({ ownerId: user.id, languageCode, kind, session }) : null;
+        draftRef.current = user ? quizSaveStore.start({ ownerId: user.id, languageCode, kind, session,
+          saveContext: window.KGQuizSave.captureContext(accessRef.current) }) : null;
         setState({ status: 'idle' }); setRecoveryResult(null);
       };
       const record = answer => {
@@ -2730,7 +2736,8 @@
           draftRef.current = sealed; if (mounted.current) setState({ status: 'saving' });
         }
         quizRecoveryChanged();
-        const result = await window.KGQuizSave.save({ client: supabase, draft: sealed, store: quizSaveStore });
+        const result = await window.KGQuizSave.save({ client: supabase, draft: sealed, store: quizSaveStore,
+          getAccess: () => accessRef.current, offlineClient: window.KGOffline?.client === supabase });
         const success = result.status === 'saved' || result.status === 'queued';
         if (success) quizSaveMemory.delete(draft.id);
         else quizSaveMemory.set(draft.id, result.draft);
@@ -2742,7 +2749,9 @@
           refresh();
         }
         // Saving is already complete. A later progress-refresh error must not repeat the writes.
-        if (success) {
+        // Restricted automatic ratings/advancement/topic writes still use older
+        // consumers. F2E2 must integrate them before restricted activation.
+        if (success && result.draft.saveContext?.mode !== 'restricted') {
           try {
             const identity = await supabase.auth.getSession();
             if (!identity.error && identity.data?.session?.user?.id === result.draft.ownerId)
@@ -2765,7 +2774,7 @@
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       };
       return { begin, record, checkpoint, saveCurrent, retry, refresh, state, pending, recoveryError, recoveryResult,
-        draft: draftRef.current, download };
+        draft: draftRef.current, download, restricted };
     }
 
     function QuizSaveStatus({ state, onRetry, onDownload }) {
@@ -2784,6 +2793,9 @@
       return <div role={retryable ? 'alert' : 'status'} aria-live="polite" className={`text-sm my-4 ${success ? 'text-green-700' : 'text-amber-800'}`}>
         <p>{message}</p>
         {state?.warning && <p className="mt-1">{state.warning}</p>}
+        {retryable && ['KG_QUIZ_ACCESS_UNVERIFIED','KG_QUIZ_CONTEXT_REQUIRED','KG_QUIZ_STALE_REVISION',
+          'KG_QUIZ_OFFLINE_DEFERRED','KG_QUIZ_ATOMIC_LIMIT'].includes(state?.error?.code) &&
+          <p className="mt-1">{state.error.message}</p>}
         {(retryable || success && state?.warning && onRetry) && <div className="flex flex-wrap gap-3 justify-center mt-3">
           <button type="button" onClick={onRetry} className="px-4 py-2 bg-amber-100 rounded-xl font-medium">Retry save</button>
           {onDownload && <button type="button" onClick={onDownload} className="px-4 py-2 bg-gray-100 rounded-xl">Download answers</button>}
@@ -2912,11 +2924,14 @@
       pendingRef.current = quizStarted && !quizCompleted && quizAnswers.length ? { persistSession } : null;
       useEffect(() => () => { const p = pendingRef.current; if (p) p.persistSession(); window.KGAudio.stop(); }, []);
 
+      const wordTarget = dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length);
+      const wordTooLarge = saving.restricted && wordTarget > window.KGQuizSave.atomicLimit;
       const startQuiz = useCallback(() => {
+        if (wordTooLarge) return;
         saving.begin({ topic_id: quizTopic === 'all' || quizTopic === 'everything' ? null : quizTopic,
           quiz_type: quizType, ...(quizType === 'type_word' ? { quiz_level: twLevel } : {}),
           ...(isMcq ? { difficulty: L.n } : {}) });
-        const targetCount = dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length);
+        const targetCount = wordTarget;
         // All buckets: words you're still learning come up more often (weighted shuffle), well-known ones less
         const shuffled = quizBucket === 'all' ? weightedShuffle(playableVocab, v => BUCKET_WEIGHT[bucketOf(v)]) : shuffleArr(playableVocab);
         const selected = shuffled.slice(0, targetCount);
@@ -2948,7 +2963,7 @@
         setQuizLevelN(L.n);
         setQuizCompleted(false);
         setQuizStarted(true);
-      }, [playableVocab, topicVocab, pool, dailyTarget, isListen, languageCode, isMcq, L.n, L.choices, quizBucket, ratings, quizTopic, quizType, twLevel]);
+      }, [playableVocab, topicVocab, pool, dailyTarget, isListen, languageCode, isMcq, L.n, L.choices, quizBucket, ratings, quizTopic, quizType, twLevel, wordTarget, wordTooLarge]);
 
       const generateQuestion = useCallback(() => {
         if (pool.length < 4 || quizWords.length < 1 || currentWordIndex >= quizWords.length) {
@@ -3337,9 +3352,9 @@
                   </div>
                 )}
 
-                <button onClick={startQuiz} disabled={playableVocab.length < 1 || pool.length < 4 || (isMcq && !lv.loaded)}
+                <button onClick={startQuiz} disabled={wordTooLarge || playableVocab.length < 1 || pool.length < 4 || (isMcq && !lv.loaded)}
                   className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">
-                  {isMcq && !lv.loaded ? 'Loading your level…' : pool.length < 4 ? 'Need 4+ words total' : playableVocab.length < 1 ? (quizBucket === 'all' ? 'No words in topic' : 'No words in this bucket') : `Start Quiz (${dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length)} words)`}
+                  {wordTooLarge ? 'Choose a smaller target (maximum 500 answers)' : isMcq && !lv.loaded ? 'Loading your level…' : pool.length < 4 ? 'Need 4+ words total' : playableVocab.length < 1 ? (quizBucket === 'all' ? 'No words in topic' : 'No words in this bucket') : `Start Quiz (${wordTarget} words)`}
                 </button>
               </div>
             </div>
@@ -3928,6 +3943,7 @@
       const isBuild = sType === 'build_sentence';
       const needed = isBuild ? 1 : 4;
       const n = count === 0 ? filtered.length : Math.min(count, filtered.length);
+      const sentenceTooLarge = saving.restricted && n > window.KGQuizSave.atomicLimit;
 
       const persistSession = () => saving.saveCurrent();
 
@@ -3938,6 +3954,7 @@
       useEffect(() => () => { const p = pendingRef.current; if (p) p.persistSession(); window.KGAudio.stop(); }, []);
 
       const startQuiz = () => {
+        if (sentenceTooLarge) return;
         saving.begin({ topic_id: null, quiz_type: sType });
         const picked = shuffleArr(filtered).slice(0, n);
         const frozen = picked.map(s => {
@@ -4126,9 +4143,9 @@
                     <p className="text-xs text-gray-400 mt-2">{typeHelp}</p>
                   </div>
 
-                  <button onClick={startQuiz} disabled={n < 1 || all.length < needed}
+                  <button onClick={startQuiz} disabled={sentenceTooLarge || n < 1 || all.length < needed}
                     className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">
-                    {all.length < needed ? `Need ${needed}+ sentences` : n < 1 ? 'No sentences in group' : `Start Quiz (${n} sentences)`}
+                    {sentenceTooLarge ? 'Choose a smaller target (maximum 500 answers)' : all.length < needed ? `Need ${needed}+ sentences` : n < 1 ? 'No sentences in group' : `Start Quiz (${n} sentences)`}
                   </button>
                   <p className="text-xs text-gray-400 text-center">Sentence quizzes don't count toward unlocking topics.</p>
                 </div>

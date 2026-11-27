@@ -1,8 +1,9 @@
 /* U4B2B-3D F1: recoverable, immutable word/sentence quiz saves.
  * Recovery drafts have a separate owner-scoped namespace. This module never
  * edits existing study storage, downloaded packs, or the offline outbox.
- * INSERT authorization remains the server's responsibility; this client does
- * not replace the later transactional permission/revision protocol.
+ * Legacy INSERT authorization remains the server's responsibility. F2E1a
+ * uses the isolated F2D3A RPC contract for verified restricted online drafts.
+ * This is not a production migration or an offline queue conversion.
  */
 (function(root) {
   'use strict';
@@ -19,6 +20,8 @@
     sentence: ['sentence_to_meaning', 'meaning_to_sentence', 'build_sentence'],
   };
   const inFlight = new Map();
+  const ATOMIC_LIMIT = 500;
+  const ATOMIC_RPC = 'kg_chart_f2_save_recovery_quiz';
   const copy = value => JSON.parse(JSON.stringify(value));
   const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   const owns = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
@@ -32,11 +35,31 @@
   const ownerPrefix = ownerId => PREFIX + encodeURIComponent(ownerId) + ':';
   const draftKey = draft => ownerPrefix(draft.ownerId) + encodeURIComponent(draft.id);
 
+  // Local-only authorization provenance. The F2D3A wire envelope stays v1.
+  // Never assign a newer revision to already recorded work.
+  function captureContext(policy) {
+    if (policy?.state === 'legacy') return { mode: 'legacy' };
+    if (policy?.state === 'restricted' && Number.isSafeInteger(policy.revision) && policy.revision > 0)
+      return { mode: 'restricted', revision: policy.revision };
+    return { mode: 'unverified' };
+  }
+  function validContext(value) {
+    if (!record(value)) return false;
+    if (value.mode === 'restricted') return Object.keys(value).length === 2 &&
+      Number.isSafeInteger(value.revision) && value.revision > 0;
+    return ['legacy', 'unverified'].includes(value.mode) && Object.keys(value).length === 1;
+  }
+  function sameContext(left, right) {
+    return left?.mode === right?.mode && left?.revision === right?.revision &&
+      (left === undefined) === (right === undefined);
+  }
+
   function validateDraft(draft) {
     if (!record(draft) || draft.version !== 1 || !text(draft.id) || !text(draft.ownerId) ||
         !text(draft.languageCode, 32) || !owns(QUIZ_TYPES, draft.kind) || typeof draft.sealed !== 'boolean' ||
         !record(draft.session) || !keysAllowed(draft.session, SESSION_KEYS) ||
         !Array.isArray(draft.answers) || !record(draft.omittedColumns)) throw invalid();
+    if (owns(draft, 'saveContext') && !validContext(draft.saveContext)) throw invalid();
     const session = draft.session;
     if (session.id !== draft.id || session.user_id !== draft.ownerId ||
         session.language_code !== draft.languageCode || !QUIZ_TYPES[draft.kind].includes(session.quiz_type) ||
@@ -72,6 +95,7 @@
   function samePayload(left, right) {
     return record(left) && record(right) && left.id === right.id && left.ownerId === right.ownerId &&
       left.languageCode === right.languageCode && left.kind === right.kind &&
+      sameContext(left.saveContext, right.saveContext) &&
       JSON.stringify(left.session) === JSON.stringify(right.session) &&
       JSON.stringify(left.answers) === JSON.stringify(right.answers);
   }
@@ -88,13 +112,14 @@
       return draft;
     };
     return {
-      start({ ownerId, languageCode, kind, session }) {
+      start({ ownerId, languageCode, kind, session, saveContext }) {
         const at = now(), id = uuid();
         const draft = {
           version: 1, id, ownerId, languageCode, kind,
           session: { ...session, id, user_id: ownerId, language_code: languageCode,
             total_questions: 0, correct_answers: 0, created_at: at, completed_at: at },
           answers: [], sealed: false, omittedColumns: { session: [], answers: [] },
+          ...(saveContext === undefined ? {} : { saveContext: copy(saveContext) }),
         };
         return validateDraft(copy(draft));
       },
@@ -116,7 +141,8 @@
           const key = draftKey(draft), prior = read(key);
           // A stale component/tab must not replace a frozen request with a
           // different score or set of answers while that request is in flight.
-          if (prior?.sealed && (!draft.sealed || !samePayload(prior, draft)))
+          if (prior && (!sameContext(prior.saveContext, draft.saveContext) ||
+              (prior.sealed && (!draft.sealed || !samePayload(prior, draft)))))
             throw fail('Another save has already frozen this quiz. The existing recovery copy was preserved.',
               'KG_QUIZ_DRAFT_CONFLICT', 'storage-error');
           target.setItem(key, JSON.stringify(draft));
@@ -189,7 +215,7 @@
     )) || null;
   }
 
-  async function performSave({ client, draft: supplied, store }) {
+  async function performSave({ client, draft: supplied, store, getAccess, offlineClient = false }) {
     let draft = supplied;
     let destination = 'server';
     const denied = error => fail('Quiz saving is not currently permitted for this account. Your recovery copy is retained.',
@@ -212,6 +238,49 @@
       if (thrown) throw thrown;
       if (result?.saveDestination === 'device') destination = 'device';
       return result;
+    };
+    const blocked = (message, code) => fail(message, code, 'blocked');
+    const checkRoute = () => {
+      // Older callers/tests without an access callback retain the legacy F1
+      // contract. An actual restricted draft requires explicit verified scope.
+      const current = captureContext(getAccess ? getAccess() : { state: 'legacy' });
+      const original = draft.saveContext;
+      if (current.mode === 'unverified' || original?.mode === 'unverified')
+        throw blocked('Quiz permission provenance is unavailable. The original answers are retained.', 'KG_QUIZ_ACCESS_UNVERIFIED');
+      if (current.mode === 'restricted' || original?.mode === 'restricted') {
+        if (current.mode !== 'restricted' || original?.mode !== 'restricted')
+          throw blocked('This quiz has no matching original restricted permission revision. It requires reconciliation.', 'KG_QUIZ_CONTEXT_REQUIRED');
+        if (original.revision !== current.revision)
+          throw blocked('Permissions changed since this quiz began. The original revision and answers are retained.', 'KG_QUIZ_STALE_REVISION');
+        if (offlineClient)
+          throw blocked('Restricted offline quiz reconciliation is not available yet. The original answers are retained.', 'KG_QUIZ_OFFLINE_DEFERRED');
+        return 'atomic';
+      }
+      return 'legacy';
+    };
+    const saveAtomic = async () => {
+      if (draft.answers.length > ATOMIC_LIMIT)
+        throw blocked('This retained quiz exceeds the 500-answer atomic contract. It requires reconciliation, not splitting.', 'KG_QUIZ_ATOMIC_LIMIT');
+      if (typeof client.rpc !== 'function')
+        throw fail('Atomic quiz saving is unavailable. Your recovery copy is retained.', 'KG_QUIZ_RPC_UNAVAILABLE');
+      const { saveContext, ...wireDraft } = copy(draft);
+      const revision = saveContext.revision;
+      const result = await asOwner(() => {
+        if (checkRoute() !== 'atomic') throw blocked('Quiz save route changed.', 'KG_QUIZ_CONTEXT_REQUIRED');
+        return client.rpc(ATOMIC_RPC, { p_expected_revision: revision, p_draft: wireDraft });
+      });
+      if (result?.error) {
+        if (permissionDenied(result.error)) throw denied(result.error);
+        if (result.error.code === '40001')
+          throw blocked('The server rejected this original permission revision. The answers are retained.', 'KG_QUIZ_STALE_REVISION');
+        throw result.error;
+      }
+      const receipt = result?.data;
+      if (result?.saveDestination === 'device' || !record(receipt) ||
+          receipt.session_id !== draft.id || receipt.answer_count !== draft.answers.length ||
+          receipt.expected_revision !== revision)
+        throw fail('The atomic server receipt did not confirm this quiz. Your recovery copy is retained.', 'KG_QUIZ_UNCONFIRMED');
+      if (checkRoute() !== 'atomic') throw blocked('Quiz save route changed.', 'KG_QUIZ_CONTEXT_REQUIRED');
     };
     const payload = (type, rows) => rows.map(row => Object.fromEntries(Object.entries(row)
       .filter(([key]) => !draft.omittedColumns[type].includes(key))));
@@ -266,9 +335,14 @@
       if (!supplied.answers.length) throw fail('There are no recorded quiz answers to save.', 'KG_QUIZ_EMPTY', 'blocked');
       draft = { ...copy(supplied), sealed: true };
       store.write(draft); // No request may begin until the complete immutable work is durable.
-      await insert('session', [draft.session]);
-      await insert('answers', draft.answers);
+      const route = checkRoute();
+      if (route === 'atomic') await saveAtomic();
+      else {
+        await insert('session', [draft.session]);
+        await insert('answers', draft.answers);
+      }
       await assertOwner();
+      if (checkRoute() !== route) throw blocked('Quiz save route changed. The recovery copy is retained.', 'KG_QUIZ_CONTEXT_REQUIRED');
       const status = destination === 'device' ? 'queued' : 'saved';
       try { store.remove(draft); }
       catch (_) {
@@ -288,7 +362,7 @@
     const key = JSON.stringify([options?.draft?.ownerId, options?.draft?.id]);
     const current = inFlight.get(key);
     if (current) {
-      if (samePayload(current.draft, options.draft)) return current.task;
+      if (current.client === options.client && samePayload(current.draft, options.draft)) return current.task;
       return Promise.resolve({ status: 'storage-error', draft: options.draft,
         error: { code: 'KG_QUIZ_INFLIGHT_CONFLICT', message:
           'A different set of answers for this quiz is already being saved. These changes are still on this page; keep it open.' } });
@@ -298,9 +372,10 @@
     let snapshot;
     try { snapshot = copy(options.draft); } catch (_) { snapshot = options.draft; }
     const task = performSave(options).finally(() => { if (inFlight.get(key)?.task === task) inFlight.delete(key); });
-    inFlight.set(key, { task, draft: snapshot });
+    inFlight.set(key, { task, draft: snapshot, client: options.client });
     return task;
   }
 
-  root.KGQuizSave = { createStore, save, validateDraft, sameField, missingOptionalColumn, storagePrefix: PREFIX };
+  root.KGQuizSave = { createStore, save, validateDraft, sameField, missingOptionalColumn,
+    captureContext, atomicLimit: ATOMIC_LIMIT, storagePrefix: PREFIX };
 })(typeof window !== 'undefined' ? window : globalThis);
