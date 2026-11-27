@@ -464,3 +464,181 @@
   root.KGQuizSave = { createStore, save, validateDraft, sameField, missingOptionalColumn,
     captureContext, atomicLimit: ATOMIC_LIMIT, storagePrefix: PREFIX, timedStoragePrefix: TIMED_PREFIX, colourStoragePrefix: COLOUR_PREFIX };
 })(typeof window !== 'undefined' ? window : globalThis);
+
+
+// F2E2a: version-bound restricted rating recovery. This separate namespace
+// never rewrites quiz drafts, legacy study storage or the installed outbox.
+(function(root) {
+  'use strict';
+  const PREFIX='kg-chart-rating-recovery-v1:', ARCHIVE='kg-chart-rating-archive-v1:';
+  const copy=x=>JSON.parse(JSON.stringify(x));
+  const obj=x=>!!x&&typeof x==='object'&&!Array.isArray(x);
+  const uuid=x=>typeof x==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(x);
+  const lang=x=>typeof x==='string'&&/^[a-z]{2,3}$/.test(x);
+  const ver=x=>Number.isSafeInteger(x)&&x>=0;
+  const rev=x=>ver(x)&&x>0;
+  const rating=x=>Number.isInteger(x)&&x>=1&&x<=5;
+  const timestamp=x=>typeof x==='string'&&Number.isFinite(Date.parse(x));
+  const nullableTime=x=>x===null||timestamp(x);
+  const err=(message,code,status='pending')=>Object.assign(Error(message),{code,status});
+  const invalid=()=>err('Invalid rating recovery data. Nothing was uploaded.','KG_RATING_INVALID','blocked');
+  const validTarget=x=>obj(x)&&uuid(x.ownerId)&&lang(x.languageCode)&&uuid(x.vocabularyId)&&rev(x.revision);
+  const validState=x=>x===null||(obj(x)&&rating(x.rating)&&nullableTime(x.last_reviewed_at)&&nullableTime(x.updated_at));
+  function baseline(data,revision) {
+    if(!obj(data)||!ver(data.version)||!validState(data.state)||data.permission_revision!==revision)
+      throw err('The server did not confirm the rating baseline.','KG_RATING_BASELINE');
+    return copy({version:data.version,state:data.state,permission_revision:data.permission_revision});
+  }
+  function validate(e) {
+    if(!validTarget(e)||e.contract!==1||!uuid(e.eventId)||!ver(e.expectedVersion)||
+       e.expectedVersion>=Number.MAX_SAFE_INTEGER||!(e.rating===null||rating(e.rating))||
+       !timestamp(e.createdAt)||!validState(e.originalState))throw invalid();
+    return e;
+  }
+  const prefix=(ownerId,languageCode)=>PREFIX+ownerId+':'+languageCode+':';
+  const key=e=>prefix(e.ownerId,e.languageCode)+e.eventId;
+  const archiveKey=e=>ARCHIVE+e.ownerId+':'+e.languageCode+':'+e.eventId;
+  const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  function createStore({storage,makeId=()=>root.crypto.randomUUID(),now=()=>new Date().toISOString()}={}) {
+    const target=storage||root.localStorage;
+    const load=k=>{
+      const raw=target.getItem(k);
+      if(raw===null)return null;
+      const e=validate(JSON.parse(raw));
+      if(key(e)!==k)throw invalid();
+      return e;
+    };
+    const sameStored=e=>{
+      validate(e);
+      const old=load(key(e));
+      if(!old||!equal(old,e))throw err('Original pending rating is missing or changed.','KG_RATING_STORAGE','storage-error');
+      return old;
+    };
+    const list=(ownerId,languageCode)=>{
+      if(!uuid(ownerId)||!lang(languageCode))return [];
+      const out=[],p=prefix(ownerId,languageCode);
+      for(let i=0;i<target.length;i++){
+        const k=target.key(i);
+        if(typeof k==='string'&&k.startsWith(p)){
+          const e=load(k);
+          if(!e||e.ownerId!==ownerId||e.languageCode!==languageCode)throw invalid();
+          out.push(e);
+        }
+      }
+      return out.sort((a,b)=>a.createdAt.localeCompare(b.createdAt));
+    };
+    return {
+      make(info,before,desired){
+        if(!validTarget(info))throw invalid();
+        const b=baseline(before,info.revision);
+        return validate({contract:1,ownerId:info.ownerId,languageCode:info.languageCode,
+          vocabularyId:info.vocabularyId,revision:info.revision,eventId:makeId(),
+          expectedVersion:b.version,originalState:b.state,rating:desired,createdAt:now()});
+      },
+      put(e){
+        validate(e);
+        const old=load(key(e));
+        if(old){if(!equal(old,e))throw invalid();return copy(e);}
+        if(target.getItem(archiveKey(e))!==null)throw err('This event is archived.','KG_RATING_ARCHIVED','blocked');
+        // Distinct event keys retain concurrent tab attempts rather than
+        // overwriting them. Expected versions serialize them at the server.
+        if(list(e.ownerId,e.languageCode).some(x=>x.vocabularyId===e.vocabularyId))
+          throw err('Resolve the existing pending change for this word first.','KG_RATING_PENDING_KEY','blocked');
+        target.setItem(key(e),JSON.stringify(e));sameStored(e);return copy(e);
+      },
+      list,sameStored,
+      remove(e){sameStored(e);target.removeItem(key(e));},
+      archive(e,current){
+        sameStored(e);
+        const b=baseline(current,e.revision);
+        // Only a newer confirmed version makes an old request unable to
+        // create another mutation. Never abandon an unresolved same-version
+        // transport failure merely because its reply was lost.
+        if(b.version<=e.expectedVersion)throw err('Retry the original request; its outcome may still be unknown.','KG_RATING_ARCHIVE_UNCERTAIN','blocked');
+        const k=archiveKey(e),old=target.getItem(k);
+        if(old!==null&&!equal(JSON.parse(old).event,e))throw invalid();
+        if(old===null)target.setItem(k,JSON.stringify({event:copy(e),observed:b,archivedAt:now()}));
+        sameStored(e);target.removeItem(key(e));
+      },
+    };
+  }
+  const inFlight=new Map();
+  const rpcError=e=>{
+    if(['40001','23505'].includes(e?.code))return err('The original rating or permission version conflicts. The change is retained.',e.code,'conflict');
+    if(['42501','PGRST301','PGRST302'].includes(e?.code)||[401,403].includes(e?.status))
+      return err('This rating is not currently permitted.','KG_RATING_DENIED','blocked');
+    return err('The rating server did not confirm this request. Retry the original change.',e?.code||'KG_RATING_RPC');
+  };
+  function checkScope(o,t){
+    if(!validTarget(t))throw invalid();
+    const live=o.getScope?.();
+    if(live?.ownerId!==t.ownerId||live?.languageCode!==t.languageCode||
+       live?.policy?.state!=='restricted'||live.policy.revision!==t.revision)
+      throw err('Account, language or permission revision changed. No new rating was authorized.','KG_RATING_SCOPE','blocked');
+    if(o.offlineClient)throw err('Restricted offline rating reconciliation is not yet available.','KG_RATING_OFFLINE','blocked');
+  }
+  async function owner(o,t){
+    checkScope(o,t);
+    const result=await o.client.auth.getSession();
+    checkScope(o,t);
+    if(result?.error)throw rpcError(result.error);
+    if(result?.data?.session?.user?.id!==t.ownerId)
+      throw err('Signed-in account changed. This rating remains with its original owner.','KG_RATING_OWNER','blocked');
+  }
+  async function call(o,t,name,args){
+    await owner(o,t);
+    let result,thrown;
+    try{result=await o.client.rpc(name,args);}catch(e){thrown=e;}
+    await owner(o,t);
+    if(thrown)throw rpcError(thrown);
+    if(result?.error)throw rpcError(result.error);
+    if(result?.saveDestination==='device')throw err('A local queue is not a restricted server receipt.','KG_RATING_RECEIPT');
+    return result?.data;
+  }
+  async function read(o,t){
+    return baseline(await call(o,t,'kg_chart_f2_my_progress_state',{
+      p_expected_revision:t.revision,p_kind:'rating',p_language_code:t.languageCode,
+      p_vocabulary_id:t.vocabularyId,p_topic_id:null}),t.revision);
+  }
+  function receipt(data,e){
+    if(!obj(data)||data.event_id!==e.eventId||data.event_version!==e.expectedVersion+1||
+       !ver(data.current_version)||data.current_version<data.event_version||
+       typeof data.replayed!=='boolean'||(!data.replayed&&data.current_version!==data.event_version))
+      throw err('The original rating event was not confirmed.','KG_RATING_RECEIPT');
+    return data;
+  }
+  const sameTime=(a,b)=>timestamp(a)&&timestamp(b)&&Date.parse(a)===Date.parse(b);
+  async function perform(o,e){
+    try{
+      validate(e);checkScope(o,e);
+      try{o.store.sameStored(e);}catch(_){throw err('Durable original rating event required before sending.','KG_RATING_STORAGE','storage-error');}
+      const ack=receipt(await call(o,e,'kg_chart_f2_save_progress',{
+        p_expected_revision:e.revision,p_event_id:e.eventId,p_expected_version:e.expectedVersion,
+        p_operation:e.rating===null?'rating_delete':'rating_upsert',p_language_code:e.languageCode,
+        p_vocabulary_id:e.vocabularyId,p_topic_id:null,p_rating:e.rating,
+        p_last_reviewed_at:e.rating===null?null:e.createdAt,p_updated_at:e.rating===null?null:e.createdAt,
+        p_completed_at:null}),e);
+      // Historical event acknowledgement is NOT the latest rating.
+      const current=await read(o,e);
+      if(current.version<ack.current_version||(current.version===ack.event_version&&
+        (e.rating===null?current.state!==null:current.state?.rating!==e.rating||
+        !sameTime(current.state.last_reviewed_at,e.createdAt)||!sameTime(current.state.updated_at,e.createdAt))))
+        throw err('Current rating could not be reconciled with the receipt.','KG_RATING_READBACK');
+      try{o.store.remove(e);}catch(_){throw err('The event was acknowledged but its local recovery copy could not be cleared. Retry the original event.','KG_RATING_STORAGE','storage-error');}
+      return {status:current.version>ack.event_version?'superseded':'saved',event:copy(e),current,receipt:copy(ack)};
+    }catch(error){return {status:error?.status||'pending',event:copy(e),
+      error:{code:error?.code||'KG_RATING_FAILED',message:error?.message||'Rating confirmation failed.'}};}
+  }
+  function save(o,e){
+    try{validate(e);}catch(error){return Promise.resolve({status:'blocked',error:{code:error.code,message:error.message}});}
+    const k=key(e),prior=inFlight.get(k);
+    if(prior){
+      if(prior.client===o.client&&equal(prior.event,e))return prior.task;
+      return Promise.resolve({status:'blocked',error:{code:'KG_RATING_INFLIGHT',message:'A different request is already in flight.'}});
+    }
+    const original=copy(e);
+    const task=perform(o,original).finally(()=>{if(inFlight.get(k)?.task===task)inFlight.delete(k);});
+    inFlight.set(k,{event:original,client:o.client,task});return task;
+  }
+  root.KGRatingSave={createStore,read,save,validate,storagePrefix:PREFIX,archivePrefix:ARCHIVE};
+})(typeof window !== 'undefined' ? window : globalThis);
