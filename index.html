@@ -916,12 +916,156 @@
       };
     }
 
-    function useUserRatings(languageCode) {
+    function useUserRatings(languageCode, policy) {
       const { user } = useAuth();
       const [ratings, setRatings] = useState({});
       // Which user + language `ratings` holds; until it matches, they are still loading (Cards waits for them)
       const [loadedFor, setLoadedFor] = useState(null);
       const want = user && languageCode ? `${user.id}|${languageCode}` : null;
+      const restricted = policy?.state === 'restricted';
+      // Identity tokens distinguish leaving and returning to the same scope
+      // from staying in it throughout an asynchronous request.
+      const identity = JSON.stringify([want,policy?.state,policy?.revision]);
+      const scopeRef=React.useRef(null), mounted=React.useRef(true);
+      const token=scopeRef.current?.identity===identity?scopeRef.current.token:{};
+      scopeRef.current={identity,token,ownerId:user?.id,languageCode,policy};
+      const reviewRef=React.useRef(null), actionRef=React.useRef(null);
+      const [review,setReview]=useState(null), [pending,setPending]=useState(null);
+      const [notice,setNotice]=useState(null), [observed,setObserved]=useState(null);
+      const [busy,setBusy]=useState(false);
+      const store=useMemo(()=>window.KGRatingSave.createStore({storage:{
+        get length(){return window.localStorage.length;},key:i=>window.localStorage.key(i),
+        getItem:k=>window.localStorage.getItem(k),setItem:(k,v)=>window.localStorage.setItem(k,v),
+        removeItem:k=>window.localStorage.removeItem(k)
+      }}),[]);
+      const current=k=>mounted.current&&scopeRef.current?.token===k;
+      const options=k=>({client:supabase,store,
+        getScope:()=>current(k)?scopeRef.current:null,
+        offlineClient:window.KGOffline?.client===supabase});
+      const target=id=>({ownerId:user?.id,languageCode,vocabularyId:id,revision:policy?.revision});
+      const report=(k,message)=>{if(current(k))setNotice({token:k,message});};
+      const refreshPending=useCallback(()=>{
+        if(!want||!restricted||!current(token))return;
+        try{setPending({token,events:store.list(user.id,languageCode),error:false});}
+        catch(_){setPending({token,events:[],error:true});}
+      },[token]);
+      useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+      useEffect(()=>{
+        setBusy(false);refreshPending();
+        window.addEventListener('storage',refreshPending);
+        return ()=>{
+          window.removeEventListener('storage',refreshPending);
+          const slot=reviewRef.current;
+          if(slot?.token===token){reviewRef.current=null;slot.resolve?.(false);}
+          if(actionRef.current?.token===token)actionRef.current=null;
+        };
+      },[token]);
+      const apply=(k,id,state)=>{
+        if(!current(k))return;
+        setRatings(prev=>{
+          const next={...prev};
+          if(state.state===null)delete next[id];
+          else next[id]={...state.state,user_id:user.id,language_code:languageCode,vocabulary_id:id};
+          return next;
+        });
+      };
+      const settle=(slot,value)=>{
+        if(reviewRef.current===slot){
+          reviewRef.current=null;
+          if(current(slot.token))setReview(null);
+        }
+        slot.resolve?.(value);
+      };
+      const requestRestricted=async(id,desired,undoGuard)=>{
+        if(!current(token)||!restricted||!want)return false;
+        if(reviewRef.current||actionRef.current){report(token,'Finish the rating review already in progress.');return false;}
+        if(loadedFor!==token){report(token,'Ratings are loading. Try again when ready.');return false;}
+        const slot={token,target:target(id),desired};
+        reviewRef.current=slot;
+        try{
+          if(store.list(user.id,languageCode).some(e=>e.vocabularyId===id)){
+            refreshPending();throw Error('This word has a pending rating. Retry or review that change first.');
+          }
+          const before=await window.KGRatingSave.read(options(token),slot.target);
+          if(!current(token)||reviewRef.current!==slot){settle(slot,false);return false;}
+          apply(token,id,before);
+          if(undoGuard&&(undoGuard.version!==before.version||undoGuard.revision!==slot.target.revision))
+            throw Error('Undo is no longer current. The latest server rating is shown; choose a new change explicitly.');
+          slot.before=before;
+          return await new Promise(resolve=>{slot.resolve=resolve;setReview({token,slot});});
+        }catch(error){
+          report(token,error?.message||'The current rating could not be verified.');
+          settle(slot,false);return false;
+        }
+      };
+      const finishEvent=(event,result,k)=>{
+        if(!current(k))return;
+        if(result.status==='saved'||result.status==='superseded'){
+          apply(k,event.vocabularyId,result.current);
+          report(k,result.status==='saved'?'Rating confirmed.':'Original change acknowledged; a newer server rating is shown.');
+        }else report(k,result.error?.message||'The original rating change is retained.');
+        refreshPending();
+      };
+      const beginAction=k=>{
+        if(!current(k)||actionRef.current)return null;
+        const action={token:k};actionRef.current=action;setBusy(true);return action;
+      };
+      const endAction=action=>{
+        if(actionRef.current===action){actionRef.current=null;if(current(action.token))setBusy(false);}
+      };
+      const confirm=async()=>{
+        const slot=reviewRef.current;
+        if(!slot?.before||!current(slot.token))return;
+        const action=beginAction(slot.token);if(!action)return;
+        try{
+          // Keep the event stable even after an uncertain local-storage write.
+          slot.event ||= store.make(slot.target,slot.before,slot.desired);
+          const event=store.put(slot.event);
+          const result=await window.KGRatingSave.save(options(slot.token),event);
+          finishEvent(event,result,slot.token);
+          settle(slot,result.status==='saved'?{event,current:result.current}:false);
+        }catch(error){
+          report(slot.token,'No new rating was confirmed. '+(error?.message||'Recovery storage unavailable.'));
+          refreshPending();
+        }finally{endAction(action);}
+      };
+      const cancel=()=>{const slot=reviewRef.current;if(slot&&!actionRef.current)settle(slot,false);};
+      const retry=async event=>{
+        if(reviewRef.current||!restricted||event.ownerId!==user?.id||event.languageCode!==languageCode)return;
+        const action=beginAction(token);if(!action)return;
+        try{finishEvent(event,await window.KGRatingSave.save(options(token),event),token);}
+        finally{endAction(action);}
+      };
+      const inspect=async(event,archive=false)=>{
+        if(reviewRef.current||!restricted||event.ownerId!==user?.id||event.languageCode!==languageCode)return;
+        const action=beginAction(token);if(!action)return;
+        try{
+          const now=await window.KGRatingSave.read(options(token),target(event.vocabularyId));
+          if(!current(token))return;
+          apply(token,event.vocabularyId,now);
+          if(archive){
+            if(observed?.token!==token||observed.eventId!==event.eventId||
+               observed.current.version!==now.version||event.revision!==policy.revision)
+              throw Error('Rating or permission version changed. Review again; original event retained.');
+            store.archive(event,now);setObserved(null);refreshPending();
+            report(token,'Original change archived on this device. Current server rating kept.');
+          }else setObserved({token,eventId:event.eventId,current:now});
+        }catch(error){report(token,error?.message||'Current rating could not be verified.');}
+        finally{endAction(action);}
+      };
+      const download=event=>{
+        const url=URL.createObjectURL(new Blob([JSON.stringify(event,null,2)],{type:'application/json'}));
+        const link=document.createElement('a');link.href=url;link.download='kg-rating-'+event.eventId+'.json';
+        link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+      };
+      // Future mode transitions must not let a legacy raw write bypass
+      // unresolved restricted work. Activation-off legacy stays unchanged.
+      const legacyAllowed=id=>{
+        if(!current(token)||policy?.state!=='legacy')return false;
+        if(!U3C1_SCOPED_UI_ENABLED)return true;
+        try{return !store.list(user.id,languageCode).some(e=>e.vocabularyId===id);}
+        catch(_){return false;}
+      };
 
       useEffect(() => {
         if (!want) return;
@@ -934,17 +1078,17 @@
           .eq('user_id', user.id)
           .eq('language_code', languageCode)
           .then(({ data }) => {
-            if (cancelled) return; // switched language while loading
+            if (cancelled || !current(token)) return; // switched scope while loading
             const map = {};
             (data || []).forEach(r => { map[r.vocabulary_id] = r; });
             setRatings(map);
-            setLoadedFor(want);
+            setLoadedFor(token);
           });
         return () => { cancelled = true; };
-      }, [want]);
+      }, [token]);
 
       const updateRating = useCallback(async (vocabularyId, rating) => {
-        if (!user) return false;
+        if (!user || !legacyAllowed(vocabularyId)) return false;
 
         const now = new Date().toISOString();
         const { error } = await supabase
@@ -957,25 +1101,72 @@
             last_reviewed_at: now,
           }, { onConflict: 'user_id,vocabulary_id,language_code' });
 
-        if (!error) {
+        if (!error && current(token)) {
           setRatings(prev => ({
             ...prev,
             [vocabularyId]: { ...prev[vocabularyId], rating, last_reviewed_at: now }
           }));
         }
-        return !error;
-      }, [user, languageCode]);
+        return !error && current(token);
+      }, [user, languageCode, token]);
 
       // Back to "not rated" (Cards: Undo of a word's first rating)
       const clearRating = useCallback(async (vocabularyId) => {
-        if (!user) return false;
+        if (!user || !legacyAllowed(vocabularyId)) return false;
         const { error } = await supabase.from(TABLES.userRatings).delete()
           .eq('user_id', user.id).eq('vocabulary_id', vocabularyId).eq('language_code', languageCode);
-        if (!error) setRatings(prev => { const next = { ...prev }; delete next[vocabularyId]; return next; });
-        return !error;
-      }, [user, languageCode]);
+        if (!error && current(token)) setRatings(prev => { const next = { ...prev }; delete next[vocabularyId]; return next; });
+        return !error && current(token);
+      }, [user, languageCode, token]);
 
-      return { ratings, ratingsLoaded: !want || loadedFor === want, updateRating, clearRating };
+      return {ratings:loadedFor===token?ratings:{},ratingsLoaded:!want||loadedFor===token,
+        updateRating:restricted?(id,value,guard)=>requestRestricted(id,value,guard):updateRating,
+        clearRating:restricted?(id,guard)=>requestRestricted(id,null,guard):clearRating,
+        ratingFlow:{restricted,review:review?.token===token?review.slot:null,
+          pending:pending?.token===token?pending.events:[],storageError:pending?.token===token&&pending.error,
+          notice:notice?.token===token?notice.message:null,busy,
+          observed:observed?.token===token?observed:null,confirm,cancel,retry,inspect,download}};
+    }
+
+    function RatingRecoveryPanel({flow,vocabulary}) {
+      if(!flow?.restricted)return null;
+      const label=value=>value==null?'Not rated':getRatingById(value)?.label||'Unknown rating';
+      const word=id=>vocabulary.find(v=>v.id===id)?.display_text||'Selected word';
+      const review=flow.review;
+      return <>
+        {(flow.pending.length>0||flow.storageError||flow.notice)&&
+          <section aria-label="Rating recovery" className="max-w-3xl mx-auto my-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm">
+            {flow.notice&&<p role="status" className="mb-2">{flow.notice}</p>}
+            {flow.storageError&&<p role="alert">Rating recovery records could not be read. No records were removed.</p>}
+            {flow.pending.map(event=><div key={event.eventId} className="border-t border-amber-200 py-3">
+              <p className="font-medium">{word(event.vocabularyId)} · pending {label(event.rating)}</p>
+              <p>Original version {event.expectedVersion} · {new Date(event.createdAt).toLocaleString()}</p>
+              <div className="flex flex-wrap gap-2 mt-2">
+                <button disabled={flow.busy||!!review} onClick={()=>flow.retry(event)} className="px-3 py-2 rounded-lg bg-amber-100">Retry original rating</button>
+                <button disabled={flow.busy||!!review} onClick={()=>flow.inspect(event)} className="px-3 py-2 rounded-lg bg-white">Review current rating</button>
+                <button onClick={()=>flow.download(event)} className="px-3 py-2 rounded-lg bg-white">Download pending rating</button>
+              </div>
+              {flow.observed?.eventId===event.eventId&&<div className="mt-2">
+                <p>Current server rating: {label(flow.observed.current.state?.rating)} · version {flow.observed.current.version}</p>
+                {flow.observed.current.version>event.expectedVersion&&flow.observed.current.permission_revision===event.revision&&
+                  <button disabled={flow.busy||!!review} onClick={()=>flow.inspect(event,true)} className="mt-2 px-3 py-2 rounded-lg bg-white">Keep server rating and archive change</button>}
+              </div>}
+            </div>)}
+          </section>}
+        {review&&<div data-kg-modal role="dialog" aria-modal="true" aria-label="Confirm rating change" className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-white rounded-2xl p-6 shadow-xl">
+            <h3 className="text-lg font-bold">Confirm rating change</h3>
+            <p className="mt-2">{word(review.target.vocabularyId)}</p>
+            <p className="mt-2 text-sm">Current server rating: {label(review.before.state?.rating)} · version {review.before.version}</p>
+            <p className="mt-2 text-sm">New rating: {label(review.desired)}</p>
+            {flow.notice&&<p role="status" className="mt-2 text-sm">{flow.notice}</p>}
+            <div className="flex gap-2 mt-5">
+              <button disabled={flow.busy} onClick={flow.cancel} className="px-4 py-2 rounded-lg bg-gray-100">Cancel</button>
+              <button disabled={flow.busy} onClick={flow.confirm} className="px-4 py-2 rounded-lg bg-jade-600 text-white">{flow.busy?'Saving…':'Confirm rating'}</button>
+            </div>
+          </div>
+        </div>}
+      </>;
     }
 
     // ==========================================
@@ -5727,7 +5918,7 @@
     // ==========================================
     // Flip a card, then drag it onto a bucket. Words without a rating come first; once they are all sorted, a random
     // mix (about 70% from ❌ 🤔 ✍, 30% from ✓ 💬). Tap a bucket to study only its cards. Locked topics are included.
-    function FlashcardView({ topics, vocabulary, ratings, ratingsLoaded = true, onRate, onClearRating, languageCode, user }) {
+    function FlashcardView({ topics, vocabulary, ratings, ratingsLoaded = true, onRate, onClearRating, languageCode, user, restrictedRatings = false }) {
       const saved0 = loadFromStorage(CARDS_KEY, {});
       const [selectedTopic, setSelectedTopic] = useState(() => (saved0.topic === 'all' || topics.some(t => t.id === saved0.topic) ? saved0.topic : 'all'));
       const [mode, setMode] = useState('sort'); // 'sort' (unsorted first) | 'mix' | 1..5 (study one bucket)
@@ -5740,7 +5931,10 @@
       // view key={currentLanguage}: a language switch starts Cards fresh instead of carrying these (and Undo) over.
       const [local, setLocal] = useState({});
       const [last, setLast] = useState(null); // { id, prev } for Undo
-      const [note, setNote] = useState(''); // a short message under the card
+      const [note, setNote] = useState('');
+      const restrictedBusy=React.useRef(false), cardContext=React.useRef(null);
+      cardContext.current={currentId,mode,selectedTopic,userId:user?.id,languageCode,restrictedRatings};
+      useEffect(()=>()=>{cardContext.current=null;},[]); // a short message under the card
       const dragRef = React.useRef(null);
       const startRef = React.useRef(null);
       const bucketRefs = React.useRef({});
@@ -5750,7 +5944,7 @@
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       useEffect(() => { saveToStorage(CARDS_KEY, { topic: selectedTopic }); }, [selectedTopic]);
 
-      const ratingOf = (id) => ((id in local ? local[id] : ratings[id]?.rating) || 0);
+      const ratingOf = (id) => ((!restrictedRatings && id in local ? local[id] : ratings[id]?.rating) || 0);
       const deck = useMemo(() => (selectedTopic === 'all' ? vocabulary : vocabulary.filter(v => v.topic_id === selectedTopic)), [vocabulary, selectedTopic]);
       const deckIndex = useMemo(() => new Map(deck.map((v, i) => [v.id, i])), [deck]);
       const counts = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
@@ -5815,9 +6009,26 @@
 
       // The card moves on at once; if the save fails (no signal, signed out) it goes back where it was and we say so
       const NOT_SAVED = "⚠️ Not saved (no connection?). That card is back as it was; try again.";
-      const sortInto = (ratingId) => {
+      const sortInto = async (ratingId) => {
         if (!current || !user) return;
         const id = current.id, prev = ratingOf(id);
+        if(restrictedRatings){
+          if(restrictedBusy.current||!cardContext.current)return;
+          restrictedBusy.current=true;
+          const origin=cardContext.current;
+          try{
+            const confirmed=await onRate(id,ratingId);
+            const live=cardContext.current;
+            if(!confirmed?.event||!live?.restrictedRatings||live.userId!==origin.userId||
+               live.languageCode!==origin.languageCode)return;
+            setLast({id,prev:confirmed.event.originalState?.rating||0,
+              guard:{version:confirmed.current.version,revision:confirmed.event.revision}});
+            if(live.currentId===id&&live.mode===origin.mode&&live.selectedTopic===origin.selectedTopic)
+              advance(id,{[id]:ratingId});
+            setNote('Rating confirmed.');
+          }finally{restrictedBusy.current=false;}
+          return;
+        }
         setLocal(l => ({ ...l, [id]: ratingId }));
         setLast({ id, prev });
         setNote('');
@@ -5829,9 +6040,20 @@
           setNote(NOT_SAVED);
         });
       };
-      const undo = () => {
+      const undo = async () => {
         if (!last) return;
         const { id, prev } = last;
+        if(restrictedRatings){
+          if(restrictedBusy.current||!last.guard||!cardContext.current)return;
+          restrictedBusy.current=true;
+          try{
+            const confirmed=await (prev?onRate(id,prev,last.guard):onClearRating(id,last.guard));
+            if(confirmed?.event&&cardContext.current){
+              setLast(null);setIsFlipped(false);setCurrentId(id);setNote('Undo confirmed.');
+            }
+          }finally{restrictedBusy.current=false;}
+          return;
+        }
         const now = ratingOf(id);
         setLocal(l => ({ ...l, [id]: prev }));
         setLast(null);
@@ -6581,7 +6803,7 @@
         ? window.KGLearnerAccess.visibleVocabulary(policy, selectedLanguage, allVocabulary, topics)
           .filter(v => !priv.topics.has(v.topic_id)) : [],
           [policy, selectedLanguage, allVocabulary, topics, priv]);
-      const { ratings, ratingsLoaded, updateRating, clearRating } = useUserRatings(selectedLanguage);
+      const { ratings, ratingsLoaded, updateRating, clearRating, ratingFlow } = useUserRatings(selectedLanguage, policy);
       const path = useLearningPath({ user, languageCode: selectedLanguage, topics, vocabulary, rules });
       const visibleTopics = path.topics;
       const fontClassApp = LANGUAGE_FONTS[selectedLanguage] || 'font-body';
@@ -6646,6 +6868,7 @@
             meaning={MEANING_LANGS[selectedLanguage] || null} meaningsInEnglish={meaningsInEnglish} onToggleMeanings={setMeaningsInEnglish} />
 
           <PictureDownloads vocabulary={vocabulary} loading={loadingVocab || !priv.loaded} />
+          <RatingRecoveryPanel flow={ratingFlow} vocabulary={vocabulary} />
 
           {selectedView === 'chart' && !loadingTopics && visibleTopics.length > 0 && (
             <TopicNav topics={visibleTopics} activeTopic={activeTopic} onSelect={setActiveTopic} showEnglish={showEnglish} pathStatus={path.enabled ? path.status : null} />
@@ -6679,7 +6902,7 @@
                   <QuizView key={`${user?.id || 'guest'}:${selectedLanguage}`} topics={visibleTopics} vocabulary={path.unlockedVocab} poolVocabulary={path.visibleVocab} ratings={ratings} onRate={updateRating} languageCode={selectedLanguage} user={user} onSessionSaved={path.refresh} meaningName={meaningName} accessPolicy={policy} sentenceAccess={sentenceAccess} />
                 )}
                 {selectedView === 'flashcard' && (
-                  <FlashcardView key={selectedLanguage} topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} ratingsLoaded={ratingsLoaded} onRate={updateRating} onClearRating={clearRating} languageCode={selectedLanguage} user={user} />
+                  <FlashcardView key={`${user?.id || 'guest'}:${selectedLanguage}:${policy.state === 'restricted' ? policy.revision : 'legacy'}`} topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} ratingsLoaded={ratingsLoaded} onRate={updateRating} onClearRating={clearRating} languageCode={selectedLanguage} user={user} restrictedRatings={policy.state === 'restricted'} />
                 )}
                 {selectedView === 'progress' && (
                   <ProgressView topics={visibleTopics} vocabulary={path.visibleVocab} ratings={ratings} languageCode={selectedLanguage} user={user} path={path.enabled || path.bypass ? path : null} meaningName={meaningName} />

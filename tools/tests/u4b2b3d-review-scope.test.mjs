@@ -38,3 +38,12 @@ test('F2E1c scope admits the reviewed colour producer but not a missing boundary
   assert.doesNotThrow(() => assertF1ReviewScope(source, edited));
   assert.throws(() => assertF1ReviewScope(source, source.replace('    function ColourQuizView(', '    function RenamedColourQuizView(')));
 });
+
+test('F2E2a admits reviewed rating hook and exact wiring only',()=>{
+  const edited=source.replace('Rating confirmed.','Rating saved.');
+  assert.notEqual(edited,source);
+  assert.doesNotThrow(()=>assertF1ReviewScope(source,edited));
+  assert.throws(()=>assertF1ReviewScope(source,source.replace('function ProgressView({','function ProgressView(/* changed */{')));
+  assert.throws(()=>assertF1ReviewScope(source,source.replace('    function useUserRatings(','    function RenamedRatings(')));
+  assert.throws(()=>assertF1ReviewScope(source,source.replace("restrictedRatings={policy.state === 'restricted'}","restrictedRatings={true}")));
+});

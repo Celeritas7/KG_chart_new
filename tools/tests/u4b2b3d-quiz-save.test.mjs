@@ -1028,3 +1028,125 @@ test('F2E1c: legacy and device routes acknowledge only stable summaries; never i
     assert.equal(client.tables[SESSION_TABLE].get(f.d.id).correct_answers,1);
   }
 });
+
+
+// F2E2a: fictional versioned rating baseline/receipt and durable event tests.
+const RatingAPI=context.window.KGRatingSave;
+const RATING_WORD='44000000-0000-4000-8000-000000000001';
+const RATING_WORD2='44000000-0000-4000-8000-000000000002';
+function ratingFixture(initial=null){
+  const storage=memoryStorage(),store=RatingAPI.createStore({storage,makeId:uuid,now:()=>AT});
+  const target={ownerId:OWNER,languageCode:'my',vocabularyId:RATING_WORD,revision:17};
+  let owner=OWNER,policy={state:'restricted',revision:17},languageCode='my',fault=null;
+  const states=new Map([[RATING_WORD,{version:0,state:copy(initial)}]]),receipts=new Map(),calls=[];
+  const current=id=>states.get(id)||{version:0,state:null};
+  const client={auth:{async getSession(){return {data:{session:{user:{id:owner}}}};}},
+    from(){throw Error('No restricted direct writes');},
+    async rpc(name,args){
+      calls.push({name,args:copy(args)});
+      const id=args.p_vocabulary_id,v=current(id);
+      if(fault==='deny')return {error:{code:'42501'}};
+      if(args.p_expected_revision!==17||fault==='stale-revision')return {error:{code:'40001'}};
+      if(name==='kg_chart_f2_my_progress_state'){
+        if(fault==='readback'&&receipts.size)return {error:{message:'readback lost'}};
+        return {data:{...copy(v),permission_revision:17}};
+      }
+      assert.equal(name,'kg_chart_f2_save_progress');
+      assert.equal(args.p_topic_id,null);assert.equal(args.p_completed_at,null);
+      const prior=receipts.get(args.p_event_id);
+      if(prior){
+        if(JSON.stringify(prior.args)!==JSON.stringify(args))return {error:{code:'23505'}};
+        return {data:{event_id:args.p_event_id,event_version:prior.version,current_version:v.version,replayed:true}};
+      }
+      if(args.p_expected_version!==v.version)return {error:{code:'40001'}};
+      if(fault==='missing')return {error:{code:'PGRST202'}};
+      const next={version:v.version+1,state:args.p_operation==='rating_delete'?null:{
+        rating:args.p_rating,last_reviewed_at:args.p_last_reviewed_at,updated_at:args.p_updated_at}};
+      states.set(id,next);receipts.set(args.p_event_id,{args:copy(args),version:next.version});
+      if(fault==='lost')throw Error('synthetic lost reply');
+      if(fault==='switch')owner=OTHER;
+      return {data:{event_id:args.p_event_id,event_version:next.version,
+        current_version:fault==='malformed'?next.version+1:next.version,replayed:false}};
+    }};
+  const options={client,store,getScope:()=>({ownerId:owner,languageCode,policy})};
+  return {storage,store,target,options,calls,receipts,current,
+    set fault(v){fault=v;},set owner(v){owner=v;},set policy(v){policy=v;},set languageCode(v){languageCode=v;},
+    advance(id,state){states.set(id,{version:current(id).version+1,state:copy(state)});},
+    async make(value,id=RATING_WORD){
+      const t={...target,vocabularyId:id};return store.make(t,await RatingAPI.read(options,t),value);
+    },
+    save:e=>RatingAPI.save(options,e),
+    reopen:()=>RatingAPI.createStore({storage,makeId:uuid,now:()=>AT})};
+}
+test('F2E2a: version-zero historical rating, delete tombstone and fresh update',async()=>{
+  const f=ratingFixture({rating:2,last_reviewed_at:null,updated_at:null});
+  const e=await f.make(null);
+  assert.equal(e.expectedVersion,0);assert.equal(e.originalState.rating,2);
+  f.store.put(e);
+  let r=await f.save(e);
+  assert.equal(r.status,'saved');assert.equal(r.current.version,1);assert.equal(r.current.state,null);
+  const fresh=await f.make(4);
+  assert.equal(fresh.expectedVersion,1);assert.equal(fresh.originalState,null);
+  f.store.put(fresh);r=await f.save(fresh);
+  assert.equal(r.status,'saved');assert.equal(r.current.state.rating,4);assert.equal(r.current.version,2);
+});
+test('F2E2a: lost reply replay after a newer rating uses exact event and shows current state',async()=>{
+  const f=ratingFixture(),e=await f.make(5);
+  f.store.put(e);f.fault='lost';
+  assert.equal((await f.save(e)).status,'pending');
+  const original=f.reopen().list(OWNER,'my')[0];assert.deepEqual(copy(original),copy(e));
+  f.advance(RATING_WORD,{rating:1,last_reviewed_at:AT,updated_at:AT});f.fault=null;
+  const r=await RatingAPI.save({...f.options,store:f.reopen()},original);
+  assert.equal(r.status,'superseded');assert.equal(r.receipt.event_version,1);
+  assert.equal(r.current.version,2);assert.equal(r.current.state.rating,1);assert.equal(f.receipts.size,1);
+  const writes=f.calls.filter(c=>c.name==='kg_chart_f2_save_progress');
+  assert.deepEqual(writes[0],writes[1]);assert.equal(f.store.list(OWNER,'my').length,0);
+});
+test('F2E2a: stale baseline retained, explicit archive and separate new baseline',async()=>{
+  const f=ratingFixture(),old=await f.make(4);
+  f.advance(RATING_WORD,{rating:2,last_reviewed_at:AT,updated_at:AT});f.store.put(old);
+  assert.equal((await f.save(old)).status,'conflict');
+  assert.throws(()=>f.store.put(f.store.make(f.target,{version:1,state:f.current(RATING_WORD).state,permission_revision:17},5)));
+  const current=await RatingAPI.read(f.options,f.target);f.store.archive(old,current);
+  assert.equal(f.store.list(OWNER,'my').length,0);
+  assert.ok([...f.storage.entries.keys()].some(k=>k.startsWith(RatingAPI.archivePrefix)));
+  assert.throws(()=>f.store.put(old));
+  const fresh=await f.make(5);assert.equal(fresh.expectedVersion,1);assert.notEqual(fresh.eventId,old.eventId);
+  f.store.put(fresh);assert.equal((await f.save(fresh)).status,'saved');
+});
+test('F2E2a: delete/recreate/delete does not resurrect an obsolete absent baseline',async()=>{
+  const f=ratingFixture(),old=await f.make(3);
+  f.advance(RATING_WORD,{rating:2,last_reviewed_at:AT,updated_at:AT});f.advance(RATING_WORD,null);
+  f.store.put(old);assert.equal((await f.save(old)).status,'conflict');
+  assert.equal(f.current(RATING_WORD).version,2);assert.equal(f.current(RATING_WORD).state,null);
+  assert.equal(f.store.list(OWNER,'my')[0].expectedVersion,0);
+});
+test('F2E2a: denied, stale revision, bad receipt, unavailable RPC, readback and account change retain event',async()=>{
+  for(const [fault,status] of [['deny','blocked'],['stale-revision','conflict'],['malformed','pending'],
+    ['missing','pending'],['readback','pending'],['switch','blocked']]){
+    const f=ratingFixture(),e=await f.make(2);f.store.put(e);f.fault=fault;
+    assert.equal((await f.save(e)).status,status,fault);
+    assert.deepEqual(copy(f.store.list(OWNER,'my')[0]),copy(e),fault);
+  }
+});
+test('F2E2a: changed scope and offline facade cannot send original restricted rating',async()=>{
+  const f=ratingFixture(),e=await f.make(3);f.store.put(e);
+  f.owner=OTHER;assert.equal((await f.save(e)).status,'blocked');f.owner=OWNER;
+  f.policy={state:'restricted',revision:18};assert.equal((await f.save(e)).status,'blocked');
+  f.policy={state:'legacy'};assert.equal((await f.save(e)).status,'blocked');
+  f.policy={state:'restricted',revision:17};f.languageCode='ja';assert.equal((await f.save(e)).status,'blocked');f.languageCode='my';
+  assert.equal((await RatingAPI.save({...f.options,offlineClient:true},e)).status,'blocked');
+  assert.equal(f.calls.filter(c=>c.name==='kg_chart_f2_save_progress').length,0);
+  assert.equal(f.store.list(OTHER,'my').length,0);assert.equal(f.store.list(OWNER,'ja').length,0);
+});
+test('F2E2a: storage before network, duplicate in flight and independent words',async()=>{
+  const f=ratingFixture(),e=await f.make(3),other=await f.make(1,RATING_WORD2);
+  f.storage.failSet=true;assert.throws(()=>f.store.put(e));f.storage.failSet=false;
+  assert.equal((await f.save(e)).status,'storage-error');
+  f.store.put(e);f.store.put(other);
+  assert.throws(()=>f.store.archive(e,{version:0,state:null,permission_revision:17}));
+  const [a,b,c]=await Promise.all([f.save(e),f.save(e),f.save(other)]);
+  assert.equal(a.status,'saved');assert.equal(b.status,'saved');assert.equal(c.status,'saved');
+  assert.equal(f.calls.filter(x=>x.name==='kg_chart_f2_save_progress').length,2);
+  assert.equal(f.current(RATING_WORD).state.rating,3);assert.equal(f.current(RATING_WORD2).state.rating,1);
+});
