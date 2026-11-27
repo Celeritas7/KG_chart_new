@@ -757,3 +757,119 @@ test('F2E1a: an oversized historical draft is retained without splitting', async
   assert.equal(f.retained().answers.length, API.atomicLimit + 1);
   assert.equal(f.requests.length, 0);
 });
+
+
+// F2E1b timed recovery: preserve the actual completion tally and duration.
+function timedFixture(kind, quizType, revision = 23) {
+  const f = setup();
+  const policy = {state:'restricted', revision};
+  const store = f.reload();
+  let d = store.start({ownerId:OWNER,languageCode:'my',kind,session:{
+    topic_id:null,quiz_type:quizType,time_spent_seconds:0},saveContext:API.captureContext(policy)});
+  const typed = kind === 'typing';
+  const row = (id, correct, complete) => ({
+    vocabulary_id: typed ? id : null, sentence_id: typed ? null : id,
+    selected_vocabulary_id: typed && complete ? id : null, is_correct:correct,
+    ...(typed ? {answer_text:correct ? 'correct' : 'wrong first attempt'} : {}),
+  });
+  d = store.append(d,row('first',quizType !== 'typing_copy',true),7);
+  d = store.append(d,row('second',false,false),11);
+  store.write(d);
+  const requests=[], saved=new Map();
+  let fault=null,current=policy;
+  const client={auth:f.client.auth,from(){throw Error('Restricted timed draft must never use direct writes');},
+    async rpc(name,args) {
+      assert.equal(name,'kg_chart_f2_save_timed_quiz');
+      requests.push(copy(args));
+      const s=args.p_session, a=args.p_answers;
+      assert.equal(args.p_expected_revision,revision);
+      assert.equal(s.user_id,OWNER);
+      assert.equal(s.total_questions,a.length);
+      assert.ok(a.every(row=>row.session_id===s.id));
+      if(fault==='deny') return {error:{code:'42501'}};
+      if(fault==='stale') return {error:{code:'40001'}};
+      if(fault==='unavailable') return {error:{code:'PGRST202'}};
+      if(saved.has(s.id)) assert.deepEqual(saved.get(s.id),copy(args));
+      else saved.set(s.id,copy(args));
+      if(fault==='lost') return {error:{message:'response lost'}};
+      return {data:{session_id:s.id,answer_count:a.length,expected_revision:revision,
+        time_spent_seconds:fault==='duration' ? s.time_spent_seconds+1 : s.time_spent_seconds},
+        ...(fault==='device'?{saveDestination:'device'}:{})};
+    }};
+  return {f,d,store,requests,saved,client,set fault(v){fault=v;},set policy(v){current=v;},
+    recover(){return f.reload().list(OWNER,'my',kind)[0];},
+    save(value=d,options={}) {return API.save({client,draft:value,store:f.reload(),getAccess:()=>current,...options});}};
+}
+for(const [kind,type] of [['typing','typing_copy'],['typing','typing_recall'],['speaking','speak_lines'],['speaking','speak_paragraph']]) {
+  test('F2E1b '+type+': original timed contract, lost receipt and reload',async()=>{
+    const f=timedFixture(kind,type);
+    const d=f.store.finishTiming(f.d,19);
+    assert.equal(d.session.correct_answers,1);
+    assert.equal(d.answers.filter(a=>a.is_correct).length,type==='typing_copy'?0:1);
+    assert.equal(d.session.time_spent_seconds,19);
+    f.store.write(d);
+    f.fault='lost';
+    assert.equal((await f.save(d)).status,'pending');
+    const retained=f.recover();
+    assert.equal(retained.sealed,true);
+    assert.equal(retained.session.time_spent_seconds,19);
+    assert.equal(retained.saveContext.revision,23);
+    f.fault=null;
+    assert.equal((await f.save(retained)).status,'saved');
+    assert.equal(f.saved.size,1);
+    assert.deepEqual(f.requests[0],f.requests[1]);
+    assert.equal(f.recover(),undefined);
+  });
+}
+test('F2E1b: duration mismatch, stale revision, denial and unavailable RPC retain timed work',async()=>{
+  for(const [fault,status] of [['duration','pending'],['deny','blocked'],['stale','blocked'],['unavailable','pending'],['device','pending']]){
+    const f=timedFixture('typing','typing_copy');
+    f.fault=fault;
+    assert.equal((await f.save()).status,status);
+    assert.equal(f.recover().session.time_spent_seconds,11);
+    assert.equal(f.recover().saveContext.revision,23);
+  }
+});
+test('F2E1b: owner, local storage, mode and offline facade failures never call the timed RPC',async()=>{
+  const f=timedFixture('speaking','speak_lines');
+  f.f.storage.failSet=true;
+  assert.equal((await f.save()).status,'storage-error');
+  f.f.storage.failSet=false;
+  f.f.client.ownerId=OTHER;
+  assert.equal((await f.save()).status,'blocked');
+  f.f.client.ownerId=OWNER;
+  f.policy={state:'restricted',revision:24};
+  assert.equal((await f.save()).error.code,'KG_QUIZ_STALE_REVISION');
+  f.policy={state:'legacy'};
+  assert.equal((await f.save()).error.code,'KG_QUIZ_CONTEXT_REQUIRED');
+  f.policy={state:'restricted',revision:23};
+  assert.equal((await f.save(f.recover(),{offlineClient:true})).error.code,'KG_QUIZ_OFFLINE_DEFERRED');
+  assert.equal(f.requests.length,0);
+});
+test('F2E1b: separate timed namespace, partial checkpoint, immutable sealed duration and copy tally',async()=>{
+  const f=timedFixture('typing','typing_copy');
+  assert.ok([...f.f.storage.entries.keys()].some(k=>k.startsWith(API.timedStoragePrefix)));
+  assert.equal(f.store.list(OWNER,'my','word').length,1);
+  assert.equal(f.store.list(OTHER,'my','typing').length,0);
+  assert.equal(f.recover().session.correct_answers,1);
+  f.fault='lost';await f.save();
+  assert.throws(()=>f.store.finishTiming(f.recover(),99));
+  assert.throws(()=>f.store.write({...f.recover(),session:{...f.recover().session,time_spent_seconds:99}}));
+  assert.equal(f.recover().session.time_spent_seconds,11);
+});
+test('F2E1b: legacy timed recovery keeps sentence identity and uses stable direct rows',async()=>{
+  const f=setup();
+  let d=f.store.start({ownerId:OWNER,languageCode:'my',kind:'typing',session:{
+    topic_id:null,quiz_type:'typing_copy',time_spent_seconds:0},saveContext:{mode:'legacy'}});
+  d=f.store.append(d,{vocabulary_id:null,sentence_id:'sentence-1',selected_vocabulary_id:'sentence-1',
+    is_correct:false,answer_text:'original first mistake'},5);
+  f.store.write(d);
+  f.client.failNext(ANSWER_TABLE,'insert',{error:lost,commit:true});
+  assert.equal((await API.save({client:f.client,draft:d,store:f.store})).status,'pending');
+  const retained=f.reload().list(OWNER,'my','typing')[0];
+  assert.equal((await API.save({client:f.client,draft:retained,store:f.reload()})).status,'saved');
+  assert.equal(f.client.tables[SESSION_TABLE].size,1);
+  assert.equal(f.client.tables[ANSWER_TABLE].size,1);
+  assert.equal(f.client.tables[SESSION_TABLE].get(d.id).correct_answers,1);
+  assert.equal(f.client.tables[ANSWER_TABLE].get(d.answers[0].id).sentence_id,'sentence-1');
+});

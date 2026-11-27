@@ -2704,9 +2704,9 @@
           saveContext: window.KGQuizSave.captureContext(accessRef.current) }) : null;
         setState({ status: 'idle' }); setRecoveryResult(null);
       };
-      const record = answer => {
+      const record = (answer, seconds) => {
         if (!draftRef.current) return answer;
-        const draft = quizSaveStore.append(draftRef.current, answer);
+        const draft = quizSaveStore.append(draftRef.current, answer, seconds);
         draftRef.current = draft;
         quizSaveMemory.set(draft.id, draft);
         let next = { status: 'retained' };
@@ -2766,6 +2766,15 @@
         return result;
       };
       const saveCurrent = () => retry(draftRef.current);
+      const finishTimed = seconds => {
+        if (!draftRef.current?.answers.length) return;
+        if (!draftRef.current.sealed) {
+          const draft = quizSaveStore.finishTiming(draftRef.current, seconds);
+          draftRef.current = draft;
+          quizSaveMemory.set(draft.id, draft);
+        }
+        return saveCurrent();
+      };
       const download = draft => {
         const blob = new Blob([JSON.stringify({ contract: 'kg-quiz-recovery-v1', draft }, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
@@ -2773,7 +2782,7 @@
         link.href = url; link.download = `kg-quiz-recovery-${draft.id}.json`; link.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       };
-      return { begin, record, checkpoint, saveCurrent, retry, refresh, state, pending, recoveryError, recoveryResult,
+      return { begin, record, checkpoint, saveCurrent, finishTimed, retry, refresh, state, pending, recoveryError, recoveryResult,
         draft: draftRef.current, download, restricted };
     }
 
@@ -2810,7 +2819,7 @@
         <h3 className="font-bold text-amber-900">Quiz results waiting to be saved</h3>
         {saving.recoveryError && <p role="alert" className="text-sm mt-2">Saved recovery records could not be read. Keep this page open; no records were removed.</p>}
         {saving.pending.map(draft => <div key={draft.id} className="mt-3 border-t border-amber-200 pt-3">
-          <p className="text-sm font-medium">{draft.kind === 'word' ? 'Word quiz' : 'Sentence quiz'} · {draft.session.correct_answers}/{draft.session.total_questions} · {new Date(draft.session.completed_at).toLocaleString()}</p>
+          <p className="text-sm font-medium">{({word:'Word quiz', sentence:'Sentence quiz', typing:'Timed typing', speaking:'Timed speaking'})[draft.kind]} · {draft.session.correct_answers}/{draft.session.total_questions}{draft.kind === 'typing' ? ' completed' : ''} · {new Date(draft.session.completed_at).toLocaleString()}</p>
           <QuizSaveStatus state={['idle', 'retained'].includes(quizSaveStates.get(draft.id)?.status)
               ? { status: 'pending' } : quizSaveStates.get(draft.id) || { status: 'pending' }}
             onRetry={() => saving.retry(draft)} onDownload={() => saving.download(draft)} />
@@ -4710,6 +4719,8 @@
       const [turn, setTurn] = useState(0); // lines: new recorder for every attempt
       const [flagLine, setFlagLine] = useState(null);
       const flagModal = flagLine && <FlagModal sentence={flagLine} languageCode={languageCode} onClose={() => setFlagLine(null)} />;
+      const saving = useQuizSaving({ user, languageCode, kind: 'speaking' });
+      const recordedLines = React.useRef(new Set());
       const savedStep = React.useRef(null); // which step's result has been saved this attempt (a double tap must not save twice)
       const [peeked, setPeeked] = useState(() => new Set()); // whole: lines looked at
       const [showAll, setShowAll] = useState(false);
@@ -4772,39 +4783,44 @@
       }, [audioVersion]);
 
       const startStep = (id) => {
+        if (id !== 'listen' && saving.restricted && lines.length > window.KGQuizSave.atomicLimit) return;
         stopAll();
         setResult(null);
         savedStep.current = null;
         setStep(id);
         startedAt.current = Date.now();
+        recordedLines.current = new Set();
+        if (SPEAK_SESSION_TYPES[id]) saving.begin({ topic_id: null, quiz_type: SPEAK_SESSION_TYPES[id], time_spent_seconds: 0 });
         if (id === 'listen' && !window.KGAudio.prefs.muted) setPlaying(0);
         if (id === 'lines') { setQueue(lines.map((_, i) => i)); setRevealed(false); setFirstTry({}); setPronSuggest(null); }
         if (id === 'whole') { setPeeked(new Set()); setShowAll(false); }
       };
 
-      const finish = async (id, rows) => {
+      const seconds = () => Math.max(0, Math.round((Date.now() - startedAt.current) / 1000));
+      const recordLine = (line, ok) => {
+        if (recordedLines.current.has(line.id)) return;
+        saving.record({ vocabulary_id: null, sentence_id: line.id, selected_vocabulary_id: null,
+          is_correct: ok, answered_at: new Date().toISOString() }, seconds());
+        recordedLines.current.add(line.id);
+      };
+      const finish = (id, rows) => {
         if (savedStep.current === id) return;
         savedStep.current = id;
         const total = rows.length, correct = rows.filter(r => r.ok).length;
+        // Line practice already checkpointed each first judgment; whole
+        // practice has no judged answers until the learner confirms it.
+        if (id === 'whole') for (const row of rows) recordLine(row.line, row.ok);
         setResult({ id, total, correct });
-        if (!user || !SPEAK_SESSION_TYPES[id]) return;
-        const now = new Date().toISOString();
-        const { data: session, error } = await supabase.from(TABLES.quizSessions).insert({
-          user_id: user.id, language_code: languageCode, topic_id: null, quiz_type: SPEAK_SESSION_TYPES[id],
-          total_questions: total, correct_answers: correct,
-          time_spent_seconds: Math.round((Date.now() - startedAt.current) / 1000), completed_at: now,
-        }).select('id').single();
-        if (error || !session) return;
-        await supabase.from(TABLES.quizAnswers).insert(rows.map(r => ({
-          session_id: session.id, vocabulary_id: null, sentence_id: r.line.id, selected_vocabulary_id: null, is_correct: r.ok, answered_at: now,
-        })));
+        if (user && SPEAK_SESSION_TYPES[id]) saving.finishTimed(seconds());
       };
 
       // ---------- step 2: judge each line; a miss comes back at the end ----------
       const lineIdx = queue[0];
       const reveal = () => { setRevealed(true); window.KGAudio.autoPlay(lines[lineIdx].native_text, languageCode, speakerVoice(lines[lineIdx]), sentenceAudioResource(lines[lineIdx], languageCode)); };
       const judge = (ok) => {
+        if (savedStep.current === 'lines' || lineIdx == null || !lines[lineIdx]) return;
         const ft = lineIdx in firstTry ? firstTry : { ...firstTry, [lineIdx]: ok };
+        if (!(lineIdx in firstTry)) recordLine(lines[lineIdx], ok);
         const next = ok ? queue.slice(1) : [...queue.slice(1), lineIdx];
         setFirstTry(ft);
         setRevealed(false);
@@ -4852,6 +4868,7 @@
                 <h2 className="text-3xl font-bold text-gray-800">Quiz Mode</h2>
               </div>
               {modeToggle}
+              <QuizRecoveryPanel saving={saving} />
 
               {sentences === null ? <LoadingSpinner /> : loadError ? (
                 <div className="bg-yellow-50 text-yellow-800 rounded-2xl p-4 text-sm">
@@ -4875,7 +4892,7 @@
                   </div>
                   <div className="space-y-3">
                     {SPEAK_STEPS.map(x => (
-                      <button key={x.id} onClick={() => startStep(x.id)}
+                      <button key={x.id} onClick={() => startStep(x.id)} disabled={x.id !== 'listen' && saving.restricted && lines.length > window.KGQuizSave.atomicLimit}
                         className="w-full flex items-center gap-4 p-4 rounded-2xl border-2 border-gray-200 hover:border-jade-400 hover:bg-jade-50 text-left transition-all">
                         <div className="w-10 h-10 rounded-full bg-jade-600 text-white font-bold flex items-center justify-center shrink-0">{x.n}</div>
                         <div>
@@ -4885,6 +4902,7 @@
                       </button>
                     ))}
                   </div>
+                  {saving.restricted && lines.length > window.KGQuizSave.atomicLimit && <p role="alert" className="text-sm text-amber-800">Choose a paragraph with at most 500 lines to save it atomically.</p>}
                   <p className="text-xs text-gray-400 text-center">You judge your own speaking: 🎙️ record yourself to compare with the real voice. Doesn't count toward unlocking topics.</p>
                 </div>
               )}
@@ -4905,6 +4923,8 @@
               <div className="text-6xl mb-3">{pct === 100 ? '🎉' : pct >= 60 ? '👏' : '💪'}</div>
               <h2 className="text-2xl font-bold text-gray-800 mb-1">{stepInfo.label} done</h2>
               <p className="text-gray-600 mb-6">{line}</p>
+              {user && result.total > 0 && <QuizSaveStatus state={saving.state} onRetry={saving.saveCurrent}
+                onDownload={saving.draft ? () => saving.download(saving.draft) : null} />}
               <div className="flex flex-col sm:flex-row gap-3 justify-center">
                 <button onClick={() => startStep(step)} className="px-6 py-3 border-2 border-gray-200 rounded-full font-medium hover:border-gray-300">↺ Again</button>
                 {nextStep && <button onClick={() => startStep(nextStep.id)} className="px-6 py-3 bg-jade-600 text-white rounded-full font-bold hover:bg-jade-700">Next: {nextStep.n} · {nextStep.label} →</button>}
@@ -4957,6 +4977,8 @@
           <div className="max-w-2xl mx-auto p-6">
             <div className="bg-white rounded-3xl shadow-xl p-6 sm:p-8">
               {header}
+              {saving.state.status === 'storage-error' && <QuizSaveStatus state={saving.state} onRetry={saving.checkpoint}
+                onDownload={saving.draft ? () => saving.download(saving.draft) : null} />}
               <div className="w-full bg-gray-200 rounded-full h-2 mb-6">
                 <div className="bg-jade-500 h-2 rounded-full transition-all" style={{ width: `${(doneCount / lines.length) * 100}%` }} />
               </div>
@@ -5385,7 +5407,10 @@
       const [startedAt, setStartedAt] = useState(null);
       const [now, setNow] = useState(Date.now());
       const [stats, setStats] = useState({ chars: 0, errors: 0, done: 0, skipped: 0 });
-      const [answers, setAnswers] = useState([]);
+      const saving = useQuizSaving({ user, languageCode, kind: 'typing' });
+      const finishedRun = React.useRef(false);
+      const clockStart = React.useRef(null);
+      const answerCount = React.useRef(0);
       const [reveal, setReveal] = useState(null);
       const [result, setResult] = useState(null);
       const composing = React.useRef(false);
@@ -5393,7 +5418,7 @@
       const firstWrong = React.useRef(null); // what was typed when the current item first went wrong (shown in admin → Typed mistakes)
       const inputRef = React.useRef(null);
       const statsRef = React.useRef(stats); statsRef.current = stats;
-      const answersRef = React.useRef(answers); answersRef.current = answers;
+      const elapsedNow = () => clockStart.current == null ? 0 : Math.min(duration, Math.max(0, (Date.now() - clockStart.current) / 1000));
 
       // Do NOT silently select All when a previously saved topic is revoked:
       // an explicit user selection is required before unrelated words appear.
@@ -5423,11 +5448,12 @@
       const bestKey = `${languageCode}|${mode}|${safeSource}${safeSource === 'words' && safeTopicId !== 'all' ? '|' + safeTopicId : ''}`;
       const [, setBestsSynced] = useState(0);
       useEffect(() => {
+        if (saving.restricted) return;
         let cancelled = false;
         syncTypingBests(user, loadFromStorage(TYPING_BEST_KEY, {})).then(m => { if (!cancelled) { saveToStorage(TYPING_BEST_KEY, m); setBestsSynced(n => n + 1); } });
         return () => { cancelled = true; };
-      }, [user]);
-      const bests = loadFromStorage(TYPING_BEST_KEY, {});
+      }, [user, saving.restricted]);
+      const bests = saving.restricted ? {} : loadFromStorage(TYPING_BEST_KEY, {});
       const best = bests[bestKey];
 
       const start = () => {
@@ -5435,8 +5461,11 @@
         // Enough items for the whole run: reshuffle the pool as often as needed
         let list = [];
         while (list.length < 200) list = list.concat(shuffleArr(pool));
+        if (saving.restricted) list = list.slice(0, window.KGQuizSave.atomicLimit);
+        finishedRun.current = false; clockStart.current = null; answerCount.current = 0;
+        saving.begin({ topic_id: null, quiz_type: mode === 'recall' ? 'typing_recall' : 'typing_copy', time_spent_seconds: 0 });
         setItems(list); setIdx(0); setTyped(''); setStartedAt(null); setNow(Date.now());
-        setStats({ chars: 0, errors: 0, done: 0, skipped: 0 }); setAnswers([]); setReveal(null); setResult(null);
+        setStats({ chars: 0, errors: 0, done: 0, skipped: 0 }); setReveal(null); setResult(null);
         wasWrong.current = false; firstWrong.current = null; composing.current = false;
         setPhase('run');
       };
@@ -5447,56 +5476,58 @@
       const accOf = (s) => (s.chars + s.errors > 0 ? Math.round((s.chars / (s.chars + s.errors)) * 100) : 100);
 
       // secs: the full time, or the time actually typed when leaving early
-      const finish = useCallback(async (secs = duration) => {
-        const s = statsRef.current, ans = answersRef.current;
+      const finish = (secs = duration) => {
+        if (finishedRun.current) return;
+        finishedRun.current = true;
+        const s = statsRef.current;
         const cpm = cpmOf(s.chars, secs), acc = accOf(s);
-        const prev = loadFromStorage(TYPING_BEST_KEY, {});
+        const prev = saving.restricted ? {} : loadFromStorage(TYPING_BEST_KEY, {});
         const old = prev[bestKey];
         const isBest = !old || cpm > old.cpm;
-        const next = { ...prev, [bestKey]: { cpm: isBest ? cpm : old.cpm, last: cpm, at: new Date().toISOString() } };
-        saveToStorage(TYPING_BEST_KEY, next);
-        syncTypingBests(user, next).then(m => saveToStorage(TYPING_BEST_KEY, mergeTypingBests(loadFromStorage(TYPING_BEST_KEY, {}), m)));
+        // Legacy preference behavior is separate from quiz acknowledgement.
+        // Restricted typing-best integration is deferred to F2E2d.
+        if (!saving.restricted) {
+          const next = { ...prev, [bestKey]: { cpm: isBest ? cpm : old.cpm, last: cpm, at: new Date().toISOString() } };
+          saveToStorage(TYPING_BEST_KEY, next);
+          syncTypingBests(user, next).then(m => saveToStorage(TYPING_BEST_KEY, mergeTypingBests(loadFromStorage(TYPING_BEST_KEY, {}), m)));
+        }
         setResult({ cpm, acc, done: s.done, skipped: s.skipped, isBest, prevBest: old?.cpm ?? null, prevLast: old?.last ?? null });
         setPhase('done');
-        if (!user || s.done + s.skipped === 0) return;
-        const { data: session, error } = await supabase.from(TABLES.quizSessions).insert({
-          user_id: user.id, language_code: languageCode, topic_id: null,
-          quiz_type: mode === 'recall' ? 'typing_recall' : 'typing_copy',
-          total_questions: s.done + s.skipped, correct_answers: s.done,
-          time_spent_seconds: Math.round(secs), completed_at: new Date().toISOString(),
-        }).select('id').single();
-        // Both modes save their answers (admin → Typed mistakes). Only recall counts toward word strength:
-        // the learning path ignores typing_copy (STRENGTH_IGNORED_TYPES).
-        if (!error && session && ans.length) {
-          const rows = ans.map(a => ({ ...a, session_id: session.id }));
-          const { error: e2 } = await supabase.from(TABLES.quizAnswers).insert(rows);
-          if (e2) await supabase.from(TABLES.quizAnswers).insert(rows.map(({ sentence_id, ...r }) => r));
-        }
-      }, [duration, bestKey, user, languageCode, mode]);
+        if (user && answerCount.current) saving.finishTimed(Math.max(0, Math.round(secs)));
+      };
+      const finishLatest = React.useRef(finish); finishLatest.current = finish;
 
       // Clock: starts on the first keystroke, ends the run when time is up
       useEffect(() => {
         if (phase !== 'run' || !startedAt) return;
         const t = setInterval(() => {
           const n = Date.now(); setNow(n);
-          if ((n - startedAt) / 1000 >= duration) { clearInterval(t); finish(); }
+          if ((n - startedAt) / 1000 >= duration) { clearInterval(t); finishLatest.current(); }
         }, 200);
         return () => clearInterval(t);
-      }, [phase, startedAt, duration, finish]);
+      }, [phase, startedAt, duration]);
+      useEffect(() => {
+        if (phase === 'run' && items.length && idx >= items.length) finishLatest.current(elapsedNow());
+      }, [phase, idx, items.length]);
 
       useEffect(() => { if (phase === 'run' && inputRef.current) inputRef.current.focus(); }, [phase, idx]);
 
       const item = items[idx];
       // selected_vocabulary_id = the item when it was typed to the end, null when skipped
       const record = (correct, typedText, finished) => {
-        if (item.kind === 'w') setAnswers(a => [...a, { vocabulary_id: item.id, selected_vocabulary_id: finished ? item.id : null, is_correct: correct, answer_text: typedText, answered_at: new Date().toISOString() }]);
-        else setAnswers(a => [...a, { vocabulary_id: null, sentence_id: item.id, selected_vocabulary_id: finished ? item.id : null, is_correct: correct, answer_text: typedText, answered_at: new Date().toISOString() }]);
+        saving.record({
+          vocabulary_id: item.kind === 'w' ? item.id : null,
+          ...(item.kind === 's' ? {sentence_id: item.id} : {}),
+          selected_vocabulary_id: finished ? item.id : null,
+          is_correct: correct, answer_text: typedText, answered_at: new Date().toISOString(),
+        }, Math.round(elapsedNow()));
+        answerCount.current++;
       };
       const advance = () => { setIdx(i => i + 1); setTyped(''); wasWrong.current = false; firstWrong.current = null; };
 
       const evaluate = (value, isComposing) => {
-        if (phase !== 'run' || !item) return;
-        if (!startedAt && value) { setStartedAt(Date.now()); setNow(Date.now()); }
+        if (phase !== 'run' || !item || finishedRun.current) return;
+        if (clockStart.current == null && value) { clockStart.current = Date.now(); setStartedAt(clockStart.current); setNow(clockStart.current); }
         const m = typingMatch(value, item.text);
         if (m.done) {
           setStats(s => ({ ...s, chars: s.chars + typingChars(item.text), done: s.done + 1 }));
@@ -5520,14 +5551,14 @@
         evaluate(value, composing.current || e.nativeEvent?.isComposing);
       };
       const skip = () => {
-        if (!item) return;
+        if (!item || finishedRun.current) return;
         setStats(s => ({ ...s, skipped: s.skipped + 1 }));
         record(false, typed, false);
         setReveal(mode === 'recall' ? item : null);
         advance();
         if (inputRef.current) inputRef.current.focus();
       };
-      const leave = () => { if (phase === 'run' && startedAt && elapsed >= 5) finish(elapsed); else setPhase('setup'); };
+      const leave = () => { if (phase === 'run' && (answerCount.current || (startedAt && elapsedNow() >= 5))) finish(elapsedNow()); else setPhase('setup'); };
 
       // ---------- setup ----------
       if (phase === 'setup') {
@@ -5548,6 +5579,7 @@
                 <h2 className="text-3xl font-bold text-gray-800">Quiz Mode</h2>
               </div>
               {modeToggle}
+              <QuizRecoveryPanel saving={saving} />
               <div className="space-y-5">
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Mode</label>
@@ -5604,6 +5636,8 @@
                 </div>
               </div>
               <p className="text-gray-500 mb-1">{result.done} typed{result.skipped ? ` · ${result.skipped} skipped` : ''}</p>
+              {user && result.done + result.skipped > 0 && <QuizSaveStatus state={saving.state} onRetry={saving.saveCurrent}
+                onDownload={saving.draft ? () => saving.download(saving.draft) : null} />}
               {delta != null && <p className={`text-sm mb-1 ${delta >= 0 ? 'text-green-600' : 'text-gray-500'}`}>{delta >= 0 ? `+${delta}` : delta} since last time</p>}
               {result.prevBest != null && !result.isBest && <p className="text-sm text-gray-400 mb-1">Best: {result.prevBest}</p>}
               <div className="flex gap-4 justify-center mt-6">
@@ -5632,6 +5666,8 @@
             </div>
           </div>
 
+          {saving.state.status === 'storage-error' && <QuizSaveStatus state={saving.state} onRetry={saving.checkpoint}
+            onDownload={saving.draft ? () => saving.download(saving.draft) : null} />}
           <div className="bg-white rounded-2xl shadow-lg p-8 mb-4 text-center">
             {showTarget ? (
               <>
