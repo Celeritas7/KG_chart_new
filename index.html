@@ -2338,15 +2338,27 @@
     // otherwise this device only (same formula, checked here).
     function useLevels(user, languageCode) {
       const rules = React.useContext(RulesContext);
+      const mediaScope=useContext(KGMediaScopeContext);
+      const policy=mediaScope?.ownerId===user?.id&&mediaScope?.policy?mediaScope.policy:
+        !U3C1_SCOPED_UI_ENABLED&&!mediaScope?U3C1_LEGACY_POLICY:null;
+      const legacy=policy?.state==='legacy';
+      const guarded=useRestrictedLevels(user,languageCode,policy);
       const email = (user?.email || '').toLowerCase();
+      const legacyScope=React.useRef(null),levelsMounted=React.useRef(true);
+      const legacyIdentity=JSON.stringify([user?.id,email,languageCode,policy?.state,policy?.revision]);
+      const legacyToken=legacyScope.current?.identity===legacyIdentity?legacyScope.current.token:{};
+      legacyScope.current={identity:legacyIdentity,token:legacyToken};
+      const currentLegacy=()=>legacy&&levelsMounted.current&&legacyScope.current?.token===legacyToken;
+      useEffect(()=>{levelsMounted.current=true;return()=>{levelsMounted.current=false;};},[]);
       const localKey = `kg_chart_level_${languageCode}`;
       const [state, setState] = useState({ level: 1, unlocked: 1, loaded: false, db: false });
       const [sessions, setSessions] = useState([]);
 
       const loadSessions = useCallback(async () => {
-        if (!user) return [];
+        if (!currentLegacy() || !user) return [];
         const { data } = await supabase.from(TABLES.quizSessions).select('id, difficulty, quiz_type, total_questions, correct_answers, created_at').eq('user_id', user.id).eq('language_code', languageCode)
           .in('quiz_type', MCQ_QUIZ_TYPES).order('created_at', { ascending: false }).limit(300);
+        if(!currentLegacy())return [];
         let fresh = [];
         try {
           const pendingIds = new Set(quizSaveStore.list(user.id, languageCode).filter(draft => draft.kind !== 'colour').map(draft => draft.id));
@@ -2354,9 +2366,10 @@
         } catch (_) { /* Unreadable recovery state must not advance a level. */ }
         setSessions(fresh);
         return fresh;
-      }, [user, languageCode]);
+      }, [user, languageCode, legacyToken]);
 
       useEffect(() => {
+        if(!currentLegacy())return;
         let cancelled = false;
         (async () => {
           const local = loadFromStorage(localKey, { level: 1, unlocked: 1 });
@@ -2365,32 +2378,38 @@
             const { data, error } = await supabase.from(TABLES.userLevels).select('*').eq('email', email).eq('language_code', languageCode).maybeSingle();
             if (!error) next = { level: data?.level || 1, unlocked: data?.unlocked || 1, loaded: true, db: true };
           }
-          if (!cancelled) setState(next);
-          if (!cancelled) await loadSessions();
+          if (!cancelled&&currentLegacy()) setState(next);
+          if (!cancelled&&currentLegacy()) await loadSessions();
         })();
         return () => { cancelled = true; };
-      }, [user, email, languageCode]);
+      }, [user, email, languageCode, legacyToken]);
 
       const save = async (level, unlocked) => {
+        if(!currentLegacy())return;
         saveToStorage(localKey, { level, unlocked });
         if (state.db && email) await supabase.from(TABLES.userLevels).upsert({ email, language_code: languageCode, level, unlocked: Math.max(level, unlocked), updated_at: new Date().toISOString() });
       };
       const setLevel = (n) => {
+        if(!currentLegacy())return;
         const level = Math.min(Math.max(n, 1), state.unlocked);
         setState(s => ({ ...s, level }));
         save(level, state.unlocked);
       };
       // After a multiple-choice quiz is saved: run the formula; returns the newly unlocked level, or null
       const afterQuiz = async () => {
+        if(!currentLegacy())return null;
         const stillOwner = async () => {
+          if(!currentLegacy())return false;
           const result = await supabase.auth.getSession();
-          return !result.error && result.data?.session?.user?.id === user?.id;
+          return currentLegacy()&&!result.error && result.data?.session?.user?.id === user?.id;
         };
         if (!user || !await stillOwner()) return null;
         if (quizSaveStore.list(user?.id, languageCode).some(draft => draft.kind !== 'colour')) return null;
         const fresh = await loadSessions();
+        if(!currentLegacy())return null;
         if (quizSaveStore.list(user?.id, languageCode).some(draft => draft.kind !== 'colour')) return null;
         if (!await stillOwner()) return null;
+        if(!currentLegacy())return null;
         let unlocked = state.unlocked;
         if (state.db) {
           const { data, error } = await supabase.rpc('kg_chart_check_level_up', { p_lang: languageCode });
@@ -2399,15 +2418,166 @@
         } else if (state.unlocked < LEVELS.length && levelProgress(fresh, state.unlocked, rules.levelUp).ready) {
           unlocked = state.unlocked + 1;
         }
-        if (unlocked > state.unlocked) {
+        if (currentLegacy()&&unlocked > state.unlocked) {
           setState(s => ({ ...s, unlocked }));
           saveToStorage(localKey, { level: state.level, unlocked });
           return unlocked;
         }
         return null;
       };
-      const progress = levelProgress(sessions, state.unlocked, rules.levelUp);
-      return { ...state, setLevel, afterQuiz, progress, levelUp: rules.levelUp };
+      const progress = legacy?levelProgress(sessions, state.unlocked, rules.levelUp):null;
+      return legacy?{ ...state, guarded:false, setLevel, afterQuiz, progress, levelUp: rules.levelUp }:guarded;
+    }
+
+    // Restricted difficulty has no device fallback or summary-based formula.
+    // Only these RPCs can establish the current selected and unlocked levels.
+    function useRestrictedLevels(user,languageCode,policy) {
+      const identity=JSON.stringify([user?.id,languageCode,policy?.state,policy?.revision]);
+      const live=React.useRef(null),mounted=React.useRef(true),action=React.useRef(null);
+      const token=live.current?.identity===identity?live.current.token:{};
+      live.current={identity,token,ownerId:user?.id,languageCode,policy};
+      const current=k=>mounted.current&&live.current?.token===k;
+      const seen=React.useRef(null),uncertain=React.useRef(null),known=React.useRef(null);
+      if(seen.current?.token!==token)seen.current={token,ids:new Set()};
+      if(uncertain.current?.token!==token)uncertain.current={token,value:false};
+      if(known.current?.token!==token)known.current={token,state:null};
+      const [record,setRecord]=useState(null),[working,setWorking]=useState(null);
+      const [notice,setNotice]=useState(null);
+      const state=record?.token===token?record:null;
+      const busy=working?.token===token;
+      const target={ownerId:user?.id,languageCode,revision:policy?.revision};
+      const options=k=>({client:supabase,getScope:()=>current(k)?live.current:null,
+        offlineClient:window.KGOffline?.client===supabase});
+      const report=message=>{if(current(token))setNotice({token,message});};
+      const accept=next=>{
+        const before=known.current.state;
+        if(before&&(next.version<before.version||next.version===before.version&&
+          (next.level!==before.level||next.unlocked!==before.unlocked)))
+          throw Error('A stale difficulty response could not be accepted. Refresh difficulty before continuing.');
+        known.current.state=next;
+      };
+      const hasPending=()=>{
+        if(!user?.id||!languageCode)return true;
+        try{
+          return quizSaveStore.list(user.id,languageCode).some(d=>d.kind!=='colour')||
+            [...quizSaveMemory.values()].some(d=>d.ownerId===user.id&&d.languageCode===languageCode&&d.kind!=='colour');
+        }catch(_){return true;}
+      };
+      const begin=kind=>{
+        if(!current(token)||policy?.state!=='restricted'||action.current?.token===token)return null;
+        const next={token,kind};action.current=next;setWorking(next);
+        setRecord(old=>old?.token===token?{...old,announcement:null}:old);
+        return next;
+      };
+      const finish=slot=>{if(action.current===slot){action.current=null;if(current(slot.token))setWorking(null);}};
+      const refresh=useCallback(async(explicit=true)=>{
+        const slot=begin('read');if(!slot)return false;
+        report('Verifying difficulty…');
+        try{
+          const verified=await window.KGLevelState.read(options(token),target);
+          if(!current(token)||action.current!==slot)return false;
+          accept(verified);
+          if(explicit)uncertain.current.value=false;
+          setRecord({token,current:verified,evaluation:null,announcement:null,error:null});
+          report('Current difficulty verified.');return true;
+        }catch(error){
+          if(current(token)){
+            uncertain.current.value=true;
+            setRecord({token,current:null,evaluation:null,announcement:null,error:error?.message||'Reconnect and retry.'});
+            report(null);
+          }
+          return false;
+        }finally{finish(slot);}
+      },[token]);
+      useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+      useEffect(()=>{
+        if(policy?.state==='legacy')return;
+        if(policy?.state!=='restricted'||!user?.id||!languageCode){
+          setRecord({token,current:null,error:'Your learning access must be verified first.'});return;
+        }
+        refresh(false);
+        const reread=()=>refresh(false);
+        window.addEventListener('focus',reread);window.addEventListener('online',reread);
+        return()=>{
+          window.removeEventListener('focus',reread);window.removeEventListener('online',reread);
+          if(action.current?.token===token)action.current=null;
+        };
+      },[token]);
+      const mutate=async(kind,desired,automatic=false)=>{
+        if(!state?.current)return false;
+        if(kind==='check'&&hasPending()){
+          report('Save or resolve pending quizzes before checking advancement.');return false;
+        }
+        if(automatic&&uncertain.current.value){
+          report('Automatic advancement checks are paused. Refresh difficulty or check advancement to continue.');return false;
+        }
+        const slot=begin(kind);if(!slot)return false;
+        report(kind==='select'?'Confirming difficulty…':'Checking advancement…');
+        try{
+          const result=kind==='select'
+            ?await window.KGLevelState.select(options(token),target,state.current,desired)
+            :await window.KGLevelState.check(options(token),target,state.current);
+          if(!current(token)||action.current!==slot)return false;
+          if(result.status==='confirmed'){
+            accept(result.current);
+            if(kind==='check'&&!automatic)uncertain.current.value=false;
+            setRecord({token,current:result.current,error:null,
+              evaluation:result.evaluation?.level===result.current.unlocked?result.evaluation:null,
+              announcement:result.advanced?{version:result.current.version,level:result.advanced}:null});
+            report(kind==='select'?'Difficulty confirmed.':'Advancement checked.');return true;
+          }
+          uncertain.current.value=true;
+          if(result.current)accept(result.current);
+          setRecord({token,current:result.current||null,evaluation:null,announcement:null,
+            error:result.current?null:result.error?.message||'Reconnect and retry.'});
+          report(result.current?result.error?.message||'Current difficulty verified; the earlier change was not confirmed.':null);
+          return false;
+        }catch(error){
+          if(current(token)){
+            uncertain.current.value=true;
+            setRecord({token,current:null,evaluation:null,announcement:null,error:error?.message||'Reconnect and retry.'});
+            report(null);
+          }
+          return false;
+        }finally{finish(slot);}
+      };
+      const afterConfirmedQuiz=async draft=>{
+        if(!current(token)||policy?.state!=='restricted'||draft?.kind!=='word'||
+          draft.ownerId!==user?.id||draft.languageCode!==languageCode||
+          draft.saveContext?.mode!=='restricted'||draft.saveContext.revision!==policy.revision||
+          draft.session?.id!==draft.id||draft.session.user_id!==user.id||draft.session.language_code!==languageCode||
+          !MCQ_QUIZ_TYPES.includes(draft.session.quiz_type)||!Number.isInteger(draft.session.difficulty)||
+          draft.session.difficulty<1||draft.session.difficulty>4||seen.current.ids.has(draft.id))return false;
+        seen.current.ids.add(draft.id);
+        return mutate('check',null,true);
+      };
+      const verified=state?.current;
+      const announcement=verified&&state?.announcement?.version===verified.version&&
+        state.announcement.level===verified.unlocked?state.announcement.level:null;
+      return {guarded:true,restricted:policy?.state==='restricted',level:verified?.level||1,
+        unlocked:verified?.unlocked||1,version:verified?.version,loaded:!!verified,busy,
+        error:state?.error||null,notice:notice?.token===token?notice.message:null,
+        reviewRequired:uncertain.current.value,pending:hasPending(),progress:state?.evaluation||null,announcement,
+        refresh:()=>refresh(true),check:()=>mutate('check'),setLevel:n=>mutate('select',n),afterConfirmedQuiz,
+        dismissAnnouncement:()=>setRecord(old=>old?.token===token?{...old,announcement:null}:old)};
+    }
+
+    function DifficultyStatus({levels}) {
+      if(!levels.guarded)return null;
+      return <section aria-label="Difficulty status" className="my-3 rounded-xl border border-jade-200 bg-jade-50 p-3 text-sm text-left">
+        {levels.error&&<p role="alert">Difficulty could not be verified. {levels.error}</p>}
+        {levels.notice&&<p role="status">{levels.notice}</p>}
+        {levels.loaded&&<p>Current difficulty: {levelOf(levels.level).name} · available through {levelOf(levels.unlocked).name}.</p>}
+        {levels.reviewRequired&&<p className="mt-1">Automatic advancement checks are paused. Refresh difficulty or check advancement to continue.</p>}
+        {levels.pending&&<p className="mt-1">Save or resolve pending quizzes before checking advancement.</p>}
+        {levels.progress&&levels.unlocked<LEVELS.length&&<p className="mt-1">
+          Confirmed {levelOf(levels.progress.level).name} answers: {levels.progress.total}/{levels.progress.requiredAnswers} · {levels.progress.pct}% correct (need {levels.progress.requiredPct}%).
+        </p>}
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button type="button" disabled={levels.busy} onClick={levels.refresh} className="px-3 py-2 rounded-lg bg-white">Refresh difficulty</button>
+          <button type="button" disabled={levels.busy||!levels.loaded||levels.pending} onClick={levels.check} className="px-3 py-2 rounded-lg bg-white">Check advancement</button>
+        </div>
+      </section>;
     }
 
     // ==========================================
@@ -2915,7 +3085,7 @@
       }
     });
 
-    function useQuizSaving({ user, languageCode, kind, onSaved }) {
+    function useQuizSaving({ user, languageCode, kind, onSaved, onRestrictedSaved }) {
       const draftRef = React.useRef(null);
       const scope = useContext(KGMediaScopeContext);
       const accessRef = React.useRef(null);
@@ -2925,6 +3095,13 @@
       const mounted = React.useRef(true);
       const onSavedRef = React.useRef(onSaved);
       onSavedRef.current = onSaved;
+      const onRestrictedSavedRef=React.useRef(onRestrictedSaved);
+      onRestrictedSavedRef.current=onRestrictedSaved;
+      const confirmedScope=React.useRef(null);
+      const confirmationIdentity=JSON.stringify([user?.id,languageCode,accessRef.current?.state,accessRef.current?.revision]);
+      if(confirmedScope.current?.identity!==confirmationIdentity)
+        confirmedScope.current={identity:confirmationIdentity,ownerId:user?.id,languageCode,
+          mode:accessRef.current?.state,revision:accessRef.current?.revision};
       const [state, setState] = useState({ status: 'idle' });
       const [pending, setPending] = useState([]);
       const [recoveryError, setRecoveryError] = useState(false);
@@ -2983,6 +3160,7 @@
         if (!draft?.answers.length) return;
         // A second click joins the same attempt, including its completion callback.
         if (quizSaveStates.get(draft.id)?.status === 'saving') return;
+        const originalScope=confirmedScope.current;
         const sealed = { ...draft, sealed: true };
         quizSaveMemory.set(draft.id, sealed);
         quizSaveStates.set(draft.id, { status: 'saving' });
@@ -3006,9 +3184,22 @@
            (result.draft.kind==='word'||result.draft.session.quiz_type==='typing_recall'))
           window.dispatchEvent(new CustomEvent('kg-path-evidence-confirmed',{detail:{ownerId:result.draft.ownerId,
             languageCode:result.draft.languageCode,revision:result.draft.saveContext.revision}}));
+        // F2E2c advances only from a confirmed atomic MCQ save in the same
+        // uninterrupted scope. The legacy callback still owns auto-ratings.
+        const confirmedMcq=result.status==='saved'&&result.draft.kind==='word'&&
+          result.draft.saveContext?.mode==='restricted'&&MCQ_QUIZ_TYPES.includes(result.draft.session.quiz_type)&&
+          Number.isInteger(result.draft.session.difficulty)&&result.draft.session.difficulty>=1&&result.draft.session.difficulty<=4;
+        const originalStillCurrent=()=>mounted.current&&confirmedScope.current===originalScope&&
+          originalScope.ownerId===result.draft.ownerId&&originalScope.languageCode===result.draft.languageCode&&
+          originalScope.mode==='restricted'&&originalScope.revision===result.draft.saveContext?.revision;
+        if(confirmedMcq&&originalStillCurrent()){
+          try{
+            const identity=await supabase.auth.getSession();
+            if(!identity.error&&identity.data?.session?.user?.id===result.draft.ownerId&&originalStillCurrent())
+              await onRestrictedSavedRef.current?.(result.draft);
+          }catch(_){ /* The saved quiz remains saved; difficulty has its own recovery controls. */ }
+        }
         // Saving is already complete. A later progress-refresh error must not repeat the writes.
-        // Restricted automatic ratings/advancement/topic writes still use older
-        // consumers. F2E2 must integrate them before restricted activation.
         if (success && result.draft.saveContext?.mode !== 'restricted') {
           try {
             const identity = await supabase.auth.getSession();
@@ -3123,7 +3314,8 @@
       const L = levelOf(quizStarted ? quizLevelN : (isMcq ? lv.level : 1));
       const [timeLeft, setTimeLeft] = useState(null);
       const [levelUp, setLevelUp] = useState(null);
-      const saving = useQuizSaving({ user, languageCode, kind: 'word', onSaved: async (draft, isCurrent) => {
+      const saving = useQuizSaving({ user, languageCode, kind: 'word',
+        onRestrictedSaved:draft=>lv.afterConfirmedQuiz(draft),onSaved: async (draft, isCurrent) => {
         if (onSessionSaved) onSessionSaved();
         for (const answer of draft.answers) {
           if (!answer.is_correct && answer.vocabulary_id && !ratings[answer.vocabulary_id]?.rating)
@@ -3134,6 +3326,8 @@
           const up = await lv.afterQuiz(); if (up && isCurrent()) setLevelUp(up);
         }
       } });
+      const shownLevelUp=lv.guarded?lv.announcement:levelUp;
+      const levelUnavailable=isMcq&&(!lv.loaded||lv.busy);
       const sessionSaved = ['saved', 'queued'].includes(saving.state.status);
       const recoveryWarning = saving.state.status === 'storage-error' && <QuizSaveStatus
         state={saving.state} onRetry={saving.checkpoint}
@@ -3195,10 +3389,11 @@
       const wordTarget = dailyTarget === 0 ? playableVocab.length : Math.min(dailyTarget, playableVocab.length);
       const wordTooLarge = saving.restricted && wordTarget > window.KGQuizSave.atomicLimit;
       const startQuiz = useCallback(() => {
-        if (wordTooLarge) return;
+        if (wordTooLarge || lv.guarded&&isMcq&&(!lv.loaded||lv.busy)) return;
+        const nextLevel=lv.guarded?levelOf(isMcq?lv.level:1):L;
         saving.begin({ topic_id: quizTopic === 'all' || quizTopic === 'everything' ? null : quizTopic,
           quiz_type: quizType, ...(quizType === 'type_word' ? { quiz_level: twLevel } : {}),
-          ...(isMcq ? { difficulty: L.n } : {}) });
+          ...(isMcq ? { difficulty: nextLevel.n } : {}) });
         const targetCount = wordTarget;
         // All buckets: words you're still learning come up more often (weighted shuffle), well-known ones less
         const shuffled = quizBucket === 'all' ? weightedShuffle(playableVocab, v => BUCKET_WEIGHT[bucketOf(v)]) : shuffleArr(playableVocab);
@@ -3216,7 +3411,7 @@
             if (t && seen.has(t)) continue;
             if (t) seen.add(t);
             wrong.push(v);
-            if (wrong.length === (isMcq ? L.choices : 4) - 1) break;
+            if (wrong.length === (isMcq ? nextLevel.choices : 4) - 1) break;
           }
           return shuffleArr([q, ...wrong]);
         });
@@ -3228,10 +3423,11 @@
         setScore({ correct: 0, total: 0 });
         setQuizAnswers([]);
         setLevelUp(null);
-        setQuizLevelN(L.n);
+        if(lv.guarded)lv.dismissAnnouncement();
+        setQuizLevelN(nextLevel.n);
         setQuizCompleted(false);
         setQuizStarted(true);
-      }, [playableVocab, topicVocab, pool, dailyTarget, isListen, languageCode, isMcq, L.n, L.choices, quizBucket, ratings, quizTopic, quizType, twLevel, wordTarget, wordTooLarge]);
+      }, [playableVocab, topicVocab, pool, dailyTarget, isListen, languageCode, isMcq, L.n, L.choices, quizBucket, ratings, quizTopic, quizType, twLevel, wordTarget, wordTooLarge,lv.guarded,lv.level,lv.loaded,lv.busy]);
 
       const generateQuestion = useCallback(() => {
         if (pool.length < 4 || quizWords.length < 1 || currentWordIndex >= quizWords.length) {
@@ -3547,15 +3743,17 @@
                       {LEVELS.map(l => {
                         const locked = l.n > lv.unlocked;
                         return (
-                          <button key={l.n} onClick={() => !locked && lv.setLevel(l.n)} disabled={locked} title={locked ? 'Locked' : levelSummary(l)}
-                            className={`py-2 rounded-xl border-2 text-sm font-medium transition-all ${lv.level === l.n ? 'border-jade-500 bg-jade-50 text-jade-700' : locked ? 'border-gray-100 text-gray-300' : 'border-gray-200 hover:border-gray-300'}`}>
+                          <button key={l.n} onClick={() => !locked && lv.setLevel(l.n)} disabled={locked||lv.guarded&&(!lv.loaded||lv.busy)} title={locked ? 'Locked' : levelSummary(l)}
+                            aria-pressed={(!lv.guarded||lv.loaded)&&lv.level===l.n}
+                            className={`py-2 rounded-xl border-2 text-sm font-medium transition-all ${(!lv.guarded||lv.loaded)&&lv.level === l.n ? 'border-jade-500 bg-jade-50 text-jade-700' : locked ? 'border-gray-100 text-gray-300' : 'border-gray-200 hover:border-gray-300'}`}>
                             <div className="text-lg">{locked ? '🔒' : l.icon}</div>{l.name}
                           </button>
                         );
                       })}
                     </div>
-                    <p className="text-xs text-gray-500 mt-2">{levelSummary(L)}</p>
-                    {lv.unlocked < LEVELS.length && user && (
+                    {(!lv.guarded||lv.loaded)&&<p className="text-xs text-gray-500 mt-2">{levelSummary(L)}</p>}
+                    <DifficultyStatus levels={lv}/>
+                    {!lv.guarded&&lv.unlocked < LEVELS.length && user && (
                       <p className="text-xs text-gray-400 mt-1">
                         {levelOf(lv.unlocked + 1).icon} {levelOf(lv.unlocked + 1).name} unlocks at {lv.levelUp.pct}% over your last {lv.levelUp.answers} answers on {levelOf(lv.unlocked).name}:
                         {' '}<b className="text-gray-600">{lv.progress.total < lv.levelUp.answers ? `${lv.progress.total}/${lv.levelUp.answers} answers so far` : `${lv.progress.pct}% now`}</b>
@@ -3620,9 +3818,9 @@
                   </div>
                 )}
 
-                <button onClick={startQuiz} disabled={wordTooLarge || playableVocab.length < 1 || pool.length < 4 || (isMcq && !lv.loaded)}
+                <button onClick={startQuiz} disabled={wordTooLarge || playableVocab.length < 1 || pool.length < 4 || levelUnavailable}
                   className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">
-                  {wordTooLarge ? 'Choose a smaller target (maximum 500 answers)' : isMcq && !lv.loaded ? 'Loading your level…' : pool.length < 4 ? 'Need 4+ words total' : playableVocab.length < 1 ? (quizBucket === 'all' ? 'No words in topic' : 'No words in this bucket') : `Start Quiz (${wordTarget} words)`}
+                  {wordTooLarge ? 'Choose a smaller target (maximum 500 answers)' : isMcq&&lv.busy ? 'Verifying your level…' : isMcq && !lv.loaded ? lv.error?'Difficulty unavailable':'Loading your level…' : pool.length < 4 ? 'Need 4+ words total' : playableVocab.length < 1 ? (quizBucket === 'all' ? 'No words in topic' : 'No words in this bucket') : `Start Quiz (${wordTarget} words)`}
                 </button>
               </div>
             </div>
@@ -3680,21 +3878,25 @@
               </div>
               {user && score.total > 0 && <QuizSaveStatus state={saving.state} onRetry={persistSession}
                 onDownload={saving.draft ? () => saving.download(saving.draft) : null} />}
-              {levelUp && (
+              {isMcq&&<DifficultyStatus levels={lv}/>}
+              {shownLevelUp && (
                 <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 mb-5">
-                  <div className="text-lg font-bold text-amber-800">🎉 {levelOf(levelUp).icon} {levelOf(levelUp).name} unlocked!</div>
-                  <div className="text-sm text-amber-700 mb-3">{levelSummary(levelOf(levelUp))}</div>
-                  <button onClick={() => { lv.setLevel(levelUp); setLevelUp(null); setQuizStarted(false); setQuizCompleted(false); }}
-                    className="px-4 py-2 bg-amber-500 text-white rounded-xl font-bold hover:bg-amber-600">Switch to {levelOf(levelUp).name}</button>
+                  <div className="text-lg font-bold text-amber-800">🎉 {levelOf(shownLevelUp).icon} {levelOf(shownLevelUp).name} unlocked!</div>
+                  <div className="text-sm text-amber-700 mb-3">{levelSummary(levelOf(shownLevelUp))}</div>
+                  <button disabled={lv.guarded&&(!lv.loaded||lv.busy)} onClick={async() => {
+                      if(lv.guarded){if(!await lv.setLevel(shownLevelUp))return;}
+                      else lv.setLevel(shownLevelUp);
+                      setLevelUp(null);setQuizStarted(false);setQuizCompleted(false);
+                    }} className="px-4 py-2 bg-amber-500 text-white rounded-xl font-bold hover:bg-amber-600">Switch to {levelOf(shownLevelUp).name}</button>
                 </div>
               )}
-              {isMcq && !levelUp && user && sessionSaved && lv.unlocked < LEVELS.length && (
+              {!lv.guarded&&isMcq && !shownLevelUp && user && sessionSaved && lv.unlocked < LEVELS.length && (
                 <p className="text-xs text-gray-400 mb-4">Toward {levelOf(lv.unlocked + 1).name}: {lv.progress.total < lv.levelUp.answers ? `${lv.progress.total}/${lv.levelUp.answers} answers` : `${lv.progress.pct}% (need ${lv.levelUp.pct}%)`}</p>
               )}
               <div className="flex gap-4 justify-center">
                 <button onClick={() => { setQuizStarted(false); setQuizCompleted(false); }}
                   className="px-6 py-3 bg-gray-100 rounded-xl font-medium hover:bg-gray-200">← Back to Setup</button>
-                <button onClick={startQuiz}
+                <button onClick={startQuiz} disabled={levelUnavailable}
                   className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Try Again</button>
               </div>
             </div>

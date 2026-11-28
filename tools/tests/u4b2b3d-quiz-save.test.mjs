@@ -1306,3 +1306,213 @@ test('F2E2b: no offline facade, foreign snapshot, duplicate topic, or invented e
   assert.throws(()=>f.store.put({...e,eventId:uuid(),topicId:'other'}));
   assert.equal(f.calls.filter(c=>c.name==='kg_chart_f2_complete_topic').length,0);
 });
+
+
+// F2E2c uses state versions, not rating-style event receipts. This fake
+// models the final state/select/check envelopes; native PostgreSQL CI owns
+// the receipt eligibility, rule precedence and administrative cutoff logic.
+const LevelAPI=context.window.KGLevelState;
+const LEVEL_STATE='kg_chart_f2_level_state',LEVEL_SELECT='kg_chart_f2_select_difficulty',LEVEL_CHECK='kg_chart_f2_check_level_up';
+const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
+function levelFixture(initial={level:1,unlocked:2,version:5}){
+  let state=copy(initial),owner=OWNER,revision=17;
+  let live={ownerId:OWNER,languageCode:'my',policy:{state:'restricted',revision:17}};
+  const calls=[],faults=[];
+  const evidence={total:0,correct:0,requiredAnswers:40,requiredPct:85};
+  const client={auth:{async getSession(){return {data:{session:{user:{id:owner}}}};}},
+    from(){throw Error('Restricted difficulty must not access raw tables');},
+    async rpc(name,args){
+      calls.push({name,args:copy(args)});
+      const i=faults.findIndex(f=>f.name===name),fault=i<0?null:faults.splice(i,1)[0];
+      if(fault?.before)await fault.before();
+      if(fault?.throwBefore)throw Error('Synthetic transport failure');
+      if(fault?.error&&!fault.commit)return {error:copy(fault.error)};
+      if(args.p_expected_revision!==revision)return {error:{code:'40001'}};
+      assert.equal(args.p_lang,'my');
+      let data;
+      if(name===LEVEL_STATE)data=copy(state);
+      else{
+        assert.ok([LEVEL_SELECT,LEVEL_CHECK].includes(name));
+        if(args.p_expected_version!==state.version)return {error:{code:'40001'}};
+        if(name===LEVEL_SELECT){
+          if(args.p_level<1||args.p_level>state.unlocked)return {error:deny};
+          if(args.p_level!==state.level){state.level=args.p_level;state.version++;}
+          data=copy(state);
+        }else{
+          const total=state.unlocked===4?0:evidence.total,correct=state.unlocked===4?0:evidence.correct;
+          if(state.unlocked<4&&total>=evidence.requiredAnswers&&correct*100>=total*evidence.requiredPct){
+            state.unlocked++;state.version++;
+          }
+          data={...copy(state),evaluated_total:total,evaluated_correct:correct,
+            required_answers:evidence.requiredAnswers,required_pct:evidence.requiredPct};
+        }
+      }
+      if(fault?.after)await fault.after();
+      if(fault?.throwAfter)throw Error('Synthetic lost reply');
+      if(fault?.error)return {error:copy(fault.error)};
+      if(fault&&Object.hasOwn(fault,'data'))data=typeof fault.data==='function'?fault.data(data):copy(fault.data);
+      return {data,...(fault?.destination?{saveDestination:fault.destination}:{})};
+    }};
+  const options={client,getScope:()=>live};
+  const target={ownerId:OWNER,languageCode:'my',revision:17};
+  return {client,options,target,calls,evidence,faults,
+    get state(){return copy(state);},set state(value){state=copy(value);},
+    set owner(value){owner=value;},get live(){return live;},set live(value){live=value;},
+    set revision(value){revision=value;},
+    read:()=>LevelAPI.read(options,target),
+    select:(before,desired)=>LevelAPI.select(options,target,before,desired),
+    check:before=>LevelAPI.check(options,target,before)};
+}
+const levelWrites=f=>f.calls.filter(c=>c.name!==LEVEL_STATE);
+test('F2E2c: only scoped server state is accepted; malformed and unsafe levels fail closed',async()=>{
+  const f=levelFixture();assert.deepEqual(copy(await f.read()),f.state);
+  assert.deepEqual(f.calls,[{name:LEVEL_STATE,args:{p_expected_revision:17,p_lang:'my'}}]);
+  for(const bad of [null,[],{}, {level:'1',unlocked:2,version:0},{level:0,unlocked:2,version:0},
+    {level:3,unlocked:2,version:0},{level:1,unlocked:5,version:0},{level:1,unlocked:2,version:-1},
+    {level:1,unlocked:2,version:Number.MAX_SAFE_INTEGER+1}]){
+    f.faults.push({name:LEVEL_STATE,data:bad});
+    await assert.rejects(f.read(),error=>error.code==='KG_LEVEL_STATE');
+  }
+  assert.equal(levelWrites(f).length,0);
+});
+test('F2E2c: selection waits for acknowledgement and current readback; original version stays frozen',async()=>{
+  const f=levelFixture(),before=await f.read(),entered=deferred(),release=deferred();
+  f.faults.push({name:LEVEL_STATE,before:async()=>{entered.resolve();await release.promise;}});
+  let settled=false;const task=f.select(before,2).then(result=>{settled=true;return result;});
+  await entered.promise;
+  assert.equal(settled,false);assert.equal(f.state.level,2);
+  assert.deepEqual(copy(before),{level:1,unlocked:2,version:5});
+  before.version=999;before.level=4;release.resolve();
+  const result=await task;
+  assert.equal(result.status,'confirmed');assert.deepEqual(copy(result.current),f.state);
+  assert.equal(result.advanced,null);
+  assert.deepEqual(levelWrites(f),[{name:LEVEL_SELECT,args:{p_expected_revision:17,p_lang:'my',p_expected_version:5,p_level:2}}]);
+});
+test('F2E2c: no-op selection keeps version and locked or exhausted versions send nothing',async()=>{
+  const f=levelFixture(),before=await f.read();
+  assert.equal((await f.select(before,1)).status,'confirmed');assert.equal(f.state.version,5);
+  assert.equal((await f.select(before,3)).status,'blocked');
+  assert.equal((await f.select({...before,version:Number.MAX_SAFE_INTEGER},2)).status,'blocked');
+  assert.equal(levelWrites(f).length,1);
+});
+test('F2E2c: exact concurrent selection joins once and a competing check stays blocked',async()=>{
+  const f=levelFixture(),before=await f.read(),entered=deferred(),release=deferred();
+  f.faults.push({name:LEVEL_SELECT,before:async()=>{entered.resolve();await release.promise;}});
+  const a=f.select(before,2),b=f.select(copy(before),2);
+  assert.equal(a,b);await entered.promise;
+  assert.equal((await f.check(before)).status,'busy');
+  release.resolve();assert.equal((await a).status,'confirmed');assert.equal(levelWrites(f).length,1);
+});
+test('F2E2c: whole-session evaluation is server-owned and advancement discards old-level progress',async()=>{
+  const f=levelFixture({level:1,unlocked:1,version:0});
+  Object.assign(f.evidence,{total:11,correct:9,requiredAnswers:10,requiredPct:90});
+  const first=await f.check(await f.read());
+  assert.equal(first.status,'confirmed');assert.equal(first.advanced,null);
+  assert.deepEqual(copy(first.evaluation),{level:1,total:11,correct:9,requiredAnswers:10,requiredPct:90,pct:81});
+  assert.equal(f.state.unlocked,1);
+  Object.assign(f.evidence,{total:12,correct:11});
+  const second=await f.check(first.current);
+  assert.equal(second.status,'confirmed');assert.equal(second.advanced,2);assert.equal(second.evaluation,null);
+  assert.deepEqual(copy(second.current),{level:1,unlocked:2,version:1});
+  const max=levelFixture({level:3,unlocked:4,version:10});
+  Object.assign(max.evidence,{total:500,correct:500});
+  const capped=await max.check(await max.read());
+  assert.equal(capped.status,'confirmed');assert.equal(capped.advanced,null);assert.equal(capped.evaluation,null);
+  assert.equal(max.state.version,10);
+});
+test('F2E2c: missing or failed selection reconciles current state without another mutation',async()=>{
+  for(const fault of [{error:deny},{error:{code:'PGRST202'}},{throwBefore:true}]){
+    const f=levelFixture(),before=await f.read();f.faults.push({name:LEVEL_SELECT,...fault});
+    const result=await f.select(before,2);
+    assert.equal(result.status,'reconciled');assert.equal(result.current.level,1);
+    assert.equal(result.advanced,null);assert.equal(levelWrites(f).length,1);
+    assert.equal(f.calls.filter(c=>c.name===LEVEL_STATE).length,2);
+  }
+});
+test('F2E2c: lost committed selection or unlock is observed but never attributed or replayed',async()=>{
+  for(const operation of ['select','check']){
+    const f=levelFixture(),before=await f.read();
+    Object.assign(f.evidence,{total:40,correct:40});
+    f.faults.push({name:operation==='select'?LEVEL_SELECT:LEVEL_CHECK,throwAfter:true});
+    const result=await (operation==='select'?f.select(before,2):f.check(before));
+    assert.equal(result.status,'reconciled');assert.deepEqual(copy(result.current),f.state);
+    assert.equal(result.advanced,null);assert.equal(result.evaluation,null);assert.equal(levelWrites(f).length,1);
+    // A reopened consumer may read the state; it does not rerun the intent.
+    await f.read();await f.read();assert.equal(levelWrites(f).length,1);
+  }
+});
+test('F2E2c: lost no-op check never reruns even when fresh evidence can now unlock',async()=>{
+  const f=levelFixture({level:1,unlocked:1,version:0}),before=await f.read();
+  f.faults.push({name:LEVEL_CHECK,error:lost,commit:true,after:()=>{Object.assign(f.evidence,{total:40,correct:40});}});
+  const result=await f.check(before);
+  assert.equal(result.status,'reconciled');assert.equal(result.current.version,0);assert.equal(result.current.unlocked,1);
+  await f.read();assert.equal(levelWrites(f).length,1);assert.equal(f.state.unlocked,1);
+  // A deliberate subsequent check is a new action, not original-event replay.
+  const explicit=await f.check(result.current);assert.equal(explicit.advanced,2);assert.equal(levelWrites(f).length,2);
+});
+test('F2E2c: stale versions reconcile without rebasing and newer readback never celebrates',async()=>{
+  const f=levelFixture(),before=await f.read();f.state={level:2,unlocked:3,version:8};
+  const stale=await f.select(before,2);
+  assert.equal(stale.status,'reconciled');assert.equal(stale.error.code,'KG_LEVEL_CONFLICT');
+  assert.equal(stale.current.version,8);assert.equal(levelWrites(f).length,1);
+  const g=levelFixture({level:1,unlocked:1,version:0});Object.assign(g.evidence,{total:40,correct:40});
+  g.faults.push({name:LEVEL_CHECK,after:()=>{g.state={level:2,unlocked:2,version:2};}});
+  const newer=await g.check(await g.read());
+  assert.equal(newer.status,'superseded');assert.deepEqual(copy(newer.current),g.state);
+  assert.equal(newer.advanced,null);assert.equal(newer.evaluation,null);assert.equal(levelWrites(g).length,1);
+});
+test('F2E2c: malformed acknowledgements cannot confirm a selection or advancement',async()=>{
+  for(const data of [s=>({...s,version:s.version+1}),s=>({...s,level:1}),s=>({...s,unlocked:3}),null]){
+    const f=levelFixture(),before=await f.read();f.faults.push({name:LEVEL_SELECT,data});
+    const result=await f.select(before,2);assert.equal(result.status,'reconciled');assert.equal(result.advanced,null);
+  }
+  for(const data of [s=>({...s,unlocked:3,version:2}),s=>({...s,evaluated_correct:41}),
+    s=>({...s,required_answers:9}),s=>({...s,required_pct:101}),s=>({...s,level:2}),
+    s=>({...s,evaluated_total:0,evaluated_correct:0}),s=>({...s,unlocked:1,version:0})]){
+    const f=levelFixture({level:1,unlocked:1,version:0});Object.assign(f.evidence,{total:40,correct:40});
+    f.faults.push({name:LEVEL_CHECK,data});const result=await f.check(await f.read());
+    assert.equal(result.status,'reconciled');assert.equal(result.advanced,null);assert.equal(result.evaluation,null);
+  }
+});
+test('F2E2c: absent or inconsistent readback holds state after an acknowledged mutation',async()=>{
+  for(const fault of [{error:lost},{data:{level:1,unlocked:2,version:5}},
+    {data:{level:1,unlocked:2,version:6}},{data:null},{destination:'device'}]){
+    const f=levelFixture(),before=await f.read();f.faults.push({name:LEVEL_STATE,...fault});
+    const result=await f.select(before,2);
+    assert.equal(result.status,'unavailable');assert.equal(result.current,undefined);assert.equal(result.advanced,undefined);
+    assert.equal(levelWrites(f).length,1);
+  }
+});
+test('F2E2c: uncertain mutation cannot adopt a regressed or same-version changed baseline',async()=>{
+  for(const data of [{level:1,unlocked:2,version:4},{level:2,unlocked:2,version:5},
+    {level:1,unlocked:3,version:5}]){
+    const f=levelFixture(),before=await f.read();
+    f.faults.push({name:LEVEL_SELECT,error:lost},{name:LEVEL_STATE,data});
+    const result=await f.select(before,2);
+    assert.equal(result.status,'unavailable');assert.equal(result.error.code,'KG_LEVEL_READBACK');
+    assert.equal(result.current,undefined);assert.equal(levelWrites(f).length,1);
+  }
+});
+test('F2E2c: offline, unverified, foreign-owner and changed scope never authorize a mutation',async()=>{
+  for(const change of [f=>{f.options.offlineClient=true;},f=>{f.live.policy={state:'legacy'};},
+    f=>{f.live.policy={state:'restricted',revision:18};},f=>{f.live.languageCode='ja';},
+    f=>{f.live.ownerId=OTHER;},f=>{f.owner=OTHER;}]){
+    const f=levelFixture(),before=await f.read();change(f);
+    assert.equal((await f.select(before,2)).status,'blocked');assert.equal(levelWrites(f).length,0);
+  }
+});
+test('F2E2c: owner, language and revision changes during a mutation discard its reply',async()=>{
+  for(const change of [f=>{f.owner=OTHER;},f=>{f.live.ownerId=OTHER;},f=>{f.live.languageCode='ja';},
+    f=>{f.live.policy={state:'restricted',revision:18};}]){
+    const f=levelFixture(),before=await f.read();f.faults.push({name:LEVEL_SELECT,after:()=>change(f)});
+    const result=await f.select(before,2);
+    assert.equal(result.status,'blocked');assert.equal(result.current,undefined);assert.equal(result.advanced,undefined);
+    assert.equal(f.calls.filter(c=>c.name===LEVEL_STATE).length,1,'No read into a changed scope');
+  }
+});
+test('F2E2c: device mutation acknowledgement is not a confirmed server action',async()=>{
+  const f=levelFixture(),before=await f.read();f.faults.push({name:LEVEL_SELECT,destination:'device'});
+  const result=await f.select(before,2);
+  assert.equal(result.status,'reconciled');assert.equal(result.error.code,'KG_LEVEL_DEVICE');
+  assert.equal(result.advanced,null);assert.equal(levelWrites(f).length,1);
+});

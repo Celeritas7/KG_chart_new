@@ -844,3 +844,139 @@
   }
   root.KGCompletionSave={createStore,parseSnapshot,canArchive,read,save,validate,storagePrefix:PREFIX,archivePrefix:ARCHIVE};
 })(typeof window!=='undefined'?window:globalThis);
+
+
+// F2E2c: restricted difficulty state is server-owned. These RPCs have an
+// expected version but no replay receipt: never repeat an uncertain mutation.
+// Reopening reads current state; no level mirror, recovery queue or history
+// is written here. Quiz/rating/completion recovery remains independent.
+(function(root){
+  'use strict';
+  const obj=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
+  const uuid=x=>typeof x==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(x);
+  const lang=x=>typeof x==='string'&&/^[a-z]{2,3}$/.test(x);
+  const integer=x=>Number.isSafeInteger(x)&&x>=0;
+  const level=x=>Number.isInteger(x)&&x>=1&&x<=4;
+  const cp=x=>JSON.parse(JSON.stringify(x));
+  const err=(message,code,status='unavailable')=>Object.assign(Error(message),{code,status});
+  const detail=e=>({code:e?.code||'KG_LEVEL_FAILED',message:e?.message||'Difficulty could not be verified.'});
+  const target=t=>obj(t)&&uuid(t.ownerId)&&lang(t.languageCode)&&integer(t.revision)&&t.revision>0;
+  const inFlight=new Map();
+  function parseState(data){
+    if(!obj(data)||!level(data.level)||!level(data.unlocked)||data.level>data.unlocked||!integer(data.version))
+      throw err('The server did not return a valid difficulty state.','KG_LEVEL_STATE');
+    return {level:data.level,unlocked:data.unlocked,version:data.version};
+  }
+  function scope(o,t){
+    if(!target(t))throw err('Difficulty requires a verified learner and language.','KG_LEVEL_TARGET','blocked');
+    const live=o.getScope?.();
+    if(live?.ownerId!==t.ownerId||live?.languageCode!==t.languageCode||
+       live?.policy?.state!=='restricted'||live.policy.revision!==t.revision)
+      throw err('Account, language or permission revision changed. Refresh difficulty in the current scope.','KG_LEVEL_SCOPE','blocked');
+    if(o.offlineClient)throw err('Restricted difficulty needs an online server connection.','KG_LEVEL_OFFLINE','blocked');
+  }
+  const rpcError=e=>['42501','PGRST301','PGRST302'].includes(e?.code)||[401,403].includes(e?.status)
+    ?err('This difficulty request is not currently permitted.','KG_LEVEL_DENIED','blocked')
+    :e?.code==='40001'?err('Difficulty or access changed on the server. Review current state before making a new change.','KG_LEVEL_CONFLICT')
+    :err('The difficulty request was not confirmed. Review current state before making a new change.',e?.code||'KG_LEVEL_RPC');
+  async function owner(o,t){
+    scope(o,t);
+    let identity;
+    try{identity=await o.client.auth.getSession();}catch(_){throw err('Sign-in could not be verified.','KG_LEVEL_AUTH','blocked');}
+    scope(o,t);
+    if(identity?.error)throw rpcError(identity.error);
+    if(identity?.data?.session?.user?.id!==t.ownerId)
+      throw err('The signed-in account changed. Refresh difficulty for the current learner.','KG_LEVEL_OWNER','blocked');
+  }
+  async function call(o,t,name,args){
+    await owner(o,t);
+    let result,failure;
+    try{result=await o.client.rpc(name,args);}catch(error){failure=error;}
+    await owner(o,t);
+    if(failure)throw rpcError(failure);
+    if(result?.error)throw rpcError(result.error);
+    if(result?.saveDestination==='device')throw err('A device queue cannot confirm restricted difficulty.','KG_LEVEL_DEVICE');
+    return result?.data;
+  }
+  async function read(o,t){
+    scope(o,t);
+    const original=cp(t);
+    return parseState(await call(o,original,'kg_chart_f2_level_state',{
+      p_expected_revision:original.revision,p_lang:original.languageCode}));
+  }
+  function acknowledgement(data,before,operation,desired){
+    const state=parseState(data);
+    if(operation==='select'){
+      if(state.level!==desired||state.unlocked!==before.unlocked||
+         state.version!==before.version+(desired===before.level?0:1))
+        throw err('The server did not confirm the requested difficulty selection.','KG_LEVEL_ACK');
+      return {state,advanced:null,evaluation:null};
+    }
+    const delta=state.unlocked-before.unlocked;
+    if(state.level!==before.level||![0,1].includes(delta)||state.version!==before.version+delta||
+       !integer(data.evaluated_total)||!integer(data.evaluated_correct)||data.evaluated_correct>data.evaluated_total||
+       !Number.isInteger(data.required_answers)||data.required_answers<10||data.required_answers>200||
+       !Number.isInteger(data.required_pct)||data.required_pct<50||data.required_pct>100)
+      throw err('The server did not confirm the advancement evaluation.','KG_LEVEL_ACK');
+    // Whole sessions can exceed the answer target; their complete score is
+    // used. The bounded protocol accepts at most 500 answers per session.
+    if(data.evaluated_total>data.required_answers+499||
+       (before.unlocked===4&&(data.evaluated_total!==0||data.evaluated_correct!==0)))
+      throw err('The server returned inconsistent advancement evidence.','KG_LEVEL_ACK');
+    const qualifies=before.unlocked<4&&data.evaluated_total>=data.required_answers&&
+      data.evaluated_correct*100>=data.required_pct*data.evaluated_total;
+    if((delta===1)!==qualifies)
+      throw err('The server returned an inconsistent difficulty transition.','KG_LEVEL_ACK');
+    // After advancement the counts describe the OLD ceiling, not progress
+    // toward yet another level. Do not recycle them for the new ceiling.
+    return {state,advanced:delta?state.unlocked:null,evaluation:delta||state.unlocked===4?null:{
+      level:before.unlocked,total:data.evaluated_total,correct:data.evaluated_correct,
+      requiredAnswers:data.required_answers,requiredPct:data.required_pct,
+      pct:data.evaluated_total?Math.floor(data.evaluated_correct*100/data.evaluated_total):0}};
+  }
+  const sameState=(a,b)=>a.level===b.level&&a.unlocked===b.unlocked&&a.version===b.version;
+  async function perform(o,t,before,operation,desired){
+    let ack,failure;
+    try{
+      const data=await call(o,t,operation==='select'?'kg_chart_f2_select_difficulty':'kg_chart_f2_check_level_up',{
+        p_expected_revision:t.revision,p_lang:t.languageCode,p_expected_version:before.version,
+        ...(operation==='select'?{p_level:desired}:{})});
+      ack=acknowledgement(data,before,operation,desired);
+    }catch(error){failure=error;}
+    // Always reconcile by state only. Even retrying the same check version
+    // could evaluate evidence that arrived after the original no-op.
+    let current;
+    try{current=await read(o,t);}catch(error){return {status:error?.status||'unavailable',error:detail(error)};}
+    if(current.version<before.version||(current.version===before.version&&!sameState(current,before)))
+      return {status:'unavailable',error:detail(err('Current difficulty is inconsistent with its verified baseline. Refresh difficulty before continuing.','KG_LEVEL_READBACK'))};
+    if(failure)return {status:'reconciled',current,advanced:null,evaluation:null,error:detail(failure)};
+    if(current.version<ack.state.version||(current.version===ack.state.version&&!sameState(current,ack.state)))
+      return {status:'unavailable',error:detail(err('Current difficulty did not match the acknowledgement. Refresh difficulty before continuing.','KG_LEVEL_READBACK'))};
+    if(current.version>ack.state.version)return {status:'superseded',current,advanced:null,evaluation:null,
+      error:detail(err('A newer server difficulty is shown. This request does not confirm the current selection or an unlock.','KG_LEVEL_SUPERSEDED'))};
+    return {status:'confirmed',current,advanced:ack.advanced,evaluation:ack.evaluation};
+  }
+  function mutate(o,t,before,operation,desired){
+    let original,baseline;
+    try{
+      scope(o,t);original=cp(t);baseline=parseState(before);
+      if(baseline.version>=Number.MAX_SAFE_INTEGER||!['select','check'].includes(operation)||
+         (operation==='select'&&(!level(desired)||desired>baseline.unlocked)))
+        throw err('Choose a currently unlocked difficulty from a verified state.','KG_LEVEL_REQUEST','blocked');
+    }catch(error){return Promise.resolve({status:error?.status||'blocked',error:detail(error)});}
+    const key=original.ownerId+':'+original.languageCode;
+    const request=JSON.stringify({target:original,before:baseline,operation,desired});
+    const prior=inFlight.get(key);
+    if(prior){
+      if(prior.client===o.client&&prior.request===request)return prior.task;
+      return Promise.resolve({status:'busy',error:detail(err('Finish the difficulty request already in progress.','KG_LEVEL_BUSY'))});
+    }
+    const task=perform(o,original,baseline,operation,desired)
+      .finally(()=>{if(inFlight.get(key)?.task===task)inFlight.delete(key);});
+    inFlight.set(key,{client:o.client,request,task});
+    return task;
+  }
+  root.KGLevelState={read,parseState,
+    select:(o,t,before,desired)=>mutate(o,t,before,'select',desired),
+    check:(o,t,before)=>mutate(o,t,before,'check')};
+})(typeof window !== 'undefined' ? window : globalThis);

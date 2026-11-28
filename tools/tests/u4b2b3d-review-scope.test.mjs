@@ -18,6 +18,8 @@ for (const [label, before, after] of [
   ['navigation scope', 'function Header({', 'function Header(/* changed */{'],
   ['unrelated quiz mode', 'function SayItView({', 'function SayItView(/* changed */{'],
   ['colour rendering helper', 'function ColourPicture({', 'function ColourPicture(/* changed */{'],
+  ['shared difficulty constants', 'const LEVELS = [', 'const LEVELS = [null,'],
+  ['legacy difficulty formula', 'function levelProgress(sessions, level, levelUp = DEFAULT_RULES.level_up) {', 'function levelProgress(sessions, level, levelUp = DEFAULT_RULES.level_up) { return {};'],
   ['preference helper', 'async function syncTypingBests(user, local) {', 'async function syncTypingBests(user, local) { return {};'],
   ['pronunciation helper', 'const PRON_MAX_SECONDS = 15;', 'const PRON_MAX_SECONDS = 16;'],
   ['unrelated script', '  <script src="./js/kg-sentence-access.js"></script>', '  <script src="./js/kg-sentence-access.js"></script><script src="./unexpected.js"></script>'],
