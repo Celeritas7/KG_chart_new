@@ -429,6 +429,8 @@ function installFakeClient() {
         const before=ratingState(id);
         if(name==='kg_chart_f2_my_progress_state'){
           assertFixture(args.p_kind==='rating','Wrong baseline kind');
+          const i=state.faults.findIndex(f=>f.table===name&&f.mode==='hold');
+          if(i>=0){state.faults.splice(i,1);persist();await new Promise(resolve=>{release=resolve;});}
           return {data:{...before,permission_revision:17},error:null};
         }
         const i=state.faults.findIndex(f=>f.table===name),fault=i<0?null:state.faults.splice(i,1)[0];persist();
@@ -752,7 +754,7 @@ const harness = `
               <button onClick={() => setShown(false)}>Leave quiz view</button>
               <button onClick={() => setShown(true)}>Reopen quiz view</button>
             </div>
-            {kind.startsWith('flags')&&<FlagRecoveryPanel user={identity.user}
+            {(kind.startsWith('flags')||kind==='rating-flags')&&<FlagRecoveryPanel user={identity.user}
               languageCode={identity.languageCode} policy={scope?.policy}/>}
             {shown ? kind === 'word'
               ? <WordQuizView key={identity.user?.id+':'+identity.languageCode} topics={[{ id: 'food', icon: '🍎', translation: { title_native: 'Food' } }]}
@@ -764,8 +766,8 @@ const harness = `
               : kind === 'speaking' ? <SpeakView languageCode="my" user={fixtureUser} meaningName="English"
                   sentenceAccess={fixtureSentenceAccess} />
               : kind === 'colour' ? <ColourQuizView languageCode="my" user={fixtureUser} />
-              : ['ratings','rating-cards','rating-chart'].includes(kind) ? <RatingFixture policy={scope?.policy}
-                  cards={kind==='rating-cards'} chart={kind==='rating-chart'} languageCode={identity.languageCode} user={identity.user}/>
+              : ['ratings','rating-cards','rating-chart','rating-flags'].includes(kind) ? <RatingFixture policy={scope?.policy}
+                  cards={kind==='rating-cards'} chart={kind==='rating-chart'||kind==='rating-flags'} languageCode={identity.languageCode} user={identity.user}/>
               : kind === 'path' ? <PathFixture policy={scope?.policy}/>
               : kind.startsWith('preferences') ? <PreferenceFixture policy={scope?.policy} user={identity.user}
                   languageCode={identity.languageCode} audioOnly={kind==='preferences-audio'}/>
@@ -842,7 +844,7 @@ async function scenario(name, kind, run, restricted = false, initial = null) {
     if(kind==='auth') { /* The test controls initial session and approval replies. */ }
     else if (kind==='typing') await page.getByRole('button', {name:'Start',exact:true}).waitFor();
     else if (kind==='speaking') await page.getByRole('button', {name:/Whole paragraph/}).waitFor();
-    else if(['ratings','rating-cards','rating-chart'].includes(kind))await page.locator('[data-ratings-loaded="yes"]').waitFor({state:'attached'});
+    else if(['ratings','rating-cards','rating-chart','rating-flags'].includes(kind))await page.locator('[data-ratings-loaded="yes"]').waitFor({state:'attached'});
     else if(kind==='path')await page.locator('[data-path-ready="yes"]').waitFor({state:'attached'});
     else if(kind.startsWith('preferences')){
       if(initial?.policyState==='legacy')await page.getByRole('button',{name:'Change audio voice',exact:true}).waitFor();
@@ -1440,6 +1442,213 @@ try {
     assert.deepEqual(await wordDetail(page).evaluate(el=>({position:getComputedStyle(el).position,z:getComputedStyle(el).zIndex})),
       {position:'fixed',z:'50'},'Use the actual positioned word-detail layer');
   }
+
+  // R2: use the real styled rating and flag consumers in the same Chart.
+  // No synthetic modal implementation and no forced user clicks.
+  const queuedRating=page=>page.locator('[role="dialog"][aria-label="Confirm rating change"]');
+  const startHeldRating=async(page,batch=false)=>{
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_f2_my_progress_state','hold'));
+    if(batch){
+      await chartCard(page).hover();
+      await chartCard(page).getByTitle("Don't know",{exact:true}).click();
+    }else{
+      await openWordDetail(page);
+      await detailRating(page).click();
+    }
+    await page.waitForFunction(()=>window.__kgF1.snapshot().ratingRequests.some(r=>r.name==='kg_chart_f2_my_progress_state'));
+    assert.equal(ratingWrites(await snapshot(page)).length,0);
+    assert.equal(await queuedRating(page).count(),0,'Baseline is genuinely still pending');
+  };
+  const rootAttributes=page=>page.locator('#root').evaluate(el=>({inert:el.getAttribute('inert'),hidden:el.getAttribute('aria-hidden')}));
+  const assertIsolated=async page=>{
+    assert.deepEqual(await rootAttributes(page),{inert:'',hidden:'true'});
+    assert.equal(await page.getByRole('dialog').count(),1,'Exactly one accessible dialog owns the surface');
+  };
+  const observeIsolation=page=>page.evaluate(()=>{
+    const root=document.getElementById('root');window.__r2Isolation=[];
+    new MutationObserver(records=>{for(const rec of records)window.__r2Isolation.push({
+      attribute:rec.attributeName,old:rec.oldValue,inert:root.getAttribute('inert'),hidden:root.getAttribute('aria-hidden')});
+    }).observe(root,{attributes:true,attributeOldValue:true,attributeFilter:['inert','aria-hidden']});
+  });
+  const assertUnbrokenIsolation=async page=>{
+    const records=await page.evaluate(()=>window.__r2Isolation);
+    assert.deepEqual(records,[],'Root isolation attributes must not be touched between dialogs');
+  };
+  const openFlagWhileHeld=async(page,batch=false)=>{
+    if(batch)return openBatchFlags(page);
+    await wordDetail(page).getByTitle('Report an issue',{exact:true}).click();
+    const f=flagDialog(page);await f.waitFor();return f;
+  };
+  const releaseIntoQueue=async(page,flag)=>{
+    await page.evaluate(()=>window.__kgF1.release());
+    await queuedRating(page).waitFor({state:'attached'});
+    assert.equal(await queuedRating(page).isVisible(),false);
+    assert.equal(await queuedRating(page).evaluate(el=>el.parentElement.inert&&el.parentElement.getAttribute('aria-hidden')==='true'),true);
+    await assertIsolated(page);
+    assert.equal(await flag.evaluate(el=>el.contains(document.activeElement)),true);
+    assert.equal(await dialog(page).count(),0);
+    // Even a direct synthetic activation of a waiting button is ignored.
+    await queuedRating(page).locator('button').last().evaluate(el=>el.click());
+    assert.equal(ratingWrites(await snapshot(page)).length,0);
+  };
+  const assertCompositionEscape=async(page,flag,notes)=>{
+    const input=flag.locator('textarea');
+    await input.focus();
+    await input.evaluate(el=>{
+      el.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:'あ'}));
+      el.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+      el.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'あ'}));
+    });
+    assert.equal(await flag.isVisible(),true,'Composition-tracked Escape must not dismiss the editor');
+    await input.evaluate(el=>{
+      el.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true,isComposing:true}));
+    });
+    assert.equal(await flag.isVisible(),true,'Native composing Escape must not dismiss the editor');
+    assert.equal(await input.inputValue(),notes);
+    await expectFocus(input);
+  };
+
+  await scenario('R2 styled detail: late rating queues behind single report; pointer close and explicit confirm retain original flag', 'rating-flags', async page=>{
+    await page.locator('#root').evaluate(el=>el.setAttribute('aria-hidden','false'));
+    await startHeldRating(page);
+    const flag=await openFlagWhileHeld(page);
+    const notes='Original overlapping report — စမ်းသပ်',suggestion='सुधार';
+    await flag.locator('input').fill(suggestion);await flag.locator('textarea').fill(notes);
+    await flag.locator('textarea').focus();
+    await observeIsolation(page);
+    await releaseIntoQueue(page,flag);
+    await expectFocus(flag.locator('textarea'));
+    await assertCompositionEscape(page,flag,notes);
+    await page.evaluate(()=>document.querySelector('#root button').focus());
+    assert.equal(await flag.evaluate(el=>el.contains(document.activeElement)),true);
+    await page.keyboard.press('Tab');await page.keyboard.press('Shift+Tab');
+    await expectFocus(flag.locator('textarea'));
+    await page.evaluate(name=>window.__kgF1.fault(name,'fail'),flagRpc);
+    await flag.getByRole('button',{name:'Submit Flag',exact:true}).click();
+    await flag.getByText('0 of 1 flags confirmed.',{exact:true}).waitFor();
+    await flag.getByRole('button',{name:'Retry exact flags',exact:true}).click({trial:true});
+    const [original]=await pendingFlags(page);assert.ok(original);
+    assert.equal(original.flags[0].notes,notes);assert.equal(original.flags[0].suggestion,suggestion);
+    const exported=await flagDownload(page,flag.getByRole('button',{name:'Download pending flags',exact:true}));
+    assert.deepEqual(exported.draft,original);
+    await flag.getByRole('button',{name:'Close and keep pending flags',exact:true}).click();
+    await flag.waitFor({state:'hidden'});await dialog(page).waitFor();
+    await assertIsolated(page);await assertUnbrokenIsolation(page);
+    await expectFocus(dialog(page).getByRole('button',{name:'Cancel',exact:true}));
+    await page.keyboard.press('Shift+Tab');await expectFocus(dialog(page).getByRole('button',{name:'Confirm rating',exact:true}));
+    assert.equal(ratingWrites(await snapshot(page)).length,0);
+    await dialog(page).getByRole('button',{name:'Confirm rating',exact:true}).click();
+    await queuedRating(page).waitFor({state:'detached'});
+    await page.locator('[data-fixture-rating="4"]').waitFor({state:'attached'});
+    assert.deepEqual(await rootAttributes(page),{inert:null,hidden:'false'});
+    await page.waitForFunction(()=>{
+      const el=document.activeElement;
+      return el?.isConnected&&el!==document.body&&document.getElementById('root').contains(el)&&!el.closest('[inert],[aria-hidden="true"]');
+    });
+    assert.deepEqual(await pendingFlags(page),[original]);
+    assert.equal((await snapshot(page)).flagRequests.length,1);
+    assert.equal(ratingWrites(await snapshot(page)).length,1);
+    await flagRecovery(page).getByRole('button',{name:'Retry exact flags',exact:true}).click();
+    await page.waitForFunction(()=>window.__kgF1.snapshot().flagRequests.length===2&&
+      !Object.keys(localStorage).some(k=>k.startsWith('kg-chart-flag-recovery-v1:')));
+    const db=await snapshot(page);
+    assert.deepEqual(db.flagRequests[1].args,db.flagRequests[0].args);
+    assert.equal(db.tables.kg_chart_flags.length,1);
+    assertFlagOnlyRpc(db);
+  },true);
+
+  await scenario('R2 styled batch: keyboard dismissal serializes late review; composition and lost-ack draft stay intact','rating-flags',async page=>{
+    await page.setViewportSize({width:390,height:844});
+    await startHeldRating(page,true);
+    const flag=await openFlagWhileHeld(page,true);
+    const notes='Original batch overlap — 日本語';
+    await flag.locator('textarea').fill(notes);await flag.locator('textarea').focus();
+    await observeIsolation(page);await releaseIntoQueue(page,flag);
+    await assertCompositionEscape(page,flag,notes);
+    await page.keyboard.press('Tab');await page.keyboard.press('Shift+Tab');
+    await expectFocus(flag.locator('textarea'));
+    await page.evaluate(name=>window.__kgF1.fault(name,'lost-ack'),flagRpc);
+    await flag.getByRole('button',{name:'Flag 4 Items',exact:true}).click();
+    await flag.getByRole('button',{name:'Retry exact flags',exact:true}).click({trial:true});
+    const [original]=await pendingFlags(page);assert.equal(original.flags.length,4);
+    assert.ok(original.flags.every(f=>f.notes===notes));
+    await page.keyboard.press('Escape');
+    await flag.waitFor({state:'hidden'});await dialog(page).waitFor();
+    await assertIsolated(page);await assertUnbrokenIsolation(page);
+    await expectFocus(dialog(page).getByRole('button',{name:'Cancel',exact:true}));
+    await page.keyboard.press('Tab');await expectFocus(dialog(page).getByRole('button',{name:'Confirm rating',exact:true}));
+    await page.keyboard.press('Escape');await queuedRating(page).waitFor({state:'detached'});
+    assert.deepEqual(await rootAttributes(page),{inert:null,hidden:null});
+    assert.equal(ratingWrites(await snapshot(page)).length,0);
+    assert.deepEqual(await pendingFlags(page),[original]);
+    await flagRecovery(page).getByRole('button',{name:'Retry exact flags',exact:true}).click();
+    await page.waitForFunction(()=>window.__kgF1.snapshot().flagRequests.length===2&&
+      !Object.keys(localStorage).some(k=>k.startsWith('kg-chart-flag-recovery-v1:')));
+    const db=await snapshot(page);
+    assert.deepEqual(db.flagRequests[1].args,db.flagRequests[0].args);
+    assert.equal(db.tables.kg_chart_flags.length,4);
+    assertFlagOnlyRpc(db);
+  },true);
+
+  await scenario('R2 flag closes before rating reply; exact preexisting root attributes restored after rating cancel','rating-flags',async page=>{
+    await startHeldRating(page);
+    const flag=await openFlagWhileHeld(page);
+    await flag.getByRole('button',{name:'Cancel',exact:true}).click();
+    await flag.waitFor({state:'hidden'});
+    assert.deepEqual(await rootAttributes(page),{inert:null,hidden:null});
+    await page.locator('#root').evaluate(el=>{el.setAttribute('inert','preexisting');el.setAttribute('aria-hidden','false');});
+    await page.evaluate(()=>window.__kgF1.release());
+    await dialog(page).waitFor();await assertIsolated(page);
+    await dialog(page).getByRole('button',{name:'Cancel',exact:true}).click();
+    await queuedRating(page).waitFor({state:'detached'});
+    assert.deepEqual(await rootAttributes(page),{inert:'preexisting',hidden:'false'});
+    assert.equal(ratingWrites(await snapshot(page)).length,0);
+    assert.equal((await snapshot(page)).flagRequests.length,0);
+  },true);
+
+  for(const [kind,patch] of [
+    ['owner',{ownerId:'11000000-0000-4000-8000-000000000002'}],
+    ['language',{languageCode:'ja'}],['revision',{revision:18}]
+  ])await scenario('R2 queued rating removed on '+kind+' change without stealing focus or unlocking flag editor','rating-flags',async page=>{
+    await startHeldRating(page,true);
+    // Flag Mode replaces the inline rating controls; keep the actual original
+    // element before changing modes. Also retain the live batch opener, which
+    // is still connected under the root's inert layer.
+    const origin=await chartCard(page).getByTitle("Don't know",{exact:true}).elementHandle();
+    const flag=await openFlagWhileHeld(page,true);
+    const flagOrigin=await page.getByText('Submit Flags →',{exact:true}).elementHandle();
+    await releaseIntoQueue(page,flag);
+    await observeIsolation(page);
+    await page.evaluate(patch=>window.__kgF1.changeScope(patch),patch);
+    await queuedRating(page).waitFor({state:'detached'});
+    await flag.getByRole('heading',{name:'Report context changed',exact:true}).waitFor();
+    await assertIsolated(page);await assertUnbrokenIsolation(page);
+    await expectFocus(flag.getByRole('button',{name:'Close',exact:true}));
+    await page.keyboard.press('Escape');
+    await flag.waitFor({state:'hidden'});
+    assert.deepEqual(await rootAttributes(page),{inert:null,hidden:null});
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    assert.equal(await origin.evaluate(el=>document.activeElement===el),false,'No focus restore to obsolete rating scope');
+    assert.equal(await flagOrigin.evaluate(el=>document.activeElement===el),false,'No focus restore to the old flag opener');
+    assert.equal(ratingWrites(await snapshot(page)).length,0);
+    assert.equal((await snapshot(page)).flagRequests.length,0);
+  },true);
+
+  await scenario('R2 late baseline from obsolete scope never opens after flag editor context change','rating-flags',async page=>{
+    await startHeldRating(page);
+    const flag=await openFlagWhileHeld(page);
+    await page.evaluate(()=>window.__kgF1.changeScope({revision:18}));
+    await flag.getByRole('heading',{name:'Report context changed',exact:true}).waitFor();
+    await page.evaluate(()=>window.__kgF1.release());
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    assert.equal(await queuedRating(page).count(),0);
+    await assertIsolated(page);
+    await flag.getByRole('button',{name:'Close',exact:true}).click();
+    await flag.waitFor({state:'hidden'});
+    assert.deepEqual(await rootAttributes(page),{inert:null,hidden:null});
+    assert.equal(ratingWrites(await snapshot(page)).length,0);
+  },true);
+
   for(const mobile of [false,true])await scenario(`F2E2a-R1 styled Chart detail: pointer Cancel and Confirm ${mobile?'mobile':'desktop'}`, 'rating-chart', async page=>{
     if(mobile)await page.setViewportSize({width:390,height:844});
     await openWordDetail(page);

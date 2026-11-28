@@ -199,6 +199,27 @@ export function assertR1ReviewScope(before, after) {
     'R1 changes outside the reviewed auth provider, auth gate and access snapshot hook are forbidden');
 }
 
+// R2 changes the modal lifecycle only. Mutation controllers, flag forms,
+ // AppContent, navigation and activation are byte-for-byte protected.
+const R2_REVIEW_BASE = '4c30d649c57c023410bbde0e72bfda155adf0da3';
+function normalizeR2Source(input) {
+  let source = input;
+  const helper = uniquePosition(source,'    // R2: shared modal ownership for rating review and single/batch flags.',true);
+  const rating = uniquePosition(source,'    function RatingConfirmationDialog(');
+  const ratingEnd = uniquePosition(source,'\n    function RatingRecoveryPanel(');
+  const start = helper === -1 ? rating : helper;
+  assert(start <= rating && rating < ratingEnd,'Invalid R2 rating modal boundary');
+  source = source.slice(0,start)+'    /* reviewed R2 rating modal */\n'+source.slice(ratingEnd);
+  const flag = uniquePosition(source,'    function FlagDialogShell(');
+  const end = uniquePosition(source,'\n    function FlagDraftStatus(');
+  assert(end > flag,'Invalid R2 flag modal boundary');
+  return source.slice(0,flag)+'    /* reviewed R2 flag modal */\n'+source.slice(end);
+}
+export function assertR2ReviewScope(before,after) {
+  assert(after.includes('const U3C1_SCOPED_UI_ENABLED = false;'),'Restricted UI activation must remain OFF');
+  assert.equal(normalizeR2Source(before),normalizeR2Source(after),'R2 must not change unrelated learner source or mutation controllers');
+}
+
 export function assertF1ReviewScope(before, after) {
   assert(after.includes('const U3C1_SCOPED_UI_ENABLED = false;'), 'Restricted UI activation must remain OFF');
   assert.equal(normalizeF1Source(after), normalizeF1Source(before),
@@ -238,6 +259,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   // Pin the exception to this reviewed checkpoint. Other merge bases retain F1.
   const after = readFileSync('index.html', 'utf8');
   if (base === R1_REVIEW_BASE) assertR1ReviewScope(before, after);
+  else if (base === R2_REVIEW_BASE) assertR2ReviewScope(before,after);
   else assertF1ReviewScope(before, after);
   const audioBefore = execFileSync('git', ['show', `${base}:js/kg-audio.js`], {encoding: 'utf8', maxBuffer: 1024 * 1024});
   assertAudioPreferenceReviewScope(audioBefore, readFileSync('js/kg-audio.js', 'utf8'));

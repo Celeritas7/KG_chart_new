@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {assertF1ReviewScope,assertAudioPreferenceReviewScope,assertR1ReviewScope} from '../check-f1-review-scope.mjs';
+import {assertF1ReviewScope,assertAudioPreferenceReviewScope,assertR1ReviewScope,assertR2ReviewScope} from '../check-f1-review-scope.mjs';
 
 const source = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
 const audioSource = readFileSync(new URL('../../js/kg-audio.js', import.meta.url), 'utf8');
@@ -291,5 +291,24 @@ test('R1 scope admits only authentication, gate and snapshot boundaries at the r
   ]) {
     assert.notEqual(changed, gateEdit);
     assert.throws(() => assertR1ReviewScope(source, changed));
+  }
+});
+
+test('R2 scope admits only shared rating and flag modal lifecycle changes', () => {
+  const rating=source.replace('    function RatingConfirmationDialog(', '    function RatingConfirmationDialog(/* R2 */');
+  const changed=rating.replace('    function FlagDialogShell(', '    function FlagDialogShell(/* R2 */');
+  assert.notEqual(changed,source);
+  // Boundary markers include only the function name and opening parenthesis.
+  assert.doesNotThrow(()=>assertR2ReviewScope(source,changed));
+  for(const edited of [
+    changed.replace('const U3C1_SCOPED_UI_ENABLED = false;','const U3C1_SCOPED_UI_ENABLED = true;'),
+    changed.replace('const requestRestricted=async','const requestRestricted= /* changed */ async'),
+    changed.replace('function useFlagSubmission(', 'function useFlagSubmission(/* changed */'),
+    changed.replace('function useLearnerAccess(', 'function useLearnerAccess(/* changed */'),
+    changed.replace('function FlagModal(', 'function FlagModal(/* changed */'),
+    changed.replace('function RatingRecoveryPanel(', 'function RatingRecoveryPanel(/* changed */'),
+  ]){
+    assert.notEqual(edited,changed);
+    assert.throws(()=>assertR2ReviewScope(source,edited));
   }
 });
