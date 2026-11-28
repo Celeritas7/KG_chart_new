@@ -976,11 +976,18 @@
         }
         slot.resolve?.(value);
       };
-      const requestRestricted=async(id,desired,undoGuard)=>{
+      const requestRestricted=async(id,desired,undoGuard,initiator)=>{
         if(!current(token)||!restricted||!want)return false;
         if(reviewRef.current||actionRef.current){report(token,'Finish the rating review already in progress.');return false;}
         if(loadedFor!==token){report(token,'Ratings are loading. Try again when ready.');return false;}
-        const slot={token,target:target(id),desired};
+        // Capture before the asynchronous baseline read. Safari taps do not
+        // necessarily focus buttons, so callers provide their actual control.
+        const origin=initiator instanceof HTMLElement?initiator:document.activeElement;
+        const focusTrail=[];
+        for(let node=origin;node&&node!==document.body&&node.id!=='root';node=node.parentElement)focusTrail.push(node);
+        origin?.focus?.({preventScroll:true});
+        const slot={token,target:target(id),desired,focusTrail,
+          canRestoreFocus:()=>current(token)&&!reviewRef.current};
         reviewRef.current=slot;
         try{
           if(store.list(user.id,languageCode).some(e=>e.vocabularyId===id)){
@@ -1120,12 +1127,79 @@
       }, [user, languageCode, token]);
 
       return {ratings:loadedFor===token?ratings:{},ratingsLoaded:!want||loadedFor===token,
-        updateRating:restricted?(id,value,guard)=>requestRestricted(id,value,guard):updateRating,
-        clearRating:restricted?(id,guard)=>requestRestricted(id,null,guard):clearRating,
+        updateRating:restricted?(id,value,guard,initiator)=>requestRestricted(id,value,guard,initiator):updateRating,
+        clearRating:restricted?(id,guard,initiator)=>requestRestricted(id,null,guard,initiator):clearRating,
         ratingFlow:{restricted,review:review?.token===token?review.slot:null,
           pending:pending?.token===token?pending.events:[],storageError:pending?.token===token&&pending.error,
           notice:notice?.token===token?notice.message:null,busy,
           observed:observed?.token===token?observed:null,confirm,cancel,retry,inspect,download}};
+    }
+
+    function RatingConfirmationDialog({review,busy,notice,word,label,onCancel,onConfirm}) {
+      const host=useMemo(()=>document.createElement('div'),[]);
+      const dialog=React.useRef(null),cancelButton=React.useRef(null),live=React.useRef(null);
+      live.current={busy,onCancel};
+      const focusInside=()=>{(live.current.busy?dialog.current:cancelButton.current)?.focus({preventScroll:true});};
+      React.useLayoutEffect(()=>{
+        const app=document.getElementById('root');
+        const priorInert=app?.getAttribute('inert'),priorHidden=app?.getAttribute('aria-hidden');
+        document.body.appendChild(host);
+        focusInside();
+        app?.setAttribute('inert','');app?.setAttribute('aria-hidden','true');
+        const containFocus=event=>{if(!dialog.current?.contains(event.target))focusInside();};
+        document.addEventListener('focusin',containFocus,true);
+        return()=>{
+          document.removeEventListener('focusin',containFocus,true);
+          if(app){
+            if(priorInert===null)app.removeAttribute('inert');else app.setAttribute('inert',priorInert);
+            if(priorHidden===null)app.removeAttribute('aria-hidden');else app.setAttribute('aria-hidden',priorHidden);
+          }
+          host.remove();
+          // Let Cards apply its acknowledged sort/Undo before restoring focus.
+          // A removed control falls back to its closest surviving surface.
+          requestAnimationFrame(()=>{
+            if(!review.canRestoreFocus())return;
+            const selector='button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])';
+            for(const surface of review.focusTrail){
+              if(!surface.isConnected||surface.closest('[inert]'))continue;
+              const candidates=surface.matches(selector)?[surface]:Array.from(surface.querySelectorAll(selector));
+              const target=candidates.find(el=>el.getClientRects().length>0);
+              if(target){target.focus({preventScroll:true});break;}
+            }
+          });
+        };
+      },[host,review]);
+      React.useLayoutEffect(()=>{
+        if(busy||!dialog.current?.contains(document.activeElement)||document.activeElement===dialog.current)focusInside();
+      },[busy]);
+      const onKeyDown=event=>{
+        if(event.key==='Escape'){
+          event.preventDefault();event.stopPropagation();
+          if(!live.current.busy)live.current.onCancel();
+        }else if(event.key==='Tab'){
+          event.preventDefault();event.stopPropagation();
+          const buttons=Array.from(dialog.current.querySelectorAll('button:not(:disabled)'));
+          if(!buttons.length){dialog.current.focus({preventScroll:true});return;}
+          const index=buttons.indexOf(document.activeElement);
+          const next=event.shiftKey?(index<=0?buttons.length-1:index-1):(index+1)%buttons.length;
+          buttons[next].focus({preventScroll:true});
+        }
+      };
+      return ReactDOM.createPortal(
+        <div data-kg-modal ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Confirm rating change"
+          aria-busy={busy} onKeyDown={onKeyDown} className="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style={{zIndex:100}}>
+          <div className="w-full max-w-md max-h-[90vh] overflow-y-auto bg-white rounded-2xl p-6 shadow-xl">
+            <h3 className="text-lg font-bold">Confirm rating change</h3>
+            <p className="mt-2">{word(review.target.vocabularyId)}</p>
+            <p className="mt-2 text-sm">Current server rating: {label(review.before.state?.rating)} · version {review.before.version}</p>
+            <p className="mt-2 text-sm">New rating: {label(review.desired)}</p>
+            {notice&&<p role="status" className="mt-2 text-sm">{notice}</p>}
+            <div className="flex gap-2 mt-5">
+              <button ref={cancelButton} disabled={busy} onClick={onCancel} className="px-4 py-2 rounded-lg bg-gray-100">Cancel</button>
+              <button disabled={busy} onClick={onConfirm} className="px-4 py-2 rounded-lg bg-jade-600 text-white">{busy?'Saving…':'Confirm rating'}</button>
+            </div>
+          </div>
+        </div>,host);
     }
 
     function RatingRecoveryPanel({flow,vocabulary}) {
@@ -1153,19 +1227,8 @@
               </div>}
             </div>)}
           </section>}
-        {review&&<div data-kg-modal role="dialog" aria-modal="true" aria-label="Confirm rating change" className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-white rounded-2xl p-6 shadow-xl">
-            <h3 className="text-lg font-bold">Confirm rating change</h3>
-            <p className="mt-2">{word(review.target.vocabularyId)}</p>
-            <p className="mt-2 text-sm">Current server rating: {label(review.before.state?.rating)} · version {review.before.version}</p>
-            <p className="mt-2 text-sm">New rating: {label(review.desired)}</p>
-            {flow.notice&&<p role="status" className="mt-2 text-sm">{flow.notice}</p>}
-            <div className="flex gap-2 mt-5">
-              <button disabled={flow.busy} onClick={flow.cancel} className="px-4 py-2 rounded-lg bg-gray-100">Cancel</button>
-              <button disabled={flow.busy} onClick={flow.confirm} className="px-4 py-2 rounded-lg bg-jade-600 text-white">{flow.busy?'Saving…':'Confirm rating'}</button>
-            </div>
-          </div>
-        </div>}
+        {review&&<RatingConfirmationDialog review={review} busy={flow.busy} notice={flow.notice}
+          word={word} label={label} onCancel={flow.cancel} onConfirm={flow.confirm}/>}
       </>;
     }
 
@@ -1470,10 +1533,10 @@
           </div>
 
           {!flagMode && (
-          <div className="absolute bottom-0 left-0 right-0 bg-white/95 border-t border-gray-200 p-2 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div className="absolute bottom-0 left-0 right-0 bg-white/95 border-t border-gray-200 p-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
             <div className="flex justify-center gap-1">
               {RATINGS.map((r) => (
-                <button key={r.id} onClick={(e) => { e.stopPropagation(); onRate(item.id, r.id); }}
+                <button key={r.id} onClick={(e) => { e.stopPropagation(); onRate(item.id, r.id, undefined, e.currentTarget); }}
                   className={`w-7 h-7 rounded-lg text-sm hover:scale-110 transition-transform ${
                     rating === r.id ? r.color + ' text-white shadow-md' : 'bg-gray-100 hover:bg-gray-200'
                   }`} title={r.label}>{r.emoji}</button>
@@ -1601,7 +1664,7 @@
                 <p className="text-sm text-gray-500 mb-3">How well do you know this?</p>
                 <div className="flex flex-wrap justify-center gap-2">
                   {RATINGS.map((r) => (
-                    <button key={r.id} onClick={() => onRate(item.id, r.id)}
+                    <button key={r.id} onClick={(e) => onRate(item.id, r.id, undefined, e.currentTarget)}
                       className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
                         rating === r.id ? r.color + ' text-white shadow-lg' : 'bg-gray-100 hover:bg-gray-200'
                       }`}>{r.emoji} {r.label}</button>
@@ -5942,6 +6005,7 @@
       const dragRef = React.useRef(null);
       const startRef = React.useRef(null);
       const bucketRefs = React.useRef({});
+      const undoButton=React.useRef(null);
       const recentRef = React.useRef([]); // Mix: the last few cards, so one doesn't come straight back
       const keepNoteRef = React.useRef(false); // the automatic switch to Mix keeps its "all sorted" message
 
@@ -6021,7 +6085,7 @@
           restrictedBusy.current=true;
           const origin=cardContext.current;
           try{
-            const confirmed=await onRate(id,ratingId);
+            const confirmed=await onRate(id,ratingId,undefined,bucketRefs.current[ratingId]);
             const live=cardContext.current;
             if(!confirmed?.event||!live?.restrictedRatings||live.userId!==origin.userId||
                live.languageCode!==origin.languageCode)return;
@@ -6044,14 +6108,15 @@
           setNote(NOT_SAVED);
         });
       };
-      const undo = async () => {
+      const undo = async (initiator) => {
         if (!last) return;
         const { id, prev } = last;
         if(restrictedRatings){
           if(restrictedBusy.current||!last.guard||!cardContext.current)return;
           restrictedBusy.current=true;
           try{
-            const confirmed=await (prev?onRate(id,prev,last.guard):onClearRating(id,last.guard));
+            const origin=initiator||undoButton.current;
+            const confirmed=await (prev?onRate(id,prev,last.guard,origin):onClearRating(id,last.guard,origin));
             if(confirmed?.event&&cardContext.current){
               setLast(null);setIsFlipped(false);setCurrentId(id);setNote('Undo confirmed.');
             }
@@ -6160,7 +6225,7 @@
               <button onClick={() => setMode('mix')}
                 className={`px-3 py-1.5 rounded-full font-medium ${mode === 'mix' ? 'bg-purple-500 text-white' : 'bg-gray-100 text-gray-600'}`}>🎲 Mix</button>
               {modeRating && <span className={`px-3 py-1.5 rounded-full font-medium text-white ${modeRating.color}`}>Studying {modeRating.emoji} {modeRating.description} ({counts[mode]})</span>}
-              {last && <button onClick={undo} className="ml-auto px-3 py-1.5 rounded-full bg-gray-100 text-gray-600 font-medium" title="Undo (U)">↶ Undo</button>}
+              {last && <button ref={undoButton} onClick={e=>undo(e.currentTarget)} className="ml-auto px-3 py-1.5 rounded-full bg-gray-100 text-gray-600 font-medium" title="Undo (U)">↶ Undo</button>}
             </div>
           </div>
 

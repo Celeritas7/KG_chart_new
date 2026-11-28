@@ -60,6 +60,20 @@ export function normalizeF1Source(input) {
   for(const [next,old] of ratingWiring){
     uniquePosition(source,next,true);source=source.replace(next,old);
   }
+  // F2E2a-R1: transient focus origins at the two existing Chart rating
+  // callsites and visibility of the inline strip on focus. Keep the rest of
+  // VocabCard and DetailModal protected.
+  const ratingOrigins = [
+    ['onClick={(e) => { e.stopPropagation(); onRate(item.id, r.id, undefined, e.currentTarget); }}',
+      'onClick={(e) => { e.stopPropagation(); onRate(item.id, r.id); }}'],
+    ['onClick={(e) => onRate(item.id, r.id, undefined, e.currentTarget)}',
+      'onClick={() => onRate(item.id, r.id)}'],
+    ['className="absolute bottom-0 left-0 right-0 bg-white/95 border-t border-gray-200 p-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"',
+      'className="absolute bottom-0 left-0 right-0 bg-white/95 border-t border-gray-200 p-2 opacity-0 group-hover:opacity-100 transition-opacity"'],
+  ];
+  for(const [next,old] of ratingOrigins){
+    uniquePosition(source,next,true);source=source.replace(next,old);
+  }
   // F2E2b: restricted path helper and recovery panel, exact callsite only.
   const completionStart = '    // F2E2b: this hook is inactive for the activation-off legacy path.';
   const at = uniquePosition(source, completionStart, true);
