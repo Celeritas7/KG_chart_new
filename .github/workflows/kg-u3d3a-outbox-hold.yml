@@ -27,6 +27,7 @@ on:
       - '.github/workflows/kg-u3d2a-scoped-pack.yml'
       - '.github/workflows/kg-u3d2b1-private-media-stage.yml'
       - '.github/workflows/kg-u3d2b2-private-playback.yml'
+      - 'js/kg-audio.js'
       - 'tools/check-f1-review-scope.mjs'
       - 'tools/tests/u4b2b3d-review-scope.test.mjs'
   workflow_dispatch:
@@ -66,11 +67,12 @@ jobs:
           grep -Fq 'const U3D3C_RESTRICTED_SYNC_ENABLED = false;' offline/runtime.js
           BASE=$(git merge-base origin/main HEAD)
           # Reviewed F1 extension: preserve every unrelated learner source region.
+          # F2E2d: the same guard checks only audio preference regions may change.
           node tools/check-f1-review-scope.mjs "$BASE"
           git diff --name-only "$BASE" HEAD | tee /tmp/u3d3a-files.txt
           while IFS= read -r path; do
             case "$path" in
-              offline/access-outbox.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|docs/U3D3A-OUTBOX-REVIEW.md|.github/workflows/kg-u3d3a-outbox-hold.yml|offline/restricted-packs.js|tools/tests/u3d3b-restricted-bundles.test.mjs|docs/U3D3B-RESTRICTED-BUNDLES-REVIEW.md|.github/workflows/kg-u3d3b-restricted-bundles.yml|offline/restricted-sync.js|tools/tests/u3d3c-restricted-sync.test.mjs|docs/U3D3C-RESTRICTED-SYNC-REVIEW.md|.github/workflows/kg-u3d3c-restricted-sync.yml|offline/device-acceptance.js|tools/tests/u4a-device-acceptance.test.mjs|docs/U4A-DEVICE-ACCEPTANCE-REVIEW.md|.github/workflows/kg-u4a-device-acceptance.yml|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|tools/tests/u3d3c-restricted-sync.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d2b2-private-playback.yml|index.html|js/kg-quiz-save.js|offline/tests/quiz-save-queue.test.mjs|offline/tests/typing-topic.test.mjs|package.json|.github/workflows/kg-dual-edition.yml|docs/U4B2B3D-QUIZ-SAVE-CORRECTION.md|tools/tests/u4b2b3d-quiz-save.test.mjs|tools/tests/u4b2b3d-quiz-ui-browser.mjs|tools/check-f1-review-scope.mjs|tools/tests/u4b2b3d-review-scope.test.mjs|tools/tests/u4b2-f2e2b-topic-completion.sql|tools/tests/u4b2-f2e2b-topic-completion.py|.github/workflows/kg-u4b2-backend.yml)
+              offline/access-outbox.js|offline/runtime.js|tools/build-offline.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|docs/U3D3A-OUTBOX-REVIEW.md|.github/workflows/kg-u3d3a-outbox-hold.yml|offline/restricted-packs.js|tools/tests/u3d3b-restricted-bundles.test.mjs|docs/U3D3B-RESTRICTED-BUNDLES-REVIEW.md|.github/workflows/kg-u3d3b-restricted-bundles.yml|offline/restricted-sync.js|tools/tests/u3d3c-restricted-sync.test.mjs|docs/U3D3C-RESTRICTED-SYNC-REVIEW.md|.github/workflows/kg-u3d3c-restricted-sync.yml|offline/device-acceptance.js|tools/tests/u4a-device-acceptance.test.mjs|docs/U4A-DEVICE-ACCEPTANCE-REVIEW.md|.github/workflows/kg-u4a-device-acceptance.yml|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|tools/tests/u3d3c-restricted-sync.test.mjs|tools/tests/u3d1-offline-policy.test.mjs|tools/tests/u3d2a-scoped-pack.test.mjs|tools/tests/u3d3a-outbox-hold.test.mjs|tools/tests/u3d3b-restricted-bundles.test.mjs|.github/workflows/kg-u3d1-offline-policy.yml|.github/workflows/kg-u3d2a-scoped-pack.yml|.github/workflows/kg-u3d2b1-private-media-stage.yml|.github/workflows/kg-u3d2b2-private-playback.yml|index.html|js/kg-quiz-save.js|js/kg-audio.js|offline/tests/quiz-save-queue.test.mjs|offline/tests/typing-topic.test.mjs|package.json|.github/workflows/kg-dual-edition.yml|docs/U4B2B3D-QUIZ-SAVE-CORRECTION.md|tools/tests/u4b2b3d-quiz-save.test.mjs|tools/tests/u4b2b3d-quiz-ui-browser.mjs|tools/check-f1-review-scope.mjs|tools/tests/u4b2b3d-review-scope.test.mjs|tools/tests/u4b2-f2e2b-topic-completion.sql|tools/tests/u4b2-f2e2b-topic-completion.py|.github/workflows/kg-u4b2-backend.yml)
                 ;;
               *)
                 echo "Unreviewed U3D3A file: $path"
@@ -78,7 +80,7 @@ jobs:
                 ;;
             esac
           done < /tmp/u3d3a-files.txt
-          if grep -Eq '^(sql/|supabase/|offline/sw.js|offline/pictures.js|offline/audio-manifest.js|js/kg-audio.js|js/kg-protected-image.mjs)' /tmp/u3d3a-files.txt; then
+          if grep -Eq '^(sql/|supabase/|offline/sw.js|offline/pictures.js|offline/audio-manifest.js|js/kg-protected-image.mjs)' /tmp/u3d3a-files.txt; then
             echo 'Production authorization, installed worker and public media are out of scope'
             exit 1
           fi

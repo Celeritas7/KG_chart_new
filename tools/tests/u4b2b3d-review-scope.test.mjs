@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {assertF1ReviewScope} from '../check-f1-review-scope.mjs';
+import {assertF1ReviewScope,assertAudioPreferenceReviewScope} from '../check-f1-review-scope.mjs';
 
 const source = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+const audioSource = readFileSync(new URL('../../js/kg-audio.js', import.meta.url), 'utf8');
 
 test('reviewed F1 recovery and quiz behavior can change without broadening the surrounding source scope', () => {
   const edited = source.replace('Results saved', 'Results confirmed');
@@ -20,7 +21,9 @@ for (const [label, before, after] of [
   ['colour rendering helper', 'function ColourPicture({', 'function ColourPicture(/* changed */{'],
   ['shared difficulty constants', 'const LEVELS = [', 'const LEVELS = [null,'],
   ['legacy difficulty formula', 'function levelProgress(sessions, level, levelUp = DEFAULT_RULES.level_up) {', 'function levelProgress(sessions, level, levelUp = DEFAULT_RULES.level_up) { return {};'],
-  ['preference helper', 'async function syncTypingBests(user, local) {', 'async function syncTypingBests(user, local) { return {};'],
+  ['typing language definitions', 'const TYPING_LANG_TAGS = {', 'const TYPING_LANG_TAGS = { unexpected: "en",'],
+  ['typing normalization', 'const typingNorm = (s) =>', 'const typingNorm = (s) => s ||'],
+  ['typing matching', 'function typingMatch(typed, target) {', 'function typingMatch(typed, target) { return {};'],
   ['pronunciation helper', 'const PRON_MAX_SECONDS = 15;', 'const PRON_MAX_SECONDS = 16;'],
   ['unrelated script', '  <script src="./js/kg-sentence-access.js"></script>', '  <script src="./js/kg-sentence-access.js"></script><script src="./unexpected.js"></script>'],
 ]) test(`F1 scope rejects ${label}`, () => {
@@ -78,4 +81,114 @@ test('F2E2a-R1 admits exact rating focus origins while protecting word-detail be
     assert.throws(()=>assertF1ReviewScope(source,changed));
   }
   assert.throws(()=>assertF1ReviewScope(source,source+'\n'+detail),'Duplicate origin markers fail closed');
+});
+
+test('F2E2d admits preference controls and typing-best helpers without opening adjacent source',()=>{
+  for(const marker of ['    function AudioControls(', '    function mergeTypingBests(']){
+    assert.ok(source.includes(marker));
+    assert.doesNotThrow(()=>assertF1ReviewScope(source,source.replace(marker,marker+'/* reviewed preferences */')));
+  }
+  const marker='    // F2E2d — shared account preference state and exact recovery.';
+  const header='    // Header: ♀/♂ voice + auto-play mute. Saved on the account (kg_chart_user_prefs).';
+  const extended=source.includes(marker)?source:source.replace(header,
+    marker+'\n    function PreferenceScopeFixture() { return null; }\n\n'+header);
+  assert.doesNotThrow(()=>assertF1ReviewScope(source,extended));
+  assert.throws(()=>assertF1ReviewScope(extended,extended+'\n'+marker));
+  for(const boundary of ['    function AudioControls(', '    const TYPING_BEST_KEY =',
+    '\n    const TYPING_LANG_TAGS =', '\n    // ==========================================\n    // AUTH CONTEXT\n']){
+    assert.throws(()=>assertF1ReviewScope(source,source.replace(boundary,'/* missing preference boundary */')));
+    assert.throws(()=>assertF1ReviewScope(source,source+'\n'+boundary));
+  }
+  assert.throws(()=>assertF1ReviewScope(source,
+    source.replace("const TYPING_BEST_KEY = 'kg_chart_typing_best';","const TYPING_BEST_KEY = 'replacement';")),
+    'The historical unowned mirror key must remain available for later reconciliation');
+});
+
+test('F2E2d admits only complete exact preference AppContent wiring at reviewed positions',()=>{
+  const parts=[
+    '      const preferences = usePersonalPreferences(user, policy, verified);\n',
+    '        <KGPreferenceContext.Provider value={preferences}>\n',
+    '        </KGPreferenceContext.Provider>\n',
+    '          <PreferenceRecoveryPanel flow={preferences} />\n',
+  ];
+  const oldEffect='      useEffect(() => { if (user) window.KGAudio.initPrefs(supabase, user.id); }, [user]);\n';
+  const manifestEffect='      useEffect(() => { if (selectedLanguage) window.KGAudio.loadManifest(selectedLanguage); }, [selectedLanguage]);\n';
+  let previous=source;
+  for(const part of parts){
+    assert.ok(source.includes(part),'Exercise actual preference AppContent wiring');
+    previous=previous.replace(part,'');
+    assert.throws(()=>assertF1ReviewScope(source,source.replace(part,'')), 'Partial wiring must fail closed');
+    assert.throws(()=>assertF1ReviewScope(source,source+'\n'+part), 'Duplicate wiring must fail closed');
+    assert.throws(()=>assertF1ReviewScope(source,source.replace(part,'')+'\n'+part), 'Moved wiring must fail closed');
+  }
+  assert.ok(previous.includes(manifestEffect));
+  previous=previous.replace(manifestEffect,manifestEffect+oldEffect);
+  assert.doesNotThrow(()=>assertF1ReviewScope(previous,source));
+  for(const [before,after] of [
+    ['usePersonalPreferences(user, policy, verified);','usePersonalPreferences(user, policy, true);'],
+    ['<KGPreferenceContext.Provider value={preferences}>','<KGPreferenceContext.Provider value={{}}>'],
+    ['<PreferenceRecoveryPanel flow={preferences} />','<PreferenceRecoveryPanel flow={null} />'],
+  ]){
+    const edited=source.replace(before,after);
+    assert.notEqual(edited,source);
+    assert.throws(()=>assertF1ReviewScope(source,edited));
+  }
+  assert.throws(()=>assertF1ReviewScope(source,source.replace(manifestEffect,manifestEffect+oldEffect)),
+    'New shared preference ownership cannot coexist with the unconditional legacy initializer');
+  assert.throws(()=>assertF1ReviewScope(previous,previous.replace(oldEffect,'')),
+    'Deleting the old initializer requires the complete new wiring');
+});
+
+test('F2E2d audio scope admits only preference state, lifecycle and exact bridge exports',()=>{
+  for(const [before,after] of [
+    ["let prefs = { voice: 'f', muted: false };","let prefs = { voice: 'f', muted: false }; /* reviewed preferences */"],
+    ['  async function initPrefs(', '  async function initPrefs(/* reviewed preferences */'],
+  ]){
+    const edited=audioSource.replace(before,after);
+    assert.notEqual(edited,audioSource);
+    assert.doesNotThrow(()=>assertAudioPreferenceReviewScope(audioSource,edited));
+  }
+  const bridge='    setPreferenceScope, applyPreferenceState,\n';
+  const media='    requireVerifiedMediaPolicy, setVerifiedMediaPolicy,\n';
+  const before=audioSource.replace(bridge,'');
+  const after=before.replace(media,bridge+media);
+  assert.notEqual(after,before);
+  assert.doesNotThrow(()=>assertAudioPreferenceReviewScope(before,after));
+  assert.throws(()=>assertAudioPreferenceReviewScope(after,after+bridge));
+  assert.throws(()=>assertAudioPreferenceReviewScope(after,
+    after.replace(bridge,'    setPreferenceScope, applyPreferenceState, unexpectedMediaExport,\n')));
+});
+
+for(const [label,before,after] of [
+  ['public audio origin', '  const BASE =', '  const BASE = "https://unexpected.invalid/" +'],
+  ['historical audio mirror key', "const PREFS_KEY = 'kg_chart_audio_prefs';", "const PREFS_KEY = 'replacement';"],
+  ['playback speed', '  const SLOW_RATE = 0.7;', '  const SLOW_RATE = 1;'],
+  ['clip hash', '  function hash(text) {', '  function hash(text) { return "changed";'],
+  ['public media gate', '  function canUsePublicMedia() {', '  function canUsePublicMedia() { return true;'],
+  ['protected media gate', '  function isProtectedMedia() {', '  function isProtectedMedia() { return false;'],
+  ['verified media policy', '  function setVerifiedMediaPolicy(access) {', '  function setVerifiedMediaPolicy(access) { return;'],
+  ['manifest loading', '  function loadManifest(lang) {', '  function loadManifest(lang) { return;'],
+  ['clip resolution', '  function resolve(text, lang, voice) {', '  function resolve(text, lang, voice) { return null;'],
+  ['offline lease cleanup', 'offlineLease?.release?.();', '/* removed offline lease cleanup */'],
+])test(`F2E2d audio scope rejects ${label}`,()=>{
+  const edited=audioSource.replace(before,after);
+  assert.notEqual(edited,audioSource,'Fixture must alter the real protected audio source');
+  assert.throws(()=>assertAudioPreferenceReviewScope(audioSource,edited));
+});
+
+test('F2E2d audio boundaries fail closed when missing, duplicated or moved across media policy',()=>{
+  for(const marker of [
+    '  // ---- prefs: voice m/f + mute (',
+    '\n  // U3C2B1: installed sources remain legacy until the separate U3D/U4',
+    '  async function initPrefs(',
+    '\n  // ---- manifests: audio/<lang>/clips.json -> { m: [hash], f: [hash] } ----',
+  ]){
+    assert.throws(()=>assertAudioPreferenceReviewScope(audioSource,audioSource.replace(marker,'/* missing audio boundary */')));
+    assert.throws(()=>assertAudioPreferenceReviewScope(audioSource,audioSource+'\n'+marker));
+  }
+  const marker='  // F2E2d preference scope';
+  const without=audioSource.replace(marker,'  // Earlier preference scope');
+  const moved=without.replace('  function canUsePublicMedia() {',marker+'\n  function canUsePublicMedia() {');
+  assert.throws(()=>assertAudioPreferenceReviewScope(audioSource,moved),
+    'Moving the preference boundary must not hide media-policy edits');
 });

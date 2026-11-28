@@ -980,3 +980,218 @@
     select:(o,t,before,desired)=>mutate(o,t,before,'select',desired),
     check:(o,t,before)=>mutate(o,t,before,'check')};
 })(typeof window !== 'undefined' ? window : globalThis);
+
+// F2E2d: account-wide, versioned preference events. Only newly authored
+// field patches enter this namespace; historical device mirrors and the
+// installed outbox are never read, relabelled or converted here.
+(function(root) {
+  'use strict';
+  const PREFIX='kg-chart-preference-recovery-v1:',ARCHIVE='kg-chart-preference-archive-v1:';
+  const cp=x=>JSON.parse(JSON.stringify(x));
+  const obj=x=>!!x&&typeof x==='object'&&!Array.isArray(x);
+  const own=(x,k)=>Object.prototype.hasOwnProperty.call(x,k);
+  const uuid=x=>typeof x==='string'&&/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(x);
+  const version=x=>Number.isSafeInteger(x)&&x>=0;
+  const target=x=>obj(x)&&uuid(x.ownerId)&&version(x.revision)&&x.revision>0;
+  const exact=(x,keys)=>obj(x)&&Object.keys(x).length===keys.length&&keys.every(k=>own(x,k));
+  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  const err=(message,code,status='pending')=>Object.assign(Error(message),{code,status});
+  const invalid=()=>err('Invalid preference recovery data. The original data is retained.','KG_PREF_INVALID','blocked');
+  const detail=e=>({code:e?.code||'KG_PREF_FAILED',message:e?.message||'Preferences were not confirmed.'});
+  function bytes(s){let n=0;for(const c of s){const p=c.codePointAt(0);n+=p<=127?1:p<=2047?2:p<=65535?3:4;}return n;}
+  // PostgreSQL compares timestamptz instants at microsecond precision. Date
+  // alone would collapse distinct last-run timestamps into a false tie.
+  function instant(value){
+    if(typeof value!=='string')throw invalid();
+    const m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
+    if(!m)throw invalid();
+    const [y,mo,d,h,mi,s]=m.slice(1,7).map(Number),oh=Number(m[10]||0),om=Number(m[11]||0);
+    if(y<1||mo<1||mo>12||d<1||d>31||h>23||mi>59||s>59||oh>15||om>59)throw invalid();
+    const dt=new Date(0);dt.setUTCFullYear(y,mo-1,d);dt.setUTCHours(h,mi,s,0);
+    if(dt.getUTCFullYear()!==y||dt.getUTCMonth()!==mo-1||dt.getUTCDate()!==d)throw invalid();
+    const offset=(oh*60+om)*60000*(m[9]==='-'?-1:1);
+    return BigInt(dt.getTime()-offset)*1000n+BigInt((m[7]||'').padEnd(6,'0'));
+  }
+  function typingKey(k){
+    if(typeof k!=='string'||bytes(k)>512||/[\u0000-\u001f\u007f]/.test(k))return false;
+    const p=k.split('|');
+    return (p.length===3||p.length===4)&&/^[a-z]{2,3}$/.test(p[0])&&
+      ['copy','recall'].includes(p[1])&&p[2]==='words'&&
+      (p.length===3||(p[3]!==''&&p[3]===p[3].trim()&&p[3]!=='all'&&[...p[3]].length<=200));
+  }
+  function validBest(v,checkFuture=true){
+    if(!exact(v,['cpm','last','at'])||!Number.isInteger(v.cpm)||v.cpm<0||v.cpm>100000||
+      !Number.isInteger(v.last)||v.last<0||v.last>v.cpm)return false;
+    try{const at=instant(v.at);return !checkFuture||at<=BigInt(Date.now()+300000)*1000n;}catch(_){return false;}
+  }
+  const validMap=(m,checkFuture=true)=>obj(m)&&Object.entries(m).every(([k,v])=>typingKey(k)&&validBest(v,checkFuture));
+  // Match JSONB's separator overhead as well as UTF-8 bytes at this boundary.
+  const wireJson=x=>obj(x)?'{'+Object.entries(x).map(([k,v])=>JSON.stringify(k)+': '+wireJson(v)).join(', ')+'}':JSON.stringify(x);
+  function patchValid(p,checkFuture=true){
+    return obj(p)&&Object.keys(p).length>0&&Object.keys(p).every(k=>['audio_voice','audio_muted','typing_best'].includes(k))&&
+      (!own(p,'audio_voice')||['m','f'].includes(p.audio_voice))&&
+      (!own(p,'audio_muted')||typeof p.audio_muted==='boolean')&&
+      (!own(p,'typing_best')||(validMap(p.typing_best,checkFuture)&&Object.keys(p.typing_best).length>=1&&Object.keys(p.typing_best).length<=50))&&
+      bytes(wireJson(p))<=65536;
+  }
+  function parseState(data,t,checkFuture=true){
+    if(!target(t)||!obj(data)||data.owner_id!==t.ownerId||data.permission_revision!==t.revision||
+      !version(data.version)||!['m','f'].includes(data.audio_voice)||typeof data.audio_muted!=='boolean'||!validMap(data.typing_best,checkFuture))
+      throw err('The server did not return verified account preferences.','KG_PREF_STATE');
+    return cp({owner_id:data.owner_id,permission_revision:data.permission_revision,version:data.version,
+      audio_voice:data.audio_voice,audio_muted:data.audio_muted,typing_best:data.typing_best});
+  }
+  function validate(e){
+    if(!exact(e,['contract','ownerId','revision','eventId','expectedVersion','patch','originalState','createdAt'])||
+      !target(e)||e.contract!==1||!uuid(e.eventId)||!version(e.expectedVersion)||e.expectedVersion>=Number.MAX_SAFE_INTEGER||
+      !patchValid(e.patch,false)||!exact(e.originalState,['audio_voice','audio_muted','typing_best'])||
+      !['m','f'].includes(e.originalState.audio_voice)||typeof e.originalState.audio_muted!=='boolean'||
+      !obj(e.originalState.typing_best))throw invalid();
+    instant(e.createdAt);
+    const keys=Object.keys(e.patch.typing_best||{}),before=e.originalState.typing_best;
+    // A clock correction must not make a previously authored event unreadable.
+    // Initial authoring/read use the future bound; the server rechecks retries.
+    if(Object.keys(before).length!==keys.length||keys.some(k=>!own(before,k)||(before[k]!==null&&!validBest(before[k],false))))throw invalid();
+    return e;
+  }
+  const key=e=>PREFIX+e.ownerId+':'+e.eventId;
+  const archiveKey=e=>ARCHIVE+e.ownerId+':'+e.eventId;
+  function createStore({storage,makeId=()=>root.crypto.randomUUID(),now=()=>new Date().toISOString()}={}){
+    const storageTarget=storage||root.localStorage;
+    const load=k=>{
+      const raw=storageTarget.getItem(k);if(raw===null)return null;
+      const e=validate(JSON.parse(raw));if(key(e)!==k)throw invalid();return e;
+    };
+    const sameStored=e=>{
+      validate(e);const old=load(key(e));
+      if(!old||!same(old,e))throw err('The durable original preference event is missing or changed.','KG_PREF_STORAGE','storage-error');
+      return old;
+    };
+    const list=ownerId=>{
+      if(!uuid(ownerId))return [];
+      const out=[],p=PREFIX+ownerId+':';
+      for(let i=0;i<storageTarget.length;i++){
+        const k=storageTarget.key(i);
+        if(typeof k==='string'&&k.startsWith(p)){const e=load(k);if(!e||e.ownerId!==ownerId)throw invalid();out.push(e);}
+      }
+      return out.sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.eventId.localeCompare(b.eventId));
+    };
+    return {
+      make(t,before,patch){
+        const b=parseState(before,t);if(!patchValid(patch))throw invalid();
+        const originalState={audio_voice:b.audio_voice,audio_muted:b.audio_muted,
+          typing_best:Object.fromEntries(Object.keys(patch.typing_best||{}).map(k=>[k,b.typing_best[k]??null]))};
+        return cp(validate({contract:1,ownerId:t.ownerId,revision:t.revision,eventId:makeId(),
+          expectedVersion:b.version,patch:cp(patch),originalState,createdAt:now()}));
+      },
+      put(e){
+        validate(e);const old=load(key(e));
+        if(old){if(!same(old,e))throw invalid();return cp(e);}
+        if(storageTarget.getItem(archiveKey(e))!==null)throw err('This preference event is archived.','KG_PREF_ARCHIVED','blocked');
+        // Separate event keys preserve a run that finishes while an audio
+        // request is uncertain. The server baseline serializes competing
+        // events; none is silently rebased or overwritten locally.
+        storageTarget.setItem(key(e),JSON.stringify(e));sameStored(e);return cp(e);
+      },
+      list,sameStored,
+      remove(e){sameStored(e);storageTarget.removeItem(key(e));if(storageTarget.getItem(key(e))!==null)throw err('Preference recovery could not be cleared.','KG_PREF_STORAGE','storage-error');},
+      archive(e,current){
+        sameStored(e);const b=parseState(current,e);
+        if(b.version<=e.expectedVersion)throw err('The original request may still complete. Retain it or retry it exactly.','KG_PREF_ARCHIVE_UNCERTAIN','blocked');
+        const k=archiveKey(e),old=storageTarget.getItem(k);
+        if(old!==null&&!same(JSON.parse(old).event,e))throw invalid();
+        if(old===null)storageTarget.setItem(k,JSON.stringify({event:cp(e),observed:b,archivedAt:now()}));
+        const saved=JSON.parse(storageTarget.getItem(k));
+        if(!exact(saved,['event','observed','archivedAt'])||!same(saved.event,e))
+          throw err('The original event could not be archived.','KG_PREF_STORAGE','storage-error');
+        instant(saved.archivedAt);
+        if(parseState(saved.observed,e,false).version<=e.expectedVersion)
+          throw err('The archive does not preserve a newer verified preference version.','KG_PREF_STORAGE','storage-error');
+        sameStored(e);storageTarget.removeItem(key(e));
+        if(storageTarget.getItem(key(e))!==null)throw err('The archived preference event is still pending on this device.','KG_PREF_STORAGE','storage-error');
+      },
+    };
+  }
+  const rpcError=e=>['40001','23505'].includes(e?.code)
+    ?err('The original preference version or event conflicts. The change is retained.',e.code,'conflict')
+    :['42501','PGRST301','PGRST302'].includes(e?.code)||[401,403].includes(e?.status)
+      ?err('This preference change is not currently permitted. Its original owner and revision are retained.','KG_PREF_DENIED','blocked')
+      :err('The server did not confirm this preference change. Retry the original event.',e?.code||'KG_PREF_RPC');
+  function checkScope(o,t){
+    if(!target(t))throw invalid();
+    const live=o.getScope?.();
+    if(live?.ownerId!==t.ownerId||live?.policy?.state!=='restricted'||live.policy.revision!==t.revision)
+      throw err('Account or permission revision changed. Original preferences are retained.','KG_PREF_SCOPE','blocked');
+    if(o.offlineClient)throw err('Restricted preferences require the online server.','KG_PREF_OFFLINE','blocked');
+  }
+  async function owner(o,t){
+    checkScope(o,t);let auth;
+    try{auth=await o.client.auth.getSession();}catch(_){throw err('The preference owner could not be verified.','KG_PREF_AUTH','blocked');}
+    checkScope(o,t);
+    if(auth?.error||auth?.data?.session?.user?.id!==t.ownerId)
+      throw err('The signed-in account no longer matches the preference owner.','KG_PREF_OWNER','blocked');
+  }
+  async function call(o,t,name,args){
+    await owner(o,t);let result,thrown;
+    try{result=await o.client.rpc(name,args);}catch(e){thrown=e;}
+    await owner(o,t);
+    if(thrown)throw rpcError(thrown);if(result?.error)throw rpcError(result.error);
+    if(result?.saveDestination==='device')throw err('A device queue cannot confirm account preferences.','KG_PREF_DEVICE');
+    return result?.data;
+  }
+  async function read(o,t){
+    const original=cp(t);
+    return parseState(await call(o,original,'kg_chart_f2_my_preferences',{
+      p_expected_revision:original.revision,p_owner_id:original.ownerId}),original);
+  }
+  function receipt(data,e){
+    if(!obj(data)||data.owner_id!==e.ownerId||data.permission_revision!==e.revision||data.event_id!==e.eventId||
+      data.event_version!==e.expectedVersion+1||!version(data.current_version)||data.current_version<data.event_version||
+      typeof data.replayed!=='boolean'||(!data.replayed&&data.current_version!==data.event_version))
+      throw err('The server did not confirm the original preference event.','KG_PREF_RECEIPT');
+    return cp(data);
+  }
+  function mergedBest(before,next){
+    if(before===null)return next;
+    const a=instant(before.at),b=instant(next.at);
+    if(a===b&&before.last!==next.last)throw err('Equal-time typing results need reconciliation.','KG_PREF_TIME_CONFLICT','conflict');
+    const latest=b>a?next:before;
+    return {cpm:Math.max(before.cpm,next.cpm),last:latest.last,at:latest.at};
+  }
+  function matchesEvent(current,e){
+    const before=e.originalState,p=e.patch;
+    if(current.audio_voice!==(own(p,'audio_voice')?p.audio_voice:before.audio_voice)||
+      current.audio_muted!==(own(p,'audio_muted')?p.audio_muted:before.audio_muted))return false;
+    return Object.entries(p.typing_best||{}).every(([k,v])=>{
+      const expected=mergedBest(before.typing_best[k],v),actual=current.typing_best[k];
+      return actual&&actual.cpm===expected.cpm&&actual.last===expected.last&&instant(actual.at)===instant(expected.at);
+    });
+  }
+  async function perform(o,e){
+    try{
+      validate(e);checkScope(o,e);
+      try{o.store.sameStored(e);}catch(_){throw err('A durable original preference event is required before sending.','KG_PREF_STORAGE','storage-error');}
+      const ack=receipt(await call(o,e,'kg_chart_f2_patch_preferences',{
+        p_expected_revision:e.revision,p_owner_id:e.ownerId,p_event_id:e.eventId,
+        p_expected_version:e.expectedVersion,p_patch:cp(e.patch)}),e);
+      const current=await read(o,e);
+      if(current.version<ack.current_version||(current.version===ack.event_version&&!matchesEvent(current,e)))
+        throw err('Current preferences do not match the verified event receipt.','KG_PREF_READBACK');
+      try{o.store.remove(e);}catch(_){throw err('Preferences were acknowledged but recovery could not be cleared. Retry the original event.','KG_PREF_STORAGE','storage-error');}
+      return {status:current.version>ack.event_version?'superseded':'saved',event:cp(e),current,receipt:ack};
+    }catch(error){return {status:error?.status||'pending',event:cp(e),error:detail(error)};}
+  }
+  const inFlight=new Map();
+  function save(o,e){
+    try{validate(e);}catch(error){return Promise.resolve({status:'blocked',error:detail(error)});}
+    const previous=inFlight.get(e.ownerId);
+    if(previous){
+      if(previous.client===o.client&&same(previous.event,e))return previous.task;
+      return Promise.resolve({status:'blocked',event:cp(e),error:detail(err('Another account preference change is still in progress. The original change is retained.','KG_PREF_BUSY'))});
+    }
+    const original=cp(e),task=perform(o,original).finally(()=>{if(inFlight.get(original.ownerId)?.task===task)inFlight.delete(original.ownerId);});
+    inFlight.set(original.ownerId,{event:original,client:o.client,task});return task;
+  }
+  root.KGPreferenceSave={createStore,parseState,read,save,validate,typingKey,instant,
+    storagePrefix:PREFIX,archivePrefix:ARCHIVE};
+})(typeof window !== 'undefined' ? window : globalThis);

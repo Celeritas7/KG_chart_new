@@ -11,13 +11,16 @@ const ranges = [
   ['    function useUserRatings(', '\n    // ==========================================\n    // COMPONENTS'],
   ['    function FlashcardView(', '\n    function ProgressView('],
   // F2E1b/c: explicitly reviewed timed and colour producers only; keep Say It,
-  // pronunciation, colour rendering helpers, preferences and authorization outside.
+  // pronunciation, colour rendering helpers and authorization outside.
   ['    function ColourQuizView(', '\n    // ==========================================\n    // TYPING TEST (timed)'],
   ['    function SpeakView(', '\n    // ==========================================\n    // COLOUR + NOUN QUIZ'],
   ['    function TypingView(', '\n    // ==========================================\n    // CARDS:'],
   ['    function useLevels(', '\n    // ==========================================\n    // WORD BUILDER QUIZ\n'],
   ['    function WordQuizView(', '\n    // ==========================================\n    // SENTENCE QUIZ (kg_chart_sentences)\n'],
   ['    function SentenceQuizView(', '\n    // ==========================================\n    // SPEAK A PARAGRAPH (any sentence group, read in order)\n'],
+  // F2E2d: only the account typing-best helpers, not typing normalization,
+  // matching, settings or the shared duration/language definitions.
+  ['    const TYPING_BEST_KEY =', '\n    const TYPING_LANG_TAGS ='],
 ];
 const recoveryStart = '    // Separate recovery records; never reuse or clear the installed offline outbox.\n';
 const script = '  <script src="./js/kg-quiz-save.js"></script>\n';
@@ -34,6 +37,21 @@ function uniquePosition(source, marker, optional = false) {
 
 export function normalizeF1Source(input) {
   let source = input;
+  // The new account preference controller sits beside AudioControls. Keep
+  // SpeakButton, Header, AuthContext and all authentication code outside.
+  const preferenceStart = uniquePosition(source,
+    '    // F2E2d — shared account preference state and exact recovery.', true);
+  const audioHeader = uniquePosition(source,
+    '    // Header: ♀/♂ voice + auto-play mute. Saved on the account (kg_chart_user_prefs).');
+  const audioControls = uniquePosition(source, '    function AudioControls(');
+  const authHeader = uniquePosition(source,
+    '\n    // ==========================================\n    // AUTH CONTEXT\n');
+  const audioStart = preferenceStart === -1 ? audioHeader : preferenceStart;
+  assert(audioStart <= audioHeader && audioHeader < audioControls && audioControls < authHeader,
+    'Invalid reviewed account preference component boundary');
+  source = source.slice(0, audioStart) + '    /* reviewed account preference components */\n' + source.slice(authHeader);
+  // Old unowned storage must remain available for later reconciliation.
+  uniquePosition(source, "    const TYPING_BEST_KEY = 'kg_chart_typing_best';");
   uniquePosition(source, script, true);
   source = source.replace(script, '');
   const recovery = uniquePosition(source, recoveryStart, true);
@@ -47,6 +65,33 @@ export function normalizeF1Source(input) {
     const end = uniquePosition(source, endMarker);
     assert(end > start, 'Invalid F1 source range: ' + startMarker);
     source = source.slice(0, start) + '    /* reviewed F1 component */\n' + source.slice(end);
+  }
+  // F2E2d: admit only the complete preference controller/provider/panel wiring
+  // at its reviewed AppContent positions. App authorization and navigation
+  // remain byte-for-byte protected, including when a marker is moved.
+  const oldPreferenceEffect = '      useEffect(() => { if (user) window.KGAudio.initPrefs(supabase, user.id); }, [user]);\n';
+  const preferenceWiring = [
+    ['      const preferences = usePersonalPreferences(user, policy, verified);\n',
+      '      const verified = !access.loading && !access.error && window.KGLearnerAccess.ready(policy);\n', ''],
+    ['        <KGPreferenceContext.Provider value={preferences}>\n',
+      '      return (\n', '        <RulesContext.Provider value={rules}>\n'],
+    ['        </KGPreferenceContext.Provider>\n',
+      '        </RulesContext.Provider>\n', '      );'],
+    ['          <PreferenceRecoveryPanel flow={preferences} />\n',
+      '', '          <PictureDownloads vocabulary={vocabulary} loading={loadingVocab || !priv.loaded} />\n'],
+  ];
+  const preferenceParts = preferenceWiring.map(([marker]) => uniquePosition(source, marker, true));
+  const oldPreferenceAt = uniquePosition(source, oldPreferenceEffect, true);
+  if (preferenceParts.some(at => at !== -1)) {
+    assert(preferenceParts.every(at => at !== -1) && oldPreferenceAt === -1,
+      'Preference AppContent wiring must be complete and replace the legacy init effect');
+    for (const [marker, before, after] of preferenceWiring) {
+      uniquePosition(source, before + marker + after);
+      source = source.replace(before + marker + after, before + after);
+    }
+  } else {
+    assert(oldPreferenceAt !== -1, 'Missing preference AppContent wiring');
+    source = source.replace(oldPreferenceEffect, '');
   }
   // Only the exact F2E2a AppContent rating wiring may change.
   const ratingWiring = [
@@ -102,7 +147,33 @@ export function normalizeF1Source(input) {
 export function assertF1ReviewScope(before, after) {
   assert(after.includes('const U3C1_SCOPED_UI_ENABLED = false;'), 'Restricted UI activation must remain OFF');
   assert.equal(normalizeF1Source(after), normalizeF1Source(before),
-    'Learner source outside the reviewed F1/F2E1b/c/F2E2a quiz/level/rating/recovery regions changed; separate review is required');
+    'Learner source outside the reviewed quiz/level/rating/recovery/preference regions changed; separate review is required');
+}
+
+// F2E2d permits preference lifecycle changes in KGAudio, not a change to
+// playback, public/private source resolution or media authorization.
+export function normalizeAudioPreferenceSource(input) {
+  let source = input;
+  const exports = '    setPreferenceScope, applyPreferenceState,\n';
+  uniquePosition(source, exports, true);
+  source = source.replace(exports, '');
+  const initial = uniquePosition(source,
+    '  // ---- prefs: voice m/f + mute (');
+  const policy = uniquePosition(source, '\n  // U3C2B1: installed sources remain legacy until the separate U3D/U4');
+  assert(policy > initial, 'Invalid reviewed audio preference state boundary');
+  source = source.slice(0, initial) + '  /* reviewed audio preference state */\n' + source.slice(policy);
+  const bridge = uniquePosition(source, '  // F2E2d preference scope', true);
+  const init = uniquePosition(source, '  async function initPrefs(');
+  const manifests = uniquePosition(source,
+    '\n  // ---- manifests: audio/<lang>/clips.json -> { m: [hash], f: [hash] } ----');
+  const start = bridge === -1 ? init : bridge;
+  assert(start <= init && init < manifests, 'Invalid reviewed audio preference lifecycle boundary');
+  return source.slice(0, start) + '  /* reviewed audio preference lifecycle */\n' + source.slice(manifests);
+}
+
+export function assertAudioPreferenceReviewScope(before, after) {
+  assert.equal(normalizeAudioPreferenceSource(after), normalizeAudioPreferenceSource(before),
+    'Audio source outside the reviewed account preference state/lifecycle and exact exports changed; playback and media authorization remain protected');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -110,5 +181,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   assert(base && /^[a-f0-9]{40}$/.test(base), 'Pass the full merge-base SHA');
   const before = execFileSync('git', ['show', `${base}:index.html`], {encoding: 'utf8', maxBuffer: 4 * 1024 * 1024});
   assertF1ReviewScope(before, readFileSync('index.html', 'utf8'));
-  console.log('F1_REVIEW_SCOPE_PASS: non-F1 learner source and restricted UI gate preserved');
+  const audioBefore = execFileSync('git', ['show', `${base}:js/kg-audio.js`], {encoding: 'utf8', maxBuffer: 1024 * 1024});
+  assertAudioPreferenceReviewScope(audioBefore, readFileSync('js/kg-audio.js', 'utf8'));
+  console.log('F1_REVIEW_SCOPE_PASS: unrelated learner source, restricted UI gate and audio playback/security preserved');
 }

@@ -18,10 +18,11 @@
   let version = 0;
   const emit = () => { version++; listeners.forEach(fn => fn()); };
 
-  // ---- prefs: voice m/f + mute (account row, localStorage mirror for first paint) ----
+  // ---- prefs: voice m/f + mute (owner-scoped mirrors; old unowned data is retained) ----
   let prefs = { voice: 'f', muted: false };
-  try { prefs = { ...prefs, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch (e) {}
   let sb = null, userId = null;
+  let preferenceScope = null, preferenceGeneration = 0, preferenceIntent = 0;
+  const preferenceKey = uid => PREFS_KEY + ':owner:' + uid;
 
   // U3C2B1: installed sources remain legacy until the separate U3D/U4
   // production gate is deliberately enabled. Unknown policy = no public
@@ -52,26 +53,72 @@
     emit();
   }
 
-  async function initPrefs(client, uid) {
-    if (userId && userId !== uid) { verifiedMediaAccess = null; stop(); }
+  // F2E2d preference scope: account transitions invalidate every legacy reply.
+  // Restricted values arrive only through the shared, verified RPC controller.
+  function setPreferenceScope(scope) {
+    const next = scope?.ownerId && ['legacy', 'restricted'].includes(scope.mode)
+      ? { ownerId: scope.ownerId, mode: scope.mode, revision: scope.revision ?? null } : null;
+    if (JSON.stringify(next) === JSON.stringify(preferenceScope)) return;
+    if (preferenceScope?.ownerId && preferenceScope.ownerId !== next?.ownerId) {
+      verifiedMediaAccess = null; stop();
+    }
+    preferenceGeneration++;
+    preferenceScope = next;
+    sb = null; userId = next?.ownerId || null;
+    prefs = { voice: 'f', muted: next?.mode !== 'legacy' };
+    if (next?.mode === 'legacy') {
+      try {
+        const local = JSON.parse(localStorage.getItem(preferenceKey(next.ownerId)) || '{}');
+        if (['m', 'f'].includes(local.voice)) prefs.voice = local.voice;
+        if (typeof local.muted === 'boolean') prefs.muted = local.muted;
+      } catch (_) {}
+    }
+    emit();
+  }
+  function applyPreferenceState(ownerId, revision, state) {
+    if (preferenceScope?.mode !== 'restricted' || preferenceScope.ownerId !== ownerId ||
+        preferenceScope.revision !== revision || state?.owner_id !== ownerId ||
+        state.permission_revision !== revision || !['m', 'f'].includes(state.audio_voice) ||
+        typeof state.audio_muted !== 'boolean') return false;
+    prefs = { voice: state.audio_voice, muted: state.audio_muted };
+    emit();
+    return true;
+  }
+  async function initPrefs(client, uid, isCurrent = () => true) {
+    const generation = preferenceGeneration, intent = preferenceIntent;
+    const current = () => generation === preferenceGeneration && intent === preferenceIntent && isCurrent() &&
+      preferenceScope?.mode === 'legacy' && preferenceScope.ownerId === uid;
+    if (!client || !uid || !current()) return;
     sb = client; userId = uid;
-    if (!sb || !uid) return;
-    const { data, error } = await sb.from('kg_chart_user_prefs').select('audio_voice, audio_muted').eq('user_id', uid).maybeSingle();
-    if (error) { console.warn('KGAudio: prefs table not available, using this device only.', error.message); return; }
-    if (data) setPrefsLocal({ voice: data.audio_voice === 'm' ? 'm' : 'f', muted: !!data.audio_muted });
+    try {
+      const { data, error } = await client.from('kg_chart_user_prefs').select('audio_voice, audio_muted').eq('user_id', uid).maybeSingle();
+      if (!current()) return;
+      if (error) { console.warn('KGAudio: prefs table not available, using this account’s device settings.', error.message); return; }
+      if (data) setPrefsLocal({ voice: data.audio_voice === 'm' ? 'm' : 'f', muted: !!data.audio_muted });
+    } catch (error) {
+      if (current()) console.warn('KGAudio: account preferences are unavailable.', error.message);
+    }
   }
   function setPrefsLocal(p) {
+    if (preferenceScope?.mode !== 'legacy' || !userId) return;
+    preferenceIntent++;
     prefs = { ...prefs, ...p };
-    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {}
+    try { localStorage.setItem(preferenceKey(userId), JSON.stringify(prefs)); } catch (e) {}
     emit();
   }
   async function setPrefs(p) {
+    if (preferenceScope?.mode !== 'legacy' || !userId) return;
+    const generation = preferenceGeneration, client = sb, ownerId = userId;
     setPrefsLocal(p);
-    if (!sb || !userId) return;
-    const { error } = await sb.from('kg_chart_user_prefs').upsert({
-      user_id: userId, audio_voice: prefs.voice, audio_muted: prefs.muted, updated_at: new Date().toISOString(),
-    });
-    if (error) console.warn('KGAudio: could not save prefs to account.', error.message);
+    if (!client || generation !== preferenceGeneration || preferenceScope?.ownerId !== ownerId) return;
+    try {
+      const { error } = await client.from('kg_chart_user_prefs').upsert({
+        user_id: ownerId, audio_voice: prefs.voice, audio_muted: prefs.muted, updated_at: new Date().toISOString(),
+      });
+      if (generation === preferenceGeneration && error) console.warn('KGAudio: could not save prefs to account.', error.message);
+    } catch (error) {
+      if (generation === preferenceGeneration) console.warn('KGAudio: could not save prefs to account.', error.message);
+    }
   }
 
   // ---- manifests: audio/<lang>/clips.json -> { m: [hash], f: [hash] } ----
@@ -295,6 +342,7 @@
 
   window.KGAudio = {
     hash, norm, loadManifest, has, play, autoPlay, stop, stateOf, initPrefs, setPrefs, toast,
+    setPreferenceScope, applyPreferenceState,
     requireVerifiedMediaPolicy, setVerifiedMediaPolicy,
     canUsePublicMedia, isProtectedMedia,
     get prefs() { return prefs; },
