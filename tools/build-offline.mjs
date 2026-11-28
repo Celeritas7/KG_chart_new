@@ -37,17 +37,15 @@ let app = appMatch[1]
     "const supabase = window.KGOffline.wrapClient(window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { storageKey: 'kg-chart-offline-auth', autoRefreshToken: false, detectSessionInUrl: true, flowType: 'pkce' } }));")
   .replace("const LANG_UTILS_BASE = 'https://celeritas7.github.io/language-utils';",
     "const LANG_UTILS_BASE = './language-utils';")
-  .replace('verifiedRef.current = u.id;\n        setAuthError',
-    'if (window.KGOffline) await window.KGOffline.afterVerified(u);\n        verifiedRef.current = u.id;\n        setAuthError')
-  .replace('await verify(session);\n          setLoading(false);\n        });',
-    "try { await verify(session); } catch (error) { setAuthError(error.message || 'Offline sign-in verification failed'); }\n          setLoading(false);\n        }).catch(error => { setAuthError(error.message || 'Could not open login'); setLoading(false); });")
+  .replace("          auth.current.approved = owner;\n          setAuthError('');",
+    "          if (!current(owner, generation)) return;\n          await window.KGOffline.afterVerified(u, () => current(owner, generation));\n          if (!current(owner, generation)) return;\n          auth.current.approved = owner;\n          setAuthError('');")
   .replace("const [activeView, setActiveView] = useState(() => loadFromStorage(STORAGE_KEYS.view, 'chart'));",
     "const [activeView, setActiveView] = useState(() => loadFromStorage(STORAGE_KEYS.view, 'chart'));\n      useEffect(() => window.KGOffline.setQuizBusy(activeView === 'quiz'), [activeView]);")
   .replace(/<PictureDownloads vocabulary=\{vocabulary\} loading=\{loadingVocab \|\| !priv\.loaded\} \/>/,
     '<div className="kg-offline-legacy-image-panel-replaced" />')
   .replace('ReactDOM.createRoot(document.getElementById(\'root\')).render(<App />);',
     "window.KGOffline.ready.then(() => ReactDOM.createRoot(document.getElementById('root')).render(<App />)).catch(e => window.KGOffline.fatal(e));");
-if (!app.includes('KGOffline.ready.then') || !app.includes('kg-offline-legacy') || !app.includes('afterVerified(u)')) throw Error('Offline app patch did not match upstream; review changes');
+if (!app.includes('KGOffline.ready.then') || !app.includes('kg-offline-legacy') || !app.includes('afterVerified(u, () => current(owner, generation))')) throw Error('Offline app patch did not match upstream; review changes');
 // Keep downloads, recovery and app updates out of the learner page. The dialog
 // lives outside React and the runtime's rerendered panel, so progress cannot close it.
 app = app.replace('    function Header(', `    function OfflineSettingsButton() {

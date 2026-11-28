@@ -819,6 +819,7 @@
             failClosed(owner, generation, 'The signed-in account could not be verified. Please sign in again.');
             return;
           }
+          if (!current(owner, generation)) return;
           const { data, error } = owner === ADMIN_USER_ID
             ? { data: true, error: null } : await supabase.rpc('kg_chart_is_allowed');
           if (!current(owner, generation)) return;

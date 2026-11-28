@@ -1692,14 +1692,21 @@
     return facade;
   }
 
-  async function afterVerified(user) {
+  async function afterVerified(user, isCurrent = () => true) {
+    // The generated AuthProvider owns the approval generation. Do not
+    // activate an offline enrollment after a newer login or sign-out.
+    const check = () => { if (!isCurrent()) throw Error('Account changed during verification. Saved work is retained.'); };
+    check();
     if(currentEnrollment() && owner===user.id) return;
     if(!navigator.onLine || !live) throw Error('Initial offline setup requires an online verified sign-in.');
     const verified=await live.auth.getUser();
+    check();
     if(verified.error || verified.data?.user?.id!==user.id) throw Error('Could not confirm this signed-in account online.');
     const allowed=await live.rpc('kg_chart_is_allowed');
+    check();
     if(allowed.error || allowed.data!==true) throw Error('This account is not approved for KG Chart.');
     const adm=await live.rpc('kg_chart_is_admin');
+    check();
     accountEpoch++;
     devicePlatform='';deviceChecks=Object.create(null);
     deviceOfflineEvidence=null;deviceEvidenceWasOffline=false;deviceCheckMessage='';
@@ -1710,6 +1717,7 @@
       tx.objectStore('kv').put(owner,'active-owner');
     });
     await loadPacks();
+    check();
     if(U3D1_OFFLINE_ACCESS_ENABLED){
       await restoreOfflineAccess();
       // Failure blocks local study; it never uninstalls a pack or signs out.
@@ -1740,13 +1748,16 @@
   async function loadPacks() {
     packs=new Map();activeCaches=[];
     if(!currentEnrollment()) return;
+    const id=owner, epoch=accountEpoch, loaded=new Map();
     for(const lang of ['my','zh','si','te','ta','ko','th','ms','mr','kn','ja','fil']) {
-      const key=await get('active:'+owner+':'+lang);
+      const key=await get('active:'+id+':'+lang);
       const pack=key && await get('pack:'+key);
-      if(pack && pack.ownerId===owner && pack.schemaVersion<=SCHEMA_VERSION) packs.set(lang,pack);
+      if(pack && pack.ownerId===id && pack.schemaVersion<=SCHEMA_VERSION) loaded.set(lang,pack);
     }
-    activeCaches=(await get('active-caches:'+owner))||[];
-    lastSync=(await get('last-sync:'+owner))||null;
+    const caches=(await get('active-caches:'+id))||[];
+    const synced=(await get('last-sync:'+id))||null;
+    if(owner!==id || accountEpoch!==epoch || !currentEnrollment()) return;
+    packs=loaded;activeCaches=caches;lastSync=synced;
   }
 
   async function readMedia(url) {
