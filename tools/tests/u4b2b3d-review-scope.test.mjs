@@ -54,3 +54,26 @@ test('F2E2b keeps the path recovery change bounded',()=>{
   assert.doesNotThrow(()=>assertF1ReviewScope(source,edited));
   assert.throws(()=>assertF1ReviewScope(source,source.replace('function LockedTopicPanel({','function LockedTopicPanel(/* changed */{')));
 });
+
+test('F2E2a-R1 admits exact rating focus origins while protecting word-detail behavior',()=>{
+  const chart='onClick={(e) => { e.stopPropagation(); onRate(item.id, r.id, undefined, e.currentTarget); }}';
+  const detail='onClick={(e) => onRate(item.id, r.id, undefined, e.currentTarget)}';
+  const strip='className="absolute bottom-0 left-0 right-0 bg-white/95 border-t border-gray-200 p-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"';
+  assert.ok(source.includes(chart)&&source.includes(detail)&&source.includes(strip),'Exercise both actual reviewed rating callsites and focused strip');
+  const previous=source.replace(chart,'onClick={(e) => { e.stopPropagation(); onRate(item.id, r.id); }}')
+    .replace(detail,'onClick={() => onRate(item.id, r.id)}')
+    .replace(strip,strip.replace(' group-focus-within:opacity-100',''));
+  assert.doesNotThrow(()=>assertF1ReviewScope(previous,source));
+  for(const [before,after] of [
+    ['function VocabCard({','function VocabCard(/* changed */{'],
+    ['function DetailModal({','function DetailModal(/* changed */{'],
+    ['const saveDevanagari = async () => {','const saveDevanagari = async () => { return;'],
+    [detail,'onClick={(e) => onRate(item.id, r.id, null, e.currentTarget)}'],
+    [strip,strip.replace('bg-white/95','bg-black/95')],
+  ]){
+    const changed=source.replace(before,after);
+    assert.notEqual(changed,source);
+    assert.throws(()=>assertF1ReviewScope(source,changed));
+  }
+  assert.throws(()=>assertF1ReviewScope(source,source+'\n'+detail),'Duplicate origin markers fail closed');
+});

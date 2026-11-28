@@ -3,16 +3,32 @@
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {readFile, readdir} from 'node:fs/promises';
+import {runInNewContext} from 'node:vm';
 import {transform} from 'esbuild';
 import {chromium} from 'playwright';
+import postcss from 'postcss';
+import tailwindcss from 'tailwindcss';
 
-const source = await readFile('index.html', 'utf8');
+// Optional read-only baseline source supports proving a regression against
+// a reviewed Git version without modifying the shared working index.html.
+const source = await readFile(process.env.KG_UI_SOURCE || 'index.html', 'utf8');
 const script = source.match(/<script type="text\/babel">([\s\S]*?)<\/script>/)?.[1];
 assert.ok(script, 'Canonical JSX must be found');
 const clientSource = 'const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);';
 const mountSource = "ReactDOM.createRoot(document.getElementById('root')).render(<App />);";
 assert.equal(script.split(clientSource).length, 2, 'Replace only the real client boundary');
 assert.equal(script.split(mountSource).length, 2, 'Replace only the final application mount');
+const tailwindConfig = source.match(/<script>\s*(tailwind\.config\s*=[\s\S]*?)<\/script>/)?.[1];
+assert.ok(tailwindConfig, 'Canonical Tailwind configuration must be found');
+const tailwind = {};
+runInNewContext(tailwindConfig, {tailwind});
+const compiledStyles = await postcss([tailwindcss({...tailwind.config,
+  content: [{raw: source, extension: 'html'}],
+})]).process('@tailwind base; @tailwind components; @tailwind utilities;', {from: undefined});
+// Include the real layout and animation rules as well as real generated
+// utilities. Unstyled dialogs do not reproduce their pointer obstruction.
+const canonicalStyles = compiledStyles.css + [...source.matchAll(/<style(?:\s[^>]*)?>([\s\S]*?)<\/style>/g)]
+  .map(match => match[1]).join('\n');
 
 // This code runs in the disposable browser profile. The test database is kept
 // under a distinct key so it survives reload without sharing app recovery keys.
@@ -74,6 +90,7 @@ function installFakeClient() {
     callback: () => { state.callbacks++; persist(); },
     rate: () => { state.ratingCalls++; persist(); },
     externalRating: (id,value)=>changeRating(id,value,'2026-11-27T12:00:00Z','2026-11-27T12:00:00Z'),
+    setOwner: value => { state.owner=value; persist(); },
     resetPath:(at='2026-11-27T13:00:00.123457+00:00')=>{state.pathRevision++;state.pathReset=at;state.pathComplete=false;state.pathEligible=null;persist();},
     eligiblePath:at=>{state.pathEligible=at;persist();},
     words, user: {id: owner, email: 'fixture@example.invalid'},
@@ -125,6 +142,8 @@ function installFakeClient() {
         }
         const i=state.faults.findIndex(f=>f.table===name),fault=i<0?null:state.faults.splice(i,1)[0];persist();
         if(fault?.mode==='deny')return {error:{code:'42501'}};
+        if(fault?.mode==='hold')await new Promise(resolve=>{release=resolve;});
+        if(fault?.mode==='fail')return {error:{message:'Synthetic rating failure'}};
         const prior=state.ratingReceipts[args.p_event_id];
         if(prior){
           if(JSON.stringify(prior.args)!==JSON.stringify(args))return {error:{code:'23505'}};
@@ -251,15 +270,19 @@ const harness = `
     const fixtureRules = { ...resolveRules(null), loaded: true };
     const fixturePrivate = { topics: new Set(), groups: new Set(), loaded: true };
     const fixtureSentenceAccess = window.KGSentenceAccess.parseGroupSnapshot(null, { state: 'legacy' }, 'my');
-    function RatingFixture({policy,cards}){
-      const rating=useUserRatings('my',policy), id=fixtureWords[0].id;
+    function RatingFixture({policy,cards,chart,languageCode,user}){
+      const rating=useUserRatings(languageCode,policy), id=fixtureWords[0].id;
       const topics=[{id:'food',icon:'🍎',translation:{title_native:'Food'}}];
       return <>
         <RatingRecoveryPanel flow={rating.ratingFlow} vocabulary={fixtureWords}/>
-        <div data-fixture-rating={rating.ratings[id]?.rating??'none'} data-ratings-loaded={rating.ratingsLoaded?'yes':'no'}/>
+        <div data-fixture-rating={rating.ratings[id]?.rating??'none'} data-ratings-loaded={rating.ratingsLoaded?'yes':'no'}
+          data-fixture-owner={user.id} data-fixture-language={languageCode} data-fixture-revision={policy?.revision}/>
         {cards?<FlashcardView topics={topics} vocabulary={fixtureWords} ratings={rating.ratings}
           ratingsLoaded={rating.ratingsLoaded} onRate={rating.updateRating} onClearRating={rating.clearRating}
-          languageCode="my" user={fixtureUser} restrictedRatings/>:
+          languageCode={languageCode} user={user} restrictedRatings/>:chart?
+          <ChartView topic={topics[0]} vocabulary={fixtureWords} ratings={rating.ratings}
+            onRate={rating.updateRating} languageCode={languageCode} showEnglish
+            onToggleEnglish={()=>{}} meaningName="English"/>:
           <div>
             <button disabled={!rating.ratingsLoaded} onClick={()=>rating.updateRating(id,4)}>Rate fixture word</button>
             <button disabled={!rating.ratingsLoaded} onClick={()=>rating.clearRating(id)}>Clear fixture rating</button>
@@ -278,10 +301,19 @@ const harness = `
     }
     function QuizFixture() {
       const [shown, setShown] = useState(true);
+      const [identity,setIdentity]=useState({user:fixtureUser,languageCode:'my',revision:17});
+      useEffect(()=>{
+        window.__kgF1.changeScope=patch=>{
+          if(patch.ownerId)window.__kgF1.setOwner(patch.ownerId);
+          setIdentity(old=>({user:patch.ownerId?{...old.user,id:patch.ownerId}:old.user,
+            languageCode:patch.languageCode||old.languageCode,revision:patch.revision??old.revision}));
+        };
+        return()=>{delete window.__kgF1.changeScope;};
+      },[]);
       const kind = new URLSearchParams(location.search).get('kind') || 'word';
       const restricted = new URLSearchParams(location.search).get('restricted') === 'yes';
-      const scope = restricted ? {ownerId:fixtureUser.id, policy:{state:'restricted', revision:kind==='path'?window.__kgF1.snapshot().pathRevision:17}} : null;
-      return <AuthContext.Provider value={{ user: fixtureUser }}>
+      const scope = restricted ? {ownerId:identity.user.id, policy:{state:'restricted', revision:kind==='path'?window.__kgF1.snapshot().pathRevision:identity.revision}} : null;
+      return <AuthContext.Provider value={{ user: identity.user }}>
         <KGMediaScopeContext.Provider value={scope}>
         <RulesContext.Provider value={fixtureRules}>
           <PrivateLessonsContext.Provider value={fixturePrivate}>
@@ -299,7 +331,8 @@ const harness = `
               : kind === 'speaking' ? <SpeakView languageCode="my" user={fixtureUser} meaningName="English"
                   sentenceAccess={fixtureSentenceAccess} />
               : kind === 'colour' ? <ColourQuizView languageCode="my" user={fixtureUser} />
-              : kind === 'ratings' || kind === 'rating-cards' ? <RatingFixture policy={scope?.policy} cards={kind==='rating-cards'}/>
+              : ['ratings','rating-cards','rating-chart'].includes(kind) ? <RatingFixture policy={scope?.policy}
+                  cards={kind==='rating-cards'} chart={kind==='rating-chart'} languageCode={identity.languageCode} user={identity.user}/>
               : kind === 'path' ? <PathFixture policy={scope?.policy}/>
               : <SentenceQuizView languageCode="my" user={fixtureUser} meaningName="English"
                   sentenceAccess={fixtureSentenceAccess} onSessionSaved={window.__kgF1.callback} />
@@ -318,19 +351,20 @@ const assets = new Map([
   ['/react-dom.js', await readFile('node_modules/react-dom/umd/react-dom.development.js')],
   ['/fixture.js', `(${installFakeClient.toString()})();`],
   ['/app.js', code],
+  ['/app.css', canonicalStyles],
 ]);
 for (const filename of ['kg-shared.js', 'kg-learner-access.js', 'kg-sentence-access.js', 'kg-quiz-save.js']) {
   assets.set('/' + filename, await readFile('js/' + filename));
 }
 const html = '<!doctype html><html><head><meta charset="UTF-8"><title>Isolated F1 UI fixture</title>' +
-  '<style>button{margin:4px;padding:8px}img{max-width:64px;max-height:64px}body{font-family:sans-serif}</style></head><body><div id="root"></div>' +
-  [...assets.keys()].filter(path => path !== '/app.js').map(path => `<script src="${path}"></script>`).join('') +
+  '<link rel="stylesheet" href="/app.css"></head><body><div id="root"></div>' +
+  [...assets.keys()].filter(path => path.endsWith('.js') && path !== '/app.js').map(path => `<script src="${path}"></script>`).join('') +
   '<script src="/app.js"></script></body></html>';
 const server = createServer((req, res) => {
   const path = new URL(req.url, 'http://127.0.0.1').pathname;
   const content = path === '/' ? html : assets.get(path);
   if (content === undefined) { res.writeHead(404); res.end(); return; }
-  res.writeHead(200, {'content-type': path === '/' ? 'text/html; charset=utf-8' : 'text/javascript; charset=utf-8', 'cache-control': 'no-store'});
+  res.writeHead(200, {'content-type': path === '/' ? 'text/html; charset=utf-8' : path.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8', 'cache-control': 'no-store'});
   res.end(content);
 });
 
@@ -343,6 +377,7 @@ let browser;
 let passed = 0;
 const sessions = 'kg_chart_quiz_sessions', answers = 'kg_chart_quiz_answers';
 async function scenario(name, kind, run, restricted = false) {
+  if(process.env.KG_UI_SCENARIO&&!name.includes(process.env.KG_UI_SCENARIO))return;
   const context = await browser.newContext({serviceWorkers: 'block'});
   // Route applies to the whole disposable context. Only this local server may
   // receive requests; canonical converter startup requests are aborted.
@@ -355,7 +390,7 @@ async function scenario(name, kind, run, restricted = false) {
     await page.goto(`${origin}/?kind=${kind}${restricted ? '&restricted=yes' : ''}`, {waitUntil: 'load'});
     if (kind==='typing') await page.getByRole('button', {name:'Start',exact:true}).waitFor();
     else if (kind==='speaking') await page.getByRole('button', {name:/Whole paragraph/}).waitFor();
-    else if(kind==='ratings'||kind==='rating-cards')await page.locator('[data-ratings-loaded="yes"]').waitFor({state:'attached'});
+    else if(['ratings','rating-cards','rating-chart'].includes(kind))await page.locator('[data-ratings-loaded="yes"]').waitFor({state:'attached'});
     else if(kind==='path')await page.locator('[data-path-ready="yes"]').waitFor({state:'attached'});
     else await page.getByRole('button', {name: /^Start Quiz/}).waitFor();
     await run(page);
@@ -675,7 +710,7 @@ try {
     await page.locator('.flip-card').first().waitFor();
     await page.keyboard.press('Space');await page.keyboard.press('5');
     await dialog(page).getByText(/version 0/).waitFor();
-    assert.equal(await page.getByRole('button',{name:/To sort \(4\)/}).count(),1);
+    assert.equal(await page.getByRole('button',{name:/To sort \(4\)/,includeHidden:true}).count(),1);
     await dialog(page).getByRole('button',{name:'Confirm rating',exact:true}).click();
     await page.getByRole('button',{name:/To sort \(3\)/}).waitFor();
     await page.getByRole('button',{name:/Undo/}).click();
@@ -688,6 +723,157 @@ try {
     assert.equal(writes[1].args.p_expected_version,1);
     assert.equal(db.tables.kg_chart_user_ratings.length,0);
     assert.equal(db.ratingVersions[writes[1].args.p_vocabulary_id],2);
+  },true);
+  const chartCard=page=>page.locator('#chart-card-22000000-0000-4000-8000-000000000001');
+  const wordDetail=page=>page.locator('.fixed.inset-0').filter({has:page.locator('h2').filter({hasText:/^Native 0$/})});
+  const detailRating=page=>wordDetail(page).getByRole('button',{name:/Understand but can't use/,includeHidden:true});
+  const pendingRatings=page=>page.evaluate(()=>Object.keys(localStorage)
+    .filter(key=>key.startsWith('kg-chart-rating-recovery-v1:')).map(key=>JSON.parse(localStorage.getItem(key))));
+  const expectFocus=async locator=>{
+    const element=await locator.elementHandle();
+    await locator.page().waitForFunction(el=>document.activeElement===el,element);
+  };
+  async function openWordDetail(page){
+    await chartCard(page).getByText('Native 0',{exact:true}).click();
+    await wordDetail(page).getByRole('button',{name:'Close',exact:true}).waitFor();
+    assert.deepEqual(await wordDetail(page).evaluate(el=>({position:getComputedStyle(el).position,z:getComputedStyle(el).zIndex})),
+      {position:'fixed',z:'50'},'Use the actual positioned word-detail layer');
+  }
+  for(const mobile of [false,true])await scenario(`F2E2a-R1 styled Chart detail: pointer Cancel and Confirm ${mobile?'mobile':'desktop'}`, 'rating-chart', async page=>{
+    if(mobile)await page.setViewportSize({width:390,height:844});
+    await openWordDetail(page);
+    const trigger=detailRating(page);
+    await trigger.click();
+    await dialog(page).getByText(/version 0/).waitFor();
+    if(mobile&&process.env.KG_UI_SCREENSHOT)await page.screenshot({path:process.env.KG_UI_SCREENSHOT});
+    assert.equal(ratingWrites(await snapshot(page)).length,0);
+    // Ordinary pointer clicks, with no force or close-detail workaround:
+    // the old z-50 confirmation is physically covered at this exact point.
+    await dialog(page).getByRole('button',{name:'Cancel',exact:true}).click();
+    await dialog(page).waitFor({state:'hidden'});
+    assert.equal(await wordDetail(page).isVisible(),true);
+    await expectFocus(trigger);
+    assert.equal(ratingWrites(await snapshot(page)).length,0);
+    assert.deepEqual(await pendingRatings(page),[]);
+    await trigger.click();
+    await dialog(page).getByRole('button',{name:'Confirm rating',exact:true}).click();
+    await dialog(page).waitFor({state:'hidden'});
+    await page.locator('[data-fixture-rating="4"]').waitFor({state:'attached'});
+    await expectFocus(trigger);
+    assert.equal(await trigger.evaluate(el=>el.classList.contains('bg-orange-500')),true);
+    assert.equal(ratingWrites(await snapshot(page)).length,1);
+    assert.deepEqual(await pendingRatings(page),[]);
+    await wordDetail(page).getByRole('button',{name:'Close',exact:true}).click();
+    // The original Chart hover rating controls still enter the same flow.
+    await chartCard(page).hover();
+    const inline=chartCard(page).getByTitle("Don't know",{exact:true});
+    await inline.click();
+    await dialog(page).waitFor();
+    await page.mouse.move(1,1);
+    await page.keyboard.press('Escape');
+    await dialog(page).waitFor({state:'hidden'});
+    await expectFocus(inline);
+    await page.waitForFunction(el=>getComputedStyle(el.parentElement.parentElement).opacity==='1',await inline.elementHandle());
+    await inline.press('Enter');
+    await dialog(page).getByRole('button',{name:'Confirm rating',exact:true}).click();
+    await page.locator('[data-fixture-rating="5"]').waitFor({state:'attached'});
+    assert.equal(ratingWrites(await snapshot(page)).length,2);
+  },true);
+  await scenario('F2E2a-R1 styled Chart detail: keyboard focus trap Escape and pointer focus return', 'rating-chart', async page=>{
+    await openWordDetail(page);
+    const trigger=detailRating(page);
+    await wordDetail(page).getByRole('button',{name:'Close',exact:true}).focus();
+    // Model a tap that does not natively focus its button (Safari behavior).
+    // The canonical rating call receives the actual initiating control.
+    await trigger.evaluate(el=>el.addEventListener('pointerdown',event=>event.preventDefault(),{once:true}));
+    await trigger.click();
+    const cancel=dialog(page).getByRole('button',{name:'Cancel',exact:true});
+    const confirm=dialog(page).getByRole('button',{name:'Confirm rating',exact:true});
+    await cancel.waitFor();await expectFocus(cancel);
+    await page.keyboard.press('Shift+Tab');await expectFocus(confirm);
+    await page.keyboard.press('Tab');await expectFocus(cancel);
+    await page.keyboard.press('Tab');await expectFocus(confirm);
+    await page.keyboard.press('Escape');
+    await dialog(page).waitFor({state:'hidden'});
+    await expectFocus(trigger);
+    assert.equal(await wordDetail(page).isVisible(),true);
+    assert.equal(ratingWrites(await snapshot(page)).length,0);
+    await trigger.press('Enter');
+    await cancel.waitFor();await expectFocus(cancel);
+    await page.keyboard.press('Tab');await page.keyboard.press('Enter');
+    await dialog(page).waitFor({state:'hidden'});
+    await page.locator('[data-fixture-rating="4"]').waitFor({state:'attached'});
+    await expectFocus(trigger);
+  },true);
+  await scenario('F2E2a-R1 styled Chart detail: double click and busy keyboard keep one original mutation', 'rating-chart', async page=>{
+    await openWordDetail(page);
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_f2_save_progress','hold'));
+    await detailRating(page).click();
+    await dialog(page).getByRole('button',{name:'Confirm rating',exact:true}).dblclick();
+    await page.waitForFunction(()=>window.__kgF1.snapshot().ratingRequests.filter(r=>r.name==='kg_chart_f2_save_progress').length===1);
+    assert.equal(await dialog(page).getByRole('button',{name:'Saving…',exact:true}).isDisabled(),true);
+    assert.equal(await dialog(page).getByRole('button',{name:'Cancel',exact:true}).isDisabled(),true);
+    for(const key of ['Tab','Shift+Tab','Escape']){
+      await page.keyboard.press(key);
+      assert.equal(await dialog(page).evaluate(el=>el.contains(document.activeElement)),true,'Saving focus remains in the active dialog');
+    }
+    assert.equal(await page.locator('[data-fixture-rating]').getAttribute('data-fixture-rating'),'none');
+    assert.equal(Object.keys((await snapshot(page)).ratingReceipts).length,0);
+    const original=(await pendingRatings(page))[0];assert.ok(original?.eventId);
+    await page.evaluate(()=>window.__kgF1.release());
+    await dialog(page).waitFor({state:'hidden'});
+    await page.locator('[data-fixture-rating="4"]').waitFor({state:'attached'});
+    const db=await snapshot(page);
+    assert.equal(ratingWrites(db).length,1);assert.equal(Object.keys(db.ratingReceipts).length,1);
+    assert.equal(ratingWrites(db)[0].args.p_event_id,original.eventId);
+    await expectFocus(detailRating(page));
+  },true);
+  for(const fault of ['fail','lost-ack'])await scenario(`F2E2a-R1 styled Chart detail: ${fault} retains exact event and retries current state`, 'rating-chart', async page=>{
+    await openWordDetail(page);
+    await page.evaluate(mode=>window.__kgF1.fault('kg_chart_f2_save_progress',mode),fault);
+    await detailRating(page).click();
+    await dialog(page).getByRole('button',{name:'Confirm rating',exact:true}).click();
+    await dialog(page).waitFor({state:'hidden'});
+    await ratingRegion(page).getByText(/rating server did not confirm/i).waitFor();
+    assert.equal(await wordDetail(page).isVisible(),true);
+    const original=(await pendingRatings(page))[0];assert.ok(original?.eventId);
+    const first=ratingWrites(await snapshot(page))[0];
+    assert.equal(first.args.p_event_id,original.eventId);
+    assert.equal(await page.locator('[data-fixture-rating]').getAttribute('data-fixture-rating'),'none');
+    if(fault==='lost-ack')await page.evaluate(()=>window.__kgF1.externalRating(window.__kgF1.words[0].id,1));
+    await wordDetail(page).getByRole('button',{name:'Close',exact:true}).click();
+    await ratingRegion(page).getByRole('button',{name:'Retry original rating',exact:true}).click();
+    await ratingRegion(page).getByText(fault==='lost-ack'?/newer server rating is shown/:/^Rating confirmed\.$/).waitFor();
+    const db=await snapshot(page),writes=ratingWrites(db);
+    assert.equal(writes.length,2);assert.deepEqual(writes[0],writes[1]);
+    assert.equal(Object.keys(db.ratingReceipts).length,1);
+    assert.equal(await page.locator('[data-fixture-rating]').getAttribute('data-fixture-rating'),fault==='lost-ack'?'1':'4');
+    assert.deepEqual(await pendingRatings(page),[]);
+  },true);
+  for(const [kind,patch,attribute,wanted] of [
+    ['owner',{ownerId:'11000000-0000-4000-8000-000000000002'},'data-fixture-owner','11000000-0000-4000-8000-000000000002'],
+    ['language',{languageCode:'ja'},'data-fixture-language','ja'],
+    ['revision',{revision:18},'data-fixture-revision','18'],
+  ])await scenario(`F2E2a-R1 styled Chart detail: ${kind} change invalidates saving dialog without stale focus or result`, 'rating-chart', async page=>{
+    await openWordDetail(page);
+    const trigger=detailRating(page);
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_f2_save_progress','hold'));
+    await trigger.click();
+    await dialog(page).getByRole('button',{name:'Confirm rating',exact:true}).click();
+    await page.waitForFunction(()=>window.__kgF1.snapshot().ratingRequests.some(r=>r.name==='kg_chart_f2_save_progress'));
+    const original=(await pendingRatings(page))[0];assert.ok(original?.eventId);
+    // A real provider transition, not a forced click through the modal.
+    await page.evaluate(value=>window.__kgF1.changeScope(value),patch);
+    await page.locator(`[${attribute}="${wanted}"][data-ratings-loaded="yes"]`).waitFor({state:'attached'});
+    await dialog(page).waitFor({state:'hidden'});
+    assert.equal(await trigger.evaluate(el=>document.activeElement===el),false,'Do not return focus to an old-scope initiator');
+    assert.equal(await page.locator('#root').evaluate(el=>el.inert),false,'Restore the application surface after scope change');
+    await page.evaluate(()=>window.__kgF1.release());
+    await page.waitForFunction(()=>Object.keys(window.__kgF1.snapshot().ratingReceipts).length===1);
+    assert.equal(await page.locator('[data-fixture-rating]').getAttribute('data-fixture-rating'),'none');
+    assert.equal(await page.getByText('Rating confirmed.',{exact:true}).count(),0);
+    assert.deepEqual(await pendingRatings(page),[original]);
+    assert.equal(ratingWrites(await snapshot(page)).length,1);
   },true);
   await scenario('F2E2b actual path: no local completion, unlock or celebration until server readback', 'path', async page=>{
     const region=page.getByRole('region',{name:'Topic completion recovery'});
@@ -798,6 +984,7 @@ try {
     assert.equal(db.pathRequests.filter(r=>r.name==='kg_chart_f2_complete_topic').length,1);
     assert.equal(await region.getByRole('button',{name:'Confirm completion',exact:true}).count(),0);
   },true);
+  assert.ok(passed>0,'The scenario filter must select at least one real scenario');
   console.log(`U4B2B3D_RENDERED_QUIZ_UI_PASS: ${passed} scenarios; isolated fictional clients; physical devices not tested`);
 } finally {
   await browser?.close();
