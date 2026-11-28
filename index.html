@@ -528,19 +528,243 @@
       );
     }
 
+    // F2E2d — shared account preference state and exact recovery.
+    const KGPreferenceContext = createContext(null);
+    const preferenceSaveStore = window.KGPreferenceSave.createStore({ storage: {
+      get length() { return window.localStorage.length; },
+      key: i => window.localStorage.key(i),
+      getItem: key => window.localStorage.getItem(key),
+      setItem: (key, value) => window.localStorage.setItem(key, value),
+      removeItem: key => window.localStorage.removeItem(key),
+    } });
+    const preferenceMemory = new Map();
+    const preferenceResults = new Map();
+    const preferenceRecoveryChanged = () => window.dispatchEvent(new Event('kg-preference-recovery-changed'));
+    window.addEventListener('beforeunload', event => {
+      if ([...preferenceResults.values()].some(result => result.status === 'storage-error')) {
+        event.preventDefault(); event.returnValue = '';
+      }
+    });
+
+    function usePersonalPreferences(user, policy, verified = true) {
+      const scopeRef = React.useRef(null);
+      const identity = JSON.stringify([user?.id, verified && policy?.state, policy?.revision]);
+      if (scopeRef.current?.identity !== identity) scopeRef.current = {
+        identity, ownerId: user?.id || null, policy: verified ? policy : null,
+      };
+      const scope = scopeRef.current;
+      const mounted = React.useRef(true), operation = React.useRef(null), known = React.useRef(null);
+      const [view, setView] = useState({ scope, current: null, pending: [], busy: false, message: '', storageError: '' });
+      const live = target => mounted.current && scopeRef.current === target;
+      const update = (target, patch) => {
+        if (live(target)) setView(old => ({ ...(old.scope === target ? old : {
+          scope: target, current: null, pending: [], busy: false, message: '', storageError: '',
+        }), ...patch }));
+      };
+      const options = target => ({ client: supabase, store: preferenceSaveStore,
+        getScope: () => live(target) ? { ownerId: target.ownerId, policy: target.policy } : null,
+        offlineClient: window.KGOffline?.client === supabase });
+      const targetOf = target => ({ ownerId: target.ownerId, revision: target.policy?.revision });
+      const collect = target => {
+        const records = new Map();
+        let storageError = '';
+        try { for (const event of preferenceSaveStore.list(target.ownerId)) records.set(event.eventId, event); }
+        catch (_) { storageError = 'Preference recovery storage could not be read. Existing data has been kept.'; }
+        for (const event of preferenceMemory.values()) {
+          if (event.ownerId === target.ownerId) records.set(event.eventId, event);
+        }
+        const pending = [...records.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        update(target, { pending, storageError });
+        return { pending, storageError };
+      };
+      const accept = (target, current) => {
+        if (!live(target)) return false;
+        const parsed = window.KGPreferenceSave.parseState(current, targetOf(target));
+        if (known.current?.scope === target && parsed.version < known.current.current.version)
+          throw Error('The server returned an older preference version. Refresh preferences to verify the current state.');
+        // Filtered typing keys may become visible at the same account version.
+        known.current = { scope: target, current: parsed };
+        window.KGAudio.applyPreferenceState(target.ownerId, target.policy.revision, parsed);
+        return true;
+      };
+      const refresh = async () => {
+        const target = scopeRef.current;
+        if (target.policy?.state !== 'restricted' || !target.ownerId || operation.current) return;
+        const task = { scope: target };
+        operation.current = task;
+        update(target, { busy: true, message: 'Verifying personal preferences…' });
+        collect(target);
+        try {
+          const current = await window.KGPreferenceSave.read(options(target), targetOf(target));
+          if (live(target) && operation.current === task && accept(target, current))
+            update(target, { current, message: 'Personal preferences verified.' });
+        } catch (error) {
+          update(target, { current: null, message: error.message || 'Personal preferences could not be verified.' });
+        } finally {
+          if (operation.current === task) operation.current = null;
+          update(target, { busy: false });
+        }
+      };
+      const retry = async event => {
+        const target = scopeRef.current;
+        if (operation.current || event.ownerId !== target.ownerId || target.policy?.state !== 'restricted' ||
+            event.revision !== target.policy.revision) return;
+        const task = { scope: target, eventId: event.eventId };
+        operation.current = task;
+        preferenceMemory.set(event.eventId, event);
+        preferenceResults.set(event.eventId, { status: 'pending', event });
+        update(target, { busy: true, message: 'Saving personal preference change…' });
+        preferenceRecoveryChanged();
+        let result;
+        try {
+          preferenceSaveStore.put(event);
+          result = await window.KGPreferenceSave.save(options(target), event);
+        } catch (error) {
+          result = { status: 'storage-error', event, error: { message: error.message || 'The exact preference change could not be retained on this device.' } };
+        }
+        if (result.status === 'saved' || result.status === 'superseded') preferenceMemory.delete(event.eventId);
+        else preferenceMemory.set(event.eventId, event);
+        if (live(target) && operation.current === task) {
+          let current = null;
+          try { if (result.current && accept(target, result.current)) current = result.current; }
+          catch (error) { result = { ...result, current: undefined, currentConfirmed: false, error: { message: error.message } }; }
+          update(target, { current, busy: false, message: result.currentConfirmed === false ? result.error.message
+            : result.status === 'saved' ? 'Preference change confirmed.'
+            : result.status === 'superseded' ? 'The original change was accepted. Newer account preferences are now shown.'
+            : result.error?.message || 'This preference change is not confirmed. Retry the exact change.' });
+        }
+        preferenceResults.set(event.eventId, result);
+        if (operation.current === task) operation.current = null;
+        preferenceRecoveryChanged();
+        return result;
+      };
+      const capture = () => {
+        const target = scopeRef.current;
+        return { scope: target, current: known.current?.scope === target ? known.current.current : null };
+      };
+      const requestPatch = (patch, original) => {
+        const target = original?.scope || scopeRef.current;
+        const typing = !!original;
+        if (target.policy?.state !== 'restricted' || !target.ownerId) return null;
+        const previous = collect(target);
+        if (!typing && (!live(target) || operation.current || previous.pending.length || previous.storageError)) return null;
+        const before = known.current?.scope === target ? known.current.current : original?.current;
+        if (!before) {
+          update(target, { message: 'This run is not saved as a personal best because its account preferences were not verified.' });
+          return null;
+        }
+        let event;
+        try {
+          event = preferenceSaveStore.make(targetOf(target), before, patch);
+          preferenceMemory.set(event.eventId, event);
+          preferenceSaveStore.put(event);
+          preferenceResults.set(event.eventId, { status: 'pending', event });
+        } catch (error) {
+          if (event) preferenceResults.set(event.eventId, { status: 'storage-error', event,
+            error: { message: error.message || 'Preference storage is unavailable. Download this change before leaving.' } });
+          update(target, { message: error.message || 'This personal preference change could not be retained.' });
+          preferenceRecoveryChanged();
+          return event || null;
+        }
+        preferenceRecoveryChanged();
+        // A second run can be retained while an audio change is unsettled, but
+        // its original baseline is never silently advanced or automatically retried.
+        const maySend = !original || (typeof original.isCurrent === 'function' && original.isCurrent());
+        if (live(target) && maySend && !operation.current && !previous.pending.length && !previous.storageError) void retry(event);
+        else update(target, { message: 'A personal preference change is waiting. Resolve earlier changes, then retry this exact change.' });
+        return event;
+      };
+      const archive = event => {
+        const target = scopeRef.current;
+        if (operation.current || !live(target) || known.current?.scope !== target) return;
+        try {
+          preferenceSaveStore.archive(event, known.current.current);
+          preferenceMemory.delete(event.eventId); preferenceResults.delete(event.eventId);
+          update(target, { message: 'Outdated preference change archived. You can now make a new change.' });
+        } catch (error) { update(target, { message: error.message || 'This preference change could not be archived.' }); }
+        preferenceRecoveryChanged();
+      };
+      const download = event => {
+        const blob = new Blob([JSON.stringify({ contract: 'kg-preference-recovery-v1', event }, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob), link = document.createElement('a');
+        link.href = url; link.download = `kg-preference-recovery-${event.eventId}.json`; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+      React.useLayoutEffect(() => {
+        mounted.current = true;
+        operation.current = null; known.current = null;
+        window.KGAudio.setPreferenceScope({ ownerId: scope.ownerId, mode: scope.policy?.state, revision: scope.policy?.revision });
+        if (scope.policy?.state === 'legacy') void window.KGAudio.initPrefs(supabase, scope.ownerId, () => live(scope));
+        return () => { mounted.current = false; window.KGAudio.setPreferenceScope(null); };
+      }, [scope]);
+      useEffect(() => {
+        collect(scope);
+        if (scope.policy?.state === 'restricted') void refresh();
+        const changed = () => collect(scope);
+        const reread = () => { if (live(scope)) void refresh(); };
+        window.addEventListener('storage', changed);
+        window.addEventListener('kg-preference-recovery-changed', changed);
+        window.addEventListener('online', reread); window.addEventListener('focus', reread);
+        return () => {
+          window.removeEventListener('storage', changed);
+          window.removeEventListener('kg-preference-recovery-changed', changed);
+          window.removeEventListener('online', reread); window.removeEventListener('focus', reread);
+        };
+      }, [scope]);
+      const visible = view.scope === scope ? view : { current: null, pending: [], busy: false, message: '', storageError: '' };
+      return { ...visible, scope, guarded: scope.policy?.state !== 'legacy', restricted: scope.policy?.state === 'restricted',
+        ready: !!visible.current, refresh, requestPatch, retry, archive, download, capture,
+        isCurrent: original => live(original?.scope), resultFor: eventId => preferenceResults.get(eventId) };
+    }
+
+    function PreferenceRecoveryPanel({ flow }) {
+      if (!flow?.guarded) return null;
+      return <section id="personal-preferences" aria-label="Personal preferences" className="max-w-5xl mx-auto my-3 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <strong>Personal preferences</strong>
+          <button onClick={flow.refresh} disabled={flow.busy || !flow.restricted} className="rounded-lg border border-blue-300 bg-white px-3 py-2 disabled:opacity-50">Refresh preferences</button>
+        </div>
+        <p role="status" className="mt-2">{flow.message || 'Personal preferences have not been verified yet.'}</p>
+        {flow.storageError && <p role="alert" className="mt-2 text-amber-900">{flow.storageError}</p>}
+        {flow.pending.map(event => {
+          const result = flow.resultFor(event.eventId);
+          const sameRevision = flow.restricted && event.revision === flow.scope.policy.revision;
+          const obsolete = sameRevision && flow.current?.version > event.expectedVersion;
+          const label = event.patch.typing_best ? 'Typing best' : Object.hasOwn(event.patch, 'audio_voice') ? 'Audio voice' : 'Automatic audio';
+          return <div key={event.eventId} className="mt-3 rounded-lg border border-blue-200 bg-white p-3">
+            <p className="font-semibold">{label} change is not confirmed</p>
+            <p className="mt-1">{!sameRevision ? 'This change belongs to an earlier permission revision and is held for review.'
+              : result?.error?.message || 'Its original account, version, and values are retained for exact retry.'}</p>
+            {result?.status === 'storage-error' && <p className="mt-1 text-amber-900">This change is only held in this open page. Download it before leaving.</p>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button onClick={() => flow.retry(event)} disabled={flow.busy || !sameRevision} className="rounded-lg bg-blue-700 px-3 py-2 text-white disabled:opacity-50">Retry exact preference change</button>
+              <button onClick={() => flow.download(event)} className="rounded-lg border border-blue-300 px-3 py-2">Download preference change</button>
+              {obsolete && <button onClick={() => flow.archive(event)} disabled={flow.busy} className="rounded-lg border border-amber-400 px-3 py-2 disabled:opacity-50">Archive outdated preference change</button>}
+            </div>
+          </div>;
+        })}
+      </section>;
+    }
+
     // Header: ♀/♂ voice + auto-play mute. Saved on the account (kg_chart_user_prefs).
     function AudioControls() {
       useAudioState();
       const A = window.KGAudio;
-      const p = A.prefs;
+      const flow = useContext(KGPreferenceContext);
+      const guarded = flow?.guarded ?? U3C1_SCOPED_UI_ENABLED;
+      const unverified = guarded && !flow?.current;
+      const p = guarded ? { voice: flow?.current?.audio_voice || 'f', muted: flow?.current?.audio_muted ?? true } : A.prefs;
+      const disabled = guarded && (!flow?.ready || flow.busy || flow.pending.length > 0 || !!flow.storageError);
       return (
         <div className="flex items-center bg-white/20 rounded-lg border border-white/30 overflow-hidden">
-          <button onClick={() => A.setPrefs({ voice: p.voice === 'f' ? 'm' : 'f' })}
-            title={`Voice: ${p.voice === 'f' ? 'female' : 'male'} (tap to switch)`}
-            className="px-3 py-2 hover:bg-white/20 font-bold">{p.voice === 'f' ? '♀' : '♂'}</button>
-          <button onClick={() => A.setPrefs({ muted: !p.muted })}
-            title={p.muted ? 'Auto-play off (🔊 buttons still work)' : 'Auto-play on'}
-            className="px-3 py-2 hover:bg-white/20 border-l border-white/30">{p.muted ? '🔇' : '🔈'}</button>
+          <button aria-label="Change audio voice" disabled={disabled} onClick={() => guarded
+            ? flow.requestPatch({ audio_voice: p.voice === 'f' ? 'm' : 'f' }) : A.setPrefs({ voice: p.voice === 'f' ? 'm' : 'f' })}
+            title={unverified ? 'Audio voice has not been verified' : `Voice: ${p.voice === 'f' ? 'female' : 'male'} (tap to switch)`}
+            className="px-3 py-2 hover:bg-white/20 font-bold disabled:opacity-50">{unverified ? '…' : p.voice === 'f' ? '♀' : '♂'}</button>
+          <button aria-label="Toggle automatic audio" disabled={disabled} onClick={() => guarded
+            ? flow.requestPatch({ audio_muted: !p.muted }) : A.setPrefs({ muted: !p.muted })}
+            title={unverified ? 'Automatic audio preference has not been verified' : p.muted ? 'Auto-play off (🔊 buttons still work)' : 'Auto-play on'}
+            className="px-3 py-2 hover:bg-white/20 border-l border-white/30 disabled:opacity-50">{unverified ? '…' : p.muted ? '🔇' : '🔈'}</button>
         </div>
       );
     }
@@ -5816,6 +6040,7 @@
     const TYPING_DURATIONS = [30, 60, 120];
     const TYPING_SETTINGS_KEY = 'kg_chart_typing';
     const TYPING_BEST_KEY = 'kg_chart_typing_best';
+    const typingBestOwnerKey = ownerId => ownerId ? TYPING_BEST_KEY + ':owner:' + ownerId : null;
     // Personal bests ({ "lang|mode|source": { cpm, last, at } }) live on the device and on the account
     // (kg_chart_user_prefs.typing_best, kg-chart-polish.sql), so they follow the learner between phone and computer.
     // Merging keeps the highest cpm per key and the most recent run's "last".
@@ -5830,19 +6055,22 @@
       }
       return out;
     }
-    async function syncTypingBests(user, local) {
-      if (!user) return local;
+    async function syncTypingBests(user, local, isCurrent = () => false) {
+      if (!user?.id || !isCurrent()) return local;
       try {
         const { data, error } = await supabase.from('kg_chart_user_prefs').select('typing_best').eq('user_id', user.id).maybeSingle();
+        if (!isCurrent()) return local;
         if (error) return local; // before kg-chart-polish.sql: this device only
         const remote = data?.typing_best || {};
         const merged = mergeTypingBests(remote, local);
         if (JSON.stringify(merged) !== JSON.stringify(remote)) {
+          if (!isCurrent()) return local;
           const { error: e2 } = await supabase.from('kg_chart_user_prefs').upsert({ user_id: user.id, typing_best: merged, updated_at: new Date().toISOString() });
+          if (!isCurrent()) return local;
           if (e2) console.warn('Could not save typing best to the account:', e2.message);
         }
         return merged;
-      } catch (e) { console.warn('Typing best: account not reachable, keeping this device\'s', e); return local; }
+      } catch (e) { if (isCurrent()) console.warn('Typing best: account not reachable, keeping this account’s device history', e); return local; }
     }
     const TYPING_LANG_TAGS = { my: 'my-MM', ja: 'ja-JP', zh: 'zh-CN', si: 'si-LK', ko: 'ko-KR', ta: 'ta-IN', th: 'th-TH', ms: 'ms-MY', te: 'te-IN', mr: 'mr-IN', kn: 'kn-IN' };
     const typingNorm = (s) => mmCanon((s || '').normalize('NFC').replace(/[​-‍﻿]/g, '')).replace(/\s+/g, ' ').trim().toLowerCase();
@@ -5868,6 +6096,17 @@
 
     function TypingView({ topics = [], vocabulary, languageCode, user, modeToggle, meaningName, accessPolicy }) {
       const rules = React.useContext(RulesContext);
+      const preferenceFlow = useContext(KGPreferenceContext);
+      const mediaScope = useContext(KGMediaScopeContext);
+      const preferencePolicy = preferenceFlow ? (preferenceFlow.scope.ownerId === user?.id ? preferenceFlow.scope.policy : null)
+        : mediaScope ? (mediaScope.ownerId === user?.id ? mediaScope.policy : null)
+        : accessPolicy || (!U3C1_SCOPED_UI_ENABLED ? U3C1_LEGACY_POLICY : null);
+      const legacyPreferences = preferencePolicy?.state === 'legacy';
+      const typingScope = React.useRef(null), typingMounted = React.useRef(true), runRef = React.useRef(null), bestIntent = React.useRef(0);
+      const typingIdentity = JSON.stringify([user?.id, languageCode, preferencePolicy?.state, preferencePolicy?.revision]);
+      if (typingScope.current?.identity !== typingIdentity) typingScope.current = { identity: typingIdentity };
+      const currentTypingScope = typingScope.current;
+      useEffect(() => { typingMounted.current = true; return () => { typingMounted.current = false; }; }, []);
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       const saved0 = loadFromStorage(TYPING_SETTINGS_KEY, {});
       const [mode, setMode] = useState(saved0.mode === 'recall' ? 'recall' : 'copy');
@@ -5876,7 +6115,8 @@
       const [topicId, setTopicId] = useState(saved0.languageCode === languageCode ? saved0.topicId || 'all' : 'all');
       const [duration, setDuration] = useState(TYPING_DURATIONS.includes(saved0.duration) ? saved0.duration : 60);
       const [sentences, setSentences] = useState(null);
-      const [phase, setPhase] = useState('setup'); // setup | run | done
+      const [storedPhase, setPhase] = useState('setup'); // setup | run | done
+      const phase = storedPhase === 'setup' || runRef.current?.scope === currentTypingScope ? storedPhase : 'setup';
       const [items, setItems] = useState([]);
       const [idx, setIdx] = useState(0);
       const [typed, setTyped] = useState('');
@@ -5922,18 +6162,29 @@
       }, [safeSource, sentences, vocabulary, priv, meaningName, safeTopicId]);
 
       const bestKey = `${languageCode}|${mode}|${safeSource}${safeSource === 'words' && safeTopicId !== 'all' ? '|' + safeTopicId : ''}`;
+      const ownerBestKey = typingBestOwnerKey(user?.id);
       const [, setBestsSynced] = useState(0);
       useEffect(() => {
-        if (saving.restricted) return;
+        if (!legacyPreferences || !ownerBestKey) return;
         let cancelled = false;
-        syncTypingBests(user, loadFromStorage(TYPING_BEST_KEY, {})).then(m => { if (!cancelled) { saveToStorage(TYPING_BEST_KEY, m); setBestsSynced(n => n + 1); } });
+        const intent = bestIntent.current;
+        const current = () => !cancelled && typingMounted.current && typingScope.current === currentTypingScope && bestIntent.current === intent;
+        syncTypingBests(user, loadFromStorage(ownerBestKey, {}), current).then(m => {
+          if (current()) { saveToStorage(ownerBestKey, m); setBestsSynced(n => n + 1); }
+        });
         return () => { cancelled = true; };
-      }, [user, saving.restricted]);
-      const bests = saving.restricted ? {} : loadFromStorage(TYPING_BEST_KEY, {});
+      }, [currentTypingScope, legacyPreferences, ownerBestKey]);
+      const bests = legacyPreferences ? (ownerBestKey ? loadFromStorage(ownerBestKey, {}) : {})
+        : preferenceFlow?.restricted && preferenceFlow.scope.ownerId === user?.id ? preferenceFlow.current?.typing_best || {} : {};
       const best = bests[bestKey];
+      const preferenceStartBlocked = !!preferenceFlow?.guarded && !preferenceFlow.ready;
 
       const start = () => {
-        if (!pool.length) return;
+        if (!pool.length || preferenceStartBlocked) return;
+        const capturedPreference = preferenceFlow?.capture();
+        if (capturedPreference) capturedPreference.isCurrent = () => typingMounted.current && typingScope.current === currentTypingScope;
+        runRef.current = { scope: currentTypingScope, owner: user, ownerBestKey, legacy: legacyPreferences,
+          bestKey, previousBest: best || null, preference: capturedPreference };
         // Enough items for the whole run: reshuffle the pool as often as needed
         let list = [];
         while (list.length < 200) list = list.concat(shuffleArr(pool));
@@ -5953,30 +6204,50 @@
 
       // secs: the full time, or the time actually typed when leaving early
       const finish = (secs = duration) => {
-        if (finishedRun.current) return;
+        const run = runRef.current;
+        if (finishedRun.current || !run) return;
         finishedRun.current = true;
         const s = statsRef.current;
         const cpm = cpmOf(s.chars, secs), acc = accOf(s);
-        const prev = saving.restricted ? {} : loadFromStorage(TYPING_BEST_KEY, {});
-        const old = prev[bestKey];
+        const intent = ++bestIntent.current;
+        const stillCurrent = () => typingMounted.current && typingScope.current === run.scope && bestIntent.current === intent;
+        const prev = run.legacy && run.ownerBestKey ? loadFromStorage(run.ownerBestKey, {}) : {};
+        const old = run.legacy ? prev[run.bestKey] : run.previousBest;
         const isBest = !old || cpm > old.cpm;
-        // Legacy preference behavior is separate from quiz acknowledgement.
-        // Restricted typing-best integration is deferred to F2E2d.
-        if (!saving.restricted) {
-          const next = { ...prev, [bestKey]: { cpm: isBest ? cpm : old.cpm, last: cpm, at: new Date().toISOString() } };
-          saveToStorage(TYPING_BEST_KEY, next);
-          syncTypingBests(user, next).then(m => saveToStorage(TYPING_BEST_KEY, mergeTypingBests(loadFromStorage(TYPING_BEST_KEY, {}), m)));
+        const completedAt = new Date().toISOString();
+        let preferenceEvent = null;
+        // A fresh run supplies only its own metric. The server merges the best
+        // and latest values; an unowned historical device map is never imported.
+        if (run.legacy && run.ownerBestKey && stillCurrent()) {
+          const next = { ...prev, [run.bestKey]: { cpm: isBest ? cpm : old.cpm, last: cpm, at: completedAt } };
+          saveToStorage(run.ownerBestKey, next);
+          syncTypingBests(run.owner, next, stillCurrent).then(m => {
+            if (stillCurrent()) saveToStorage(run.ownerBestKey, mergeTypingBests(loadFromStorage(run.ownerBestKey, {}), m));
+          });
+        } else if (!run.legacy && run.preference) {
+          preferenceEvent = preferenceFlow?.requestPatch({ typing_best: {
+            [run.bestKey]: { cpm, last: cpm, at: completedAt },
+          } }, run.preference);
         }
-        setResult({ cpm, acc, done: s.done, skipped: s.skipped, isBest, prevBest: old?.cpm ?? null, prevLast: old?.last ?? null });
-        setPhase('done');
-        if (user && answerCount.current) saving.finishTimed(Math.max(0, Math.round(secs)));
+        if (stillCurrent()) {
+          setResult({ cpm, acc, done: s.done, skipped: s.skipped, isBest: run.legacy && isBest,
+            prevBest: old?.cpm ?? null, prevLast: old?.last ?? null, preferenceEvent,
+            bestKey: run.bestKey, completedAt, restricted: !run.legacy,
+            originalOwnerId: run.owner?.id || null, originalRevision: run.preference?.scope.policy?.revision ?? null });
+          setPhase('done');
+          if (user && answerCount.current) saving.finishTimed(Math.max(0, Math.round(secs)));
+        }
       };
       const finishLatest = React.useRef(finish); finishLatest.current = finish;
 
       // Clock: starts on the first keystroke, ends the run when time is up
       useEffect(() => {
         if (phase !== 'run' || !startedAt) return;
+        const activeRun = runRef.current;
         const t = setInterval(() => {
+          if (!typingMounted.current || runRef.current !== activeRun || typingScope.current !== activeRun.scope) {
+            clearInterval(t); return;
+          }
           const n = Date.now(); setNow(n);
           if ((n - startedAt) / 1000 >= duration) { clearInterval(t); finishLatest.current(); }
         }, 200);
@@ -6085,7 +6356,8 @@
                   You need a {lang} keyboard on this device. The clock starts on your first key. A mistake turns red and must be fixed before the next {safeSource === 'words' ? 'word' : 'sentence'}.
                 </div>
                 {best && <div className="text-center text-sm text-gray-500">Your best: <b className="text-jade-700">{best.cpm}</b> characters/min{best.last != null ? ` · last time ${best.last}` : ''}</div>}
-                <button onClick={start} disabled={!pool.length}
+                {preferenceStartBlocked && <p role="status" className="text-sm text-amber-800">Verify personal preferences before starting. Use Refresh preferences above.</p>}
+                <button onClick={start} disabled={!pool.length || preferenceStartBlocked}
                   className="w-full py-4 bg-jade-600 text-white rounded-xl font-bold text-lg hover:bg-jade-700 disabled:opacity-50">
                   {safeSource === 'sentences' && sentences === null ? 'Loading sentences…' : !pool.length ? (safeSource === 'sentences' ? `No ${lang} sentences yet` : 'No words to type') : 'Start'}
                 </button>
@@ -6098,11 +6370,31 @@
       // ---------- results ----------
       if (phase === 'done' && result) {
         const delta = result.prevLast != null ? result.cpm - result.prevLast : null;
+        const preferenceResult = result.preferenceEvent && preferenceFlow?.resultFor(result.preferenceEvent.eventId);
+        const accountBest = result.restricted ? bests[result.bestKey] : null;
+        const acknowledgedBest = preferenceResult?.current?.typing_best[result.bestKey];
+        const eventBefore = result.preferenceEvent?.originalState.typing_best[result.bestKey];
+        const sameBest = accountBest && acknowledgedBest && accountBest.cpm === acknowledgedBest.cpm &&
+          accountBest.last === acknowledgedBest.last &&
+          window.KGPreferenceSave.instant(accountBest.at) === window.KGPreferenceSave.instant(acknowledgedBest.at);
+        const runConfirmed = preferenceResult?.status === 'saved' && preferenceResult.currentConfirmed !== false &&
+          preferenceResult.current?.version === preferenceFlow?.current?.version && !!sameBest;
+        const previousBestKnown = result.restricted ? !!eventBefore : result.prevBest != null;
+        const personalBest = result.restricted ? runConfirmed && eventBefore &&
+          result.cpm > eventBefore.cpm && accountBest.cpm === result.cpm : result.isBest;
+        const downloadRun = () => {
+          const blob = new Blob([JSON.stringify({ contract: 'kg-typing-run-export-v1', ownerId: result.originalOwnerId,
+            revision: result.originalRevision, key: result.bestKey, cpm: result.cpm, at: result.completedAt,
+            preferenceSave: 'unconfirmed' }, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob), link = document.createElement('a');
+          link.href = url; link.download = 'kg-typing-run.json'; link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        };
         return (
           <div className="max-w-2xl mx-auto p-6">
             <div className="bg-white rounded-3xl shadow-xl p-8 text-center">
-              <div className="text-6xl mb-3">{result.isBest && result.prevBest != null ? '🏆' : '⌨️'}</div>
-              <h2 className="text-2xl font-bold text-gray-800 mb-6">{result.isBest && result.prevBest != null ? 'New personal best!' : 'Time!'}</h2>
+              <div className="text-6xl mb-3">{personalBest && previousBestKnown ? '🏆' : '⌨️'}</div>
+              <h2 className="text-2xl font-bold text-gray-800 mb-6">{personalBest && previousBestKnown ? 'New personal best!' : 'Time!'}</h2>
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div className="bg-gradient-to-r from-jade-500 to-jade-600 text-white rounded-2xl p-5">
                   <div className="text-4xl font-bold">{result.cpm}</div><div className="text-sm opacity-90">characters / min</div>
@@ -6114,11 +6406,19 @@
               <p className="text-gray-500 mb-1">{result.done} typed{result.skipped ? ` · ${result.skipped} skipped` : ''}</p>
               {user && result.done + result.skipped > 0 && <QuizSaveStatus state={saving.state} onRetry={saving.saveCurrent}
                 onDownload={saving.draft ? () => saving.download(saving.draft) : null} />}
+              {result.restricted && <div aria-label="Typing personal best" className="my-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
+                <p role="status">{runConfirmed ? 'Typing best confirmed.'
+                  : preferenceResult?.status === 'superseded' && preferenceResult.currentConfirmed !== false ? 'This run was accepted. Newer account preferences are shown.'
+                  : 'This run is not confirmed as an account personal best. Your current-run score is shown above.'}</p>
+                {accountBest && <p className="mt-1">Account personal best: <b>{accountBest.cpm}</b> characters/min · latest run {accountBest.last}</p>}
+                {result.preferenceEvent && !runConfirmed && <a href="#personal-preferences" className="mt-2 inline-block underline">Review preference recovery</a>}
+                {!result.preferenceEvent && <button onClick={downloadRun} className="mt-2 rounded-lg border border-blue-300 px-3 py-2">Download unsaved typing run</button>}
+              </div>}
               {delta != null && <p className={`text-sm mb-1 ${delta >= 0 ? 'text-green-600' : 'text-gray-500'}`}>{delta >= 0 ? `+${delta}` : delta} since last time</p>}
-              {result.prevBest != null && !result.isBest && <p className="text-sm text-gray-400 mb-1">Best: {result.prevBest}</p>}
+              {result.prevBest != null && !personalBest && !result.restricted && <p className="text-sm text-gray-400 mb-1">Best: {result.prevBest}</p>}
               <div className="flex gap-4 justify-center mt-6">
                 <button onClick={() => setPhase('setup')} className="px-6 py-3 bg-gray-100 rounded-xl font-medium hover:bg-gray-200">← Back to Setup</button>
-                <button onClick={start} className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700">Try Again</button>
+                <button onClick={start} disabled={preferenceStartBlocked} className="px-6 py-3 bg-jade-600 text-white rounded-xl font-bold hover:bg-jade-700 disabled:opacity-50">Try Again</button>
               </div>
             </div>
           </div>
@@ -7237,6 +7537,7 @@
       const access = useLearnerAccess(user);
       const policy = access.policy;
       const verified = !access.loading && !access.error && window.KGLearnerAccess.ready(policy);
+      const preferences = usePersonalPreferences(user, policy, verified);
       const [currentLanguage, setCurrentLanguage] = useState(() => loadFromStorage(STORAGE_KEYS.language, 'my'));
       const [activeView, setActiveView] = useState(() => loadFromStorage(STORAGE_KEYS.view, 'chart'));
       const [activeTopic, setActiveTopic] = useState(() => loadFromStorage(STORAGE_KEYS.topic, null));
@@ -7302,7 +7603,6 @@
       useEffect(() => { saveToStorage(STORAGE_KEYS.showEnglish, showEnglish); }, [showEnglish]);
       useEffect(() => { saveToStorage(MEANING_STORAGE_KEY, meaningsInEnglish); }, [meaningsInEnglish]);
       useEffect(() => { if (selectedLanguage) window.KGAudio.loadManifest(selectedLanguage); }, [selectedLanguage]);
-      useEffect(() => { if (user) window.KGAudio.initPrefs(supabase, user.id); }, [user]);
       useEffect(() => { window.KGAudio.stop(); }, [selectedView, selectedLanguage]);
 
       useEffect(() => {
@@ -7337,6 +7637,7 @@
         description="Your selected language has no available assigned topics. Ask your administrator to review its topic permissions." />;
 
       return (
+        <KGPreferenceContext.Provider value={preferences}>
         <RulesContext.Provider value={rules}>
         <KGMediaScopeContext.Provider value={{
           ownerId: user?.id, policy, sentenceScope: sentenceAccess,
@@ -7347,6 +7648,7 @@
             activeView={selectedView} onViewChange={view => { if (window.KGLearnerAccess.canView(policy, view)) setActiveView(view); }}
             meaning={MEANING_LANGS[selectedLanguage] || null} meaningsInEnglish={meaningsInEnglish} onToggleMeanings={setMeaningsInEnglish} />
 
+          <PreferenceRecoveryPanel flow={preferences} />
           <PictureDownloads vocabulary={vocabulary} loading={loadingVocab || !priv.loaded} />
           <RatingRecoveryPanel flow={ratingFlow} vocabulary={vocabulary} />
           <CompletionRecoveryPanel flow={path.completionFlow} topics={topics} />
@@ -7410,6 +7712,7 @@
         </div>
         </KGMediaScopeContext.Provider>
         </RulesContext.Provider>
+        </KGPreferenceContext.Provider>
       );
     }
 

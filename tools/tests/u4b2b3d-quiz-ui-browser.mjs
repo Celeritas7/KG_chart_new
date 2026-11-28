@@ -55,6 +55,7 @@ function installFakeClient() {
     owner, permitted: true, destination: null, faults: [], requests: [], callbacks: 0,
     levelCalls: 0, ratingCalls: 0, colourReceipts: {}, ratingVersions: {}, ratingReceipts: {}, ratingRequests: [],
     reads: [], levelRequests: [], levelScopes: {}, levelRevisions: {[owner]:17}, mcqReceipts: {},
+    preferenceRequests: [], preferenceVersions: {}, preferenceReceipts: {}, typingPermissions: {},
     pathRevision:17,pathReset:null,pathVersion:0,pathComplete:false,pathCompletedAt:null,
     pathEligible:'2026-11-27T12:00:00.123456+00:00',pathReceipts:{},pathRequests:[],
     tables: {
@@ -62,6 +63,7 @@ function installFakeClient() {
       kg_chart_sentences: sentences,
       kg_chart_colour_phrases: phrases,
       kg_chart_user_ratings: [],
+      kg_chart_user_prefs: [{user_id:owner,audio_voice:'f',audio_muted:false,typing_best:{}}],
       kg_chart_user_levels: [{email: 'fixture@example.invalid', language_code: 'my', level: 1, unlocked: 1}],
     },
   };
@@ -107,6 +109,48 @@ function installFakeClient() {
     }
     return {evaluated_total:total,evaluated_correct:correct,required_answers:10,required_pct:90};
   };
+  const preferenceRow=ownerId=>state.tables.kg_chart_user_prefs.find(row=>row.user_id===ownerId)||
+    {user_id:ownerId,audio_voice:'f',audio_muted:false,typing_best:{}};
+  const preferenceInstant=value=>{
+    if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(value))return null;
+    const millis=Date.parse(value);if(!Number.isFinite(millis))return null;
+    const fraction=(value.match(/\.(\d+)/)?.[1]||'').padEnd(6,'0');
+    return BigInt(millis)*1000n+BigInt(fraction.slice(3,6));
+  };
+  const validPreferenceBest=value=>value&&typeof value==='object'&&!Array.isArray(value)&&
+    Object.keys(value).sort().join(',')==='at,cpm,last'&&Number.isInteger(value.cpm)&&value.cpm>=0&&value.cpm<=100000&&
+    Number.isInteger(value.last)&&value.last>=0&&value.last<=value.cpm&&preferenceInstant(value.at)!==null&&
+    preferenceInstant(value.at)<=BigInt(Date.now()+300000)*1000n;
+  const preferenceKeyAllowed=(key,ownerId)=>state.typingPermissions[ownerId]!==false&&
+    /^(my|ja)\|(copy|recall)\|words(?:\|food)?$/.test(key);
+  const preferenceSnapshot=(ownerId,revision)=>{
+    const row=preferenceRow(ownerId);
+    if(!row.typing_best||typeof row.typing_best!=='object'||Array.isArray(row.typing_best))return null;
+    return {owner_id:ownerId,permission_revision:revision,version:state.preferenceVersions[ownerId]||0,
+      audio_voice:row.audio_voice,audio_muted:row.audio_muted,typing_best:Object.fromEntries(Object.entries(row.typing_best)
+        .filter(([key,value])=>preferenceKeyAllowed(key,ownerId)&&validPreferenceBest(value)))};
+  };
+  const patchPreferenceRow=(ownerId,patch)=>{
+    const old=preferenceRow(ownerId),next=copy(old);
+    for(const key of ['audio_voice','audio_muted'])if(Object.hasOwn(patch,key))next[key]=patch[key];
+    if(patch.typing_best){
+      assertFixture(next.typing_best&&typeof next.typing_best==='object'&&!Array.isArray(next.typing_best),'Invalid historical typing map');
+      for(const [key,value] of Object.entries(patch.typing_best)){
+        const prior=next.typing_best[key];
+        if(!prior)next.typing_best[key]=copy(value);
+        else{
+          assertFixture(validPreferenceBest(prior),'Touched invalid historical typing value');
+          const oldAt=preferenceInstant(prior.at),newAt=preferenceInstant(value.at);
+          if(oldAt===newAt&&prior.last!==value.last)return {error:{code:'23505'}};
+          next.typing_best[key]={...copy(newAt>oldAt?value:prior),cpm:Math.max(prior.cpm,value.cpm)};
+        }
+      }
+    }
+    state.tables.kg_chart_user_prefs=state.tables.kg_chart_user_prefs.filter(row=>row.user_id!==ownerId);
+    state.tables.kg_chart_user_prefs.push(next);
+    state.preferenceVersions[ownerId]=(state.preferenceVersions[ownerId]||0)+1;persist();
+    return {version:state.preferenceVersions[ownerId]};
+  };
   const ratingState=id=>{
     const row=state.tables.kg_chart_user_ratings.find(r=>r.vocabulary_id===id);
     return {version:state.ratingVersions[id]||0,state:row?{
@@ -131,6 +175,14 @@ function installFakeClient() {
     rate: () => { state.ratingCalls++; persist(); },
     externalRating: (id,value)=>changeRating(id,value,'2026-11-27T12:00:00Z','2026-11-27T12:00:00Z'),
     setOwner: value => { state.owner=value; persist(); },
+    seedPreferences: (value,{ownerId=state.owner,version=0,revision=17}={})=>{
+      const next={...preferenceRow(ownerId),...copy(value),user_id:ownerId};
+      state.tables.kg_chart_user_prefs=state.tables.kg_chart_user_prefs.filter(row=>row.user_id!==ownerId);
+      state.tables.kg_chart_user_prefs.push(next);state.preferenceVersions[ownerId]=version;
+      state.levelRevisions[ownerId]=revision;persist();
+    },
+    externalPreferences: (patch,ownerId=state.owner)=>patchPreferenceRow(ownerId,patch),
+    permitTyping: (value,ownerId=state.owner)=>{state.typingPermissions[ownerId]=value;persist();},
     setLevel: writeLevel,
     levelRevision: value => {state.levelRevisions[state.owner]=value;persist();},
     levelEvidence: ({difficulty=1,count=6,correct=count,confirmed=true,
@@ -160,12 +212,61 @@ function installFakeClient() {
       localStorage.setItem('kg_chart_level_my',JSON.stringify(initial.legacyLevel));
     }
     if(initial.history)api.levelEvidence(initial.history);
+    if(initial.preferences)api.seedPreferences(initial.preferences,initial.preferenceScope);
+    if(initial.otherPreferences)api.seedPreferences(initial.otherPreferences,{ownerId:'11000000-0000-4000-8000-000000000099'});
+    for(const [key,value] of Object.entries(initial.local||{}))localStorage.setItem(key,JSON.stringify(value));
+    if(initial.typingAllowed===false)api.permitTyping(false);
     state.initializedByScenario=true;persist();
   }
   window.__fakeClient = {
-    auth: {async getSession() { return {data: {session: {user: {id: state.owner}}}, error: null}; }},
+    auth: {async getSession() { return {data: {session: state.owner?{user: {id: state.owner}}:null}, error: null}; }},
     async rpc(name, args) {
       if(name==='kg_chart_my_answers')return {data:[],error:null};
+      if(['kg_chart_f2_my_preferences','kg_chart_f2_patch_preferences'].includes(name)){
+        const ownerId=state.owner,revision=state.levelRevisions[ownerId]||17;
+        state.preferenceRequests.push({name,args:copy(args),ownerId});persist();
+        const i=state.faults.findIndex(fault=>fault.table===name),fault=i<0?null:state.faults.splice(i,1)[0];persist();
+        if(!ownerId||ownerId!==args.p_owner_id||!state.permitted)return {error:{code:'42501'}};
+        if(args.p_expected_revision!==revision)return {error:{code:'40001'}};
+        if(fault?.mode==='fail')return {error:{message:'Synthetic preference reply failure'}};
+        if(fault?.mode==='deny')return {error:{code:'42501'}};
+        let result;
+        if(name==='kg_chart_f2_my_preferences'){
+          result=preferenceSnapshot(ownerId,revision);
+          if(!result)return {error:{code:'22023'}};
+        }else{
+          const patch=args.p_patch,keys=patch&&typeof patch==='object'&&!Array.isArray(patch)?Object.keys(patch):[];
+          if(!keys.length||keys.some(key=>!['audio_voice','audio_muted','typing_best'].includes(key))||
+            (Object.hasOwn(patch,'audio_voice')&&!['m','f'].includes(patch.audio_voice))||
+            (Object.hasOwn(patch,'audio_muted')&&typeof patch.audio_muted!=='boolean')||
+            (Object.hasOwn(patch,'typing_best')&&(!patch.typing_best||typeof patch.typing_best!=='object'||Array.isArray(patch.typing_best))))
+            return {error:{code:'22023'}};
+          if(patch.typing_best){
+            const entries=Object.entries(patch.typing_best);
+            if(entries.length<1||entries.length>50)return {error:{code:'22023'}};
+            if(entries.some(([key])=>!preferenceKeyAllowed(key,ownerId)))return {error:{code:'42501'}};
+            if(entries.some(([,value])=>!validPreferenceBest(value)))return {error:{code:'22023'}};
+          }
+          const prior=state.preferenceReceipts[args.p_event_id],version=state.preferenceVersions[ownerId]||0;
+          if(prior){
+            if(prior.ownerId!==ownerId||JSON.stringify(prior.patch)!==JSON.stringify(patch)||prior.expectedVersion!==args.p_expected_version)
+              return {error:{code:'23505'}};
+            if(prior.revision!==revision)return {error:{code:'40001'}};
+            result={owner_id:ownerId,event_id:args.p_event_id,event_version:prior.eventVersion,
+              current_version:version,permission_revision:revision,replayed:true};
+          }else{
+            if(args.p_expected_version!==version)return {error:{code:'40001'}};
+            const next=patchPreferenceRow(ownerId,patch);if(next.error)return next;
+            state.preferenceReceipts[args.p_event_id]={ownerId,revision,patch:copy(patch),
+              expectedVersion:args.p_expected_version,eventVersion:next.version};persist();
+            result={owner_id:ownerId,event_id:args.p_event_id,event_version:next.version,
+              current_version:next.version,permission_revision:revision,replayed:false};
+          }
+        }
+        if(fault?.mode==='hold')await new Promise(resolve=>{release=resolve;});
+        if(fault?.mode==='lost-ack')return {error:{message:'Synthetic preference receipt lost'}};
+        return {data:copy(result),error:null};
+      }
       if(['kg_chart_f2_level_state','kg_chart_f2_select_difficulty','kg_chart_f2_check_level_up'].includes(name)){
         const ownerId=state.owner,languageCode=args.p_lang;
         state.levelRequests.push({name,args:copy(args),ownerId});persist();
@@ -342,8 +443,9 @@ function installFakeClient() {
       const q = {op: 'read', filters: [], rows: [], limit: Infinity, one: false};
       let pending;
       const chain = {
-        select() { return chain; },
+        select(columns) { q.columns=columns;return chain; },
         insert(rows) { q.op = 'insert'; q.rows = copy(Array.isArray(rows) ? rows : [rows]); return chain; },
+        upsert(rows) { q.op='upsert';q.rows=copy(Array.isArray(rows)?rows:[rows]);return chain; },
         eq(key, value) { q.filters.push([key, value]); return chain; },
         in(key, value) { q.filters.push([key, value]); return chain; },
         order() { return chain; },
@@ -355,10 +457,14 @@ function installFakeClient() {
       function execute() {
         return pending ||= (async () => {
           if (q.op === 'read') {
-            state.reads.push({table,filters:copy(q.filters)});persist();
+            state.reads.push({table,filters:copy(q.filters),columns:q.columns});persist();
             const rows = state.tables[table].filter(row => q.filters.every(([key, value]) =>
               Array.isArray(value) ? value.includes(row[key]) : row[key] === value)).slice(0, q.limit);
-            return {data: copy(q.one ? rows[0] ?? null : rows), error: null};
+            const result=copy(q.one?rows[0]??null:rows);
+            const i=state.faults.findIndex(fault=>fault.table===table&&(fault.mode==='hold-read'||
+              fault.mode==='hold-typing-read'&&q.columns==='typing_best'));
+            if(i>=0){state.faults.splice(i,1);persist();await new Promise(resolve=>{release=resolve;});}
+            return {data:result,error:null};
           }
           state.requests.push({table, rows: copy(q.rows)}); persist();
           const faultIndex = state.faults.findIndex(fault => fault.table === table);
@@ -368,6 +474,15 @@ function installFakeClient() {
           if (fault?.mode === 'deny') { state.permitted = false; persist(); }
           if (!state.permitted) return {data: null, error: {code: '42501', message: 'Synthetic RLS denial'}};
           if (fault?.mode === 'fail') return {data: null, error: {message: 'Synthetic connection failure'}};
+          if(table==='kg_chart_user_prefs'&&q.op==='upsert'){
+            if(q.rows.some(row=>row.user_id!==state.owner))return {error:{code:'42501'}};
+            for(const row of q.rows){
+              const old=preferenceRow(row.user_id);
+              state.tables[table]=state.tables[table].filter(saved=>saved.user_id!==row.user_id);
+              state.tables[table].push({...old,...copy(row)});
+            }
+            persist();return {data:copy(q.one?q.rows[0]:q.rows),error:null};
+          }
           if (q.rows.some(row => table === 'kg_chart_quiz_sessions' ? row.user_id !== state.owner :
             !state.tables.kg_chart_quiz_sessions.some(session => session.id === row.session_id && session.user_id === state.owner))) {
             return {data: null, error: {code: '42501', message: 'Synthetic owner mismatch'}};
@@ -427,15 +542,28 @@ const harness = `
           data-next-unlocked={path.status.next?.unlocked?'yes':'no'} data-celebrated={path.celebration?'yes':'no'}/>
       </>;
     }
+    function PreferenceFixture({policy,user,languageCode,audioOnly}){
+      const preferences=usePersonalPreferences(user,policy,true);
+      return <KGPreferenceContext.Provider value={preferences}>
+        <div className="bg-jade-700 text-white p-4 flex items-center justify-between">
+          <span>Fictional learner preferences</span>{user&&<AudioControls/>}
+        </div>
+        <PreferenceRecoveryPanel flow={preferences}/>
+        {!audioOnly&&user&&<TypingView key={user.id+':'+languageCode}
+          topics={[{id:'food',translation:{title_native:'Food'}}]} vocabulary={fixtureWords}
+          languageCode={languageCode} user={user} meaningName="English" accessPolicy={policy}/>}
+      </KGPreferenceContext.Provider>;
+    }
     function QuizFixture() {
       const [shown, setShown] = useState(true);
       const [identity,setIdentity]=useState({user:fixtureUser,languageCode:'my',revision:17,
         policyState:window.__kgF1Initial?.policyState||'restricted'});
       useEffect(()=>{
         window.__kgF1.changeScope=patch=>{
-          if(patch.ownerId)window.__kgF1.setOwner(patch.ownerId);
+          if(patch.logout)window.__kgF1.setOwner(null);
+          else if(patch.ownerId)window.__kgF1.setOwner(patch.ownerId);
           if(patch.revision!==undefined)window.__kgF1.levelRevision(patch.revision);
-          setIdentity(old=>({user:patch.ownerId?{...old.user,id:patch.ownerId}:old.user,
+          setIdentity(old=>({user:patch.logout?null:patch.ownerId?{...fixtureUser,...old.user,id:patch.ownerId}:old.user,
             languageCode:patch.languageCode||old.languageCode,revision:patch.revision??old.revision,
             policyState:patch.policyState||old.policyState}));
         };
@@ -443,18 +571,18 @@ const harness = `
       },[]);
       const kind = new URLSearchParams(location.search).get('kind') || 'word';
       const restricted = new URLSearchParams(location.search).get('restricted') === 'yes';
-      const scope = restricted ? {ownerId:identity.user.id, policy:{state:identity.policyState, revision:kind==='path'?window.__kgF1.snapshot().pathRevision:identity.revision}} : null;
+      const scope = restricted ? {ownerId:identity.user?.id, policy:{state:identity.policyState, revision:kind==='path'?window.__kgF1.snapshot().pathRevision:identity.revision}} : null;
       return <AuthContext.Provider value={{ user: identity.user }}>
         <KGMediaScopeContext.Provider value={scope}>
         <RulesContext.Provider value={fixtureRules}>
           <PrivateLessonsContext.Provider value={fixturePrivate}>
-            <div aria-label="Fixture navigation" data-fixture-owner={identity.user.id}
+            <div aria-label="Fixture navigation" data-fixture-owner={identity.user?.id}
               data-fixture-language={identity.languageCode} data-fixture-revision={identity.revision}>
               <button onClick={() => setShown(false)}>Leave quiz view</button>
               <button onClick={() => setShown(true)}>Reopen quiz view</button>
             </div>
             {shown ? kind === 'word'
-              ? <WordQuizView key={identity.user.id+':'+identity.languageCode} topics={[{ id: 'food', icon: '🍎', translation: { title_native: 'Food' } }]}
+              ? <WordQuizView key={identity.user?.id+':'+identity.languageCode} topics={[{ id: 'food', icon: '🍎', translation: { title_native: 'Food' } }]}
                   vocabulary={fixtureWords} poolVocabulary={fixtureWords} ratings={{}}
                   onRate={window.__kgF1.rate} languageCode={identity.languageCode} user={identity.user}
                   onSessionSaved={window.__kgF1.callback} meaningName="English" />
@@ -466,6 +594,8 @@ const harness = `
               : ['ratings','rating-cards','rating-chart'].includes(kind) ? <RatingFixture policy={scope?.policy}
                   cards={kind==='rating-cards'} chart={kind==='rating-chart'} languageCode={identity.languageCode} user={identity.user}/>
               : kind === 'path' ? <PathFixture policy={scope?.policy}/>
+              : kind.startsWith('preferences') ? <PreferenceFixture policy={scope?.policy} user={identity.user}
+                  languageCode={identity.languageCode} audioOnly={kind==='preferences-audio'}/>
               : <SentenceQuizView languageCode="my" user={fixtureUser} meaningName="English"
                   sentenceAccess={fixtureSentenceAccess} onSessionSaved={window.__kgF1.callback} />
               : <p>Outside quiz</p>}
@@ -488,13 +618,14 @@ const assets = new Map([
 for (const filename of ['kg-shared.js', 'kg-learner-access.js', 'kg-sentence-access.js', 'kg-quiz-save.js']) {
   assets.set('/' + filename, await readFile('js/' + filename));
 }
-const html = '<!doctype html><html><head><meta charset="UTF-8"><title>Isolated F1 UI fixture</title>' +
+assets.set('/kg-audio.js',await readFile('js/kg-audio.js'));
+const html = actualAudio => '<!doctype html><html><head><meta charset="UTF-8"><title>Isolated F1 UI fixture</title>' +
   '<link rel="stylesheet" href="/app.css"></head><body><div id="root"></div>' +
-  [...assets.keys()].filter(path => path.endsWith('.js') && path !== '/app.js').map(path => `<script src="${path}"></script>`).join('') +
+  [...assets.keys()].filter(path => path.endsWith('.js') && path !== '/app.js'&&(path!=='/kg-audio.js'||actualAudio)).map(path => `<script src="${path}"></script>`).join('') +
   '<script src="/app.js"></script></body></html>';
 const server = createServer((req, res) => {
-  const path = new URL(req.url, 'http://127.0.0.1').pathname;
-  const content = path === '/' ? html : assets.get(path);
+  const url=new URL(req.url,'http://127.0.0.1'),path=url.pathname;
+  const content = path === '/' ? html(url.searchParams.get('kind')?.startsWith('preferences')) : assets.get(path);
   if (content === undefined) { res.writeHead(404); res.end(); return; }
   res.writeHead(200, {'content-type': path === '/' ? 'text/html; charset=utf-8' : path.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8', 'cache-control': 'no-store'});
   res.end(content);
@@ -525,6 +656,10 @@ async function scenario(name, kind, run, restricted = false, initial = null) {
     else if (kind==='speaking') await page.getByRole('button', {name:/Whole paragraph/}).waitFor();
     else if(['ratings','rating-cards','rating-chart'].includes(kind))await page.locator('[data-ratings-loaded="yes"]').waitFor({state:'attached'});
     else if(kind==='path')await page.locator('[data-path-ready="yes"]').waitFor({state:'attached'});
+    else if(kind.startsWith('preferences')){
+      if(initial?.policyState==='legacy')await page.getByRole('button',{name:'Change audio voice',exact:true}).waitFor();
+      else await page.getByRole('region',{name:'Personal preferences'}).waitFor();
+    }
     else if(kind==='word'&&restricted&&initial?.policyState!=='legacy')await page.getByRole('region',{name:'Difficulty status'}).waitFor();
     else await page.getByRole('button', {name: /^Start Quiz/}).waitFor();
     await run(page);
@@ -540,6 +675,33 @@ async function scenario(name, kind, run, restricted = false, initial = null) {
   } finally { await context.close(); }
 }
 const snapshot = page => page.evaluate(() => window.__kgF1.snapshot());
+const preferenceReadRpc='kg_chart_f2_my_preferences';
+const preferencePatchRpc='kg_chart_f2_patch_preferences';
+const preferenceRegion=page=>page.getByRole('region',{name:'Personal preferences'});
+const audioVoice=page=>page.getByRole('button',{name:'Change audio voice',exact:true});
+const audioMute=page=>page.getByRole('button',{name:'Toggle automatic audio',exact:true});
+const preferenceCalls=(db,name)=>db.preferenceRequests.filter(request=>request.name===name);
+const pendingPreferences=page=>page.evaluate(()=>Object.keys(localStorage)
+  .filter(key=>key.startsWith(window.KGPreferenceSave.storagePrefix))
+  .map(key=>JSON.parse(localStorage.getItem(key))));
+async function preferencesReady(page,voice='f',muted=false){
+  await preferenceRegion(page).getByText('Personal preferences verified.',{exact:true}).waitFor();
+  assert.equal(await audioVoice(page).getAttribute('title'),`Voice: ${voice==='f'?'female':'male'} (tap to switch)`);
+  assert.equal(await audioMute(page).getAttribute('title'),muted?'Auto-play off (🔊 buttons still work)':'Auto-play on');
+}
+async function finishPreferenceTyping(page,{afterStart,delay=1250}={}){
+  await page.getByRole('button',{name:'Start',exact:true}).click();
+  await afterStart?.();
+  const copyPrompt=page.locator('[aria-label^="Native "]');
+  const text=await copyPrompt.count()?await copyPrompt.getAttribute('aria-label'):
+    'Native '+(await page.getByText(/^Word [0-3]$/).first().textContent()).trim().slice(-1);
+  await page.getByRole('textbox',{name:'Type here'}).fill(text);
+  // A real, short elapsed interval keeps CPM finite and exercises the actual
+  // run clock; no saved metric is injected into the component.
+  await page.waitForTimeout(delay);
+  await page.getByRole('button',{name:'← Back',exact:true}).click();
+  await page.getByText('✓ Results saved',{exact:true}).waitFor();
+}
 const levelStateRpc='kg_chart_f2_level_state';
 const levelSelectRpc='kg_chart_f2_select_difficulty';
 const levelCheckRpc='kg_chart_f2_check_level_up';
@@ -1449,6 +1611,379 @@ try {
     const db=await snapshot(page);
     assert.equal(db.levelCalls,1);assert.equal(levelCalls(db,levelCheckRpc).length,0);
   },true,{policyState:'legacy'});
+
+  await scenario('F2E2d actual preferences: failed read preserves unowned local history and never guesses an account baseline', 'preferences', async page=>{
+    await preferenceRegion(page).getByText(/server did not confirm this preference change/i).waitFor();
+    assert.equal(await audioVoice(page).isDisabled(),true);assert.equal(await audioMute(page).isDisabled(),true);
+    assert.equal(await page.getByRole('button',{name:'Start',exact:true}).isDisabled(),true);
+    await page.getByText(/Verify personal preferences before starting/).waitFor();
+    assert.equal((await pendingPreferences(page)).length,0);
+    let db=await snapshot(page);
+    assert.equal(preferenceCalls(db,preferencePatchRpc).length,0);
+    assert.equal(db.reads.some(read=>read.table==='kg_chart_user_prefs'),false);
+    assert.equal(db.requests.some(request=>request.table==='kg_chart_user_prefs'),false);
+    assert.equal(await page.getByText('New personal best!',{exact:true}).count(),0);
+    await preferenceRegion(page).getByRole('button',{name:'Refresh preferences',exact:true}).click();
+    await preferencesReady(page);
+    db=await snapshot(page);
+    assert.equal(preferenceCalls(db,preferencePatchRpc).length,0,'Initial account read must not upload either old local mirror');
+    const local=await page.evaluate(()=>({audio:JSON.parse(localStorage.getItem('kg_chart_audio_prefs')),
+      bests:JSON.parse(localStorage.getItem('kg_chart_typing_best'))}));
+    assert.deepEqual(local,{audio:{voice:'m',muted:true},bests:{'my|copy|words':{cpm:99999,last:99999,at:'2026-01-01T10:00:00Z'}}});
+  },true,{faults:[{table:preferenceReadRpc,mode:'fail'}],local:{
+    kg_chart_audio_prefs:{voice:'m',muted:true},
+    kg_chart_typing_best:{'my|copy|words':{cpm:99999,last:99999,at:'2026-01-01T10:00:00Z'}}}});
+
+  await scenario('F2E2d actual audio controls: field-only voice and mute wait for receipt and current readback', 'preferences-audio', async page=>{
+    await preferencesReady(page);
+    await page.evaluate(name=>window.__kgF1.fault(name,'hold'),preferencePatchRpc);
+    await audioVoice(page).dblclick();
+    await page.waitForFunction(name=>window.__kgF1.snapshot().preferenceRequests.some(request=>request.name===name),preferencePatchRpc);
+    assert.equal(await audioVoice(page).getAttribute('title'),'Voice: female (tap to switch)');
+    assert.equal(await audioVoice(page).isDisabled(),true);assert.equal(await audioMute(page).isDisabled(),true);
+    assert.equal(await page.evaluate(()=>window.KGAudio.prefs.voice),'f');
+    const [event]=await pendingPreferences(page);
+    assert.deepEqual(event.patch,{audio_voice:'m'});assert.equal(event.expectedVersion,0);assert.equal(event.revision,17);
+    await page.evaluate(name=>window.__kgF1.fault(name,'hold'),preferenceReadRpc);
+    await page.evaluate(()=>window.__kgF1.release());
+    await page.waitForFunction(name=>window.__kgF1.snapshot().preferenceRequests.filter(request=>request.name===name).length===2,preferenceReadRpc);
+    assert.equal(await page.evaluate(()=>window.KGAudio.prefs.voice),'f','Receipt alone must not apply an account audio preference');
+    assert.equal(await preferenceRegion(page).getByText('Preference change confirmed.',{exact:true}).count(),0);
+    await page.evaluate(()=>window.__kgF1.release());
+    await preferenceRegion(page).getByText('Preference change confirmed.',{exact:true}).waitFor();
+    assert.equal(await audioVoice(page).getAttribute('title'),'Voice: male (tap to switch)');
+    assert.equal(await page.evaluate(()=>window.KGAudio.prefs.voice),'m');
+    assert.equal((await pendingPreferences(page)).length,0);
+    await audioMute(page).click();
+    await page.waitForFunction(name=>window.__kgF1.snapshot().preferenceRequests.filter(request=>request.name===name).length===2,preferencePatchRpc);
+    await preferenceRegion(page).getByText('Preference change confirmed.',{exact:true}).waitFor();
+    const db=await snapshot(page),writes=preferenceCalls(db,preferencePatchRpc),row=db.tables.kg_chart_user_prefs.find(row=>row.user_id===db.owner);
+    assert.deepEqual(writes.map(request=>request.args.p_patch),[{audio_voice:'m'},{audio_muted:true}]);
+    assert.equal(row.audio_voice,'m');assert.equal(row.audio_muted,true);assert.equal(db.preferenceVersions[db.owner],2);
+    assert.equal(db.reads.some(read=>read.table==='kg_chart_user_prefs'),false);
+    assert.equal(db.requests.some(request=>request.table==='kg_chart_user_prefs'),false);
+  },true);
+
+  await scenario('F2E2d actual audio controls: lost reply reloads without replay and exact retry preserves newer account preferences', 'preferences-audio', async page=>{
+    await preferencesReady(page);
+    await page.evaluate(name=>window.__kgF1.fault(name,'lost-ack'),preferencePatchRpc);
+    await audioVoice(page).click();
+    await preferenceRegion(page).getByText('Audio voice change is not confirmed',{exact:true}).waitFor();
+    const [original]=await pendingPreferences(page);
+    await page.evaluate(()=>window.__kgF1.externalPreferences({audio_voice:'f',audio_muted:true,
+      typing_best:{'my|copy|words':{cpm:120,last:100,at:'2026-01-03T10:00:00Z'}}}));
+    await page.reload({waitUntil:'load'});
+    await preferencesReady(page,'f',true);
+    assert.equal(preferenceCalls(await snapshot(page),preferencePatchRpc).length,1,'Reload reads; it never replays a preference mutation');
+    assert.deepEqual((await pendingPreferences(page))[0],original);
+    assert.equal(await audioVoice(page).isDisabled(),true);
+    await preferenceRegion(page).getByRole('button',{name:'Retry exact preference change',exact:true}).click();
+    await preferenceRegion(page).getByText('The original change was accepted. Newer account preferences are now shown.',{exact:true}).waitFor();
+    const db=await snapshot(page),writes=preferenceCalls(db,preferencePatchRpc),row=db.tables.kg_chart_user_prefs.find(row=>row.user_id===db.owner);
+    assert.equal(writes.length,2);assert.deepEqual(writes[0],writes[1]);
+    assert.equal(row.audio_voice,'f');assert.equal(row.audio_muted,true);assert.equal(row.typing_best['my|copy|words'].cpm,120);
+    assert.equal(db.preferenceVersions[db.owner],2);assert.equal((await pendingPreferences(page)).length,0);
+    assert.deepEqual(await page.evaluate(()=>window.KGAudio.prefs),{voice:'f',muted:true});
+  },true);
+
+  await scenario('F2E2d actual audio controls: stale baseline stays exact until explicit current-state review and archive', 'preferences-audio', async page=>{
+    await preferencesReady(page);
+    await page.evaluate(()=>window.__kgF1.externalPreferences({audio_muted:true}));
+    await audioVoice(page).click();
+    await preferenceRegion(page).getByText(/original preference version or event conflicts/i).first().waitFor();
+    const [original]=await pendingPreferences(page);
+    assert.equal(original.expectedVersion,0);
+    await preferenceRegion(page).getByRole('button',{name:'Refresh preferences',exact:true}).click();
+    await preferencesReady(page,'f',true);
+    assert.equal(preferenceCalls(await snapshot(page),preferencePatchRpc).length,1);
+    await preferenceRegion(page).getByRole('button',{name:'Archive outdated preference change',exact:true}).click();
+    await preferenceRegion(page).getByText('Outdated preference change archived. You can now make a new change.',{exact:true}).waitFor();
+    const archives=await page.evaluate(()=>Object.keys(localStorage).filter(key=>key.startsWith(window.KGPreferenceSave.archivePrefix))
+      .map(key=>JSON.parse(localStorage.getItem(key))));
+    assert.equal(archives.length,1);assert.deepEqual(archives[0].event,original);
+    await audioVoice(page).click();
+    await preferenceRegion(page).getByText('Preference change confirmed.',{exact:true}).waitFor();
+    const writes=preferenceCalls(await snapshot(page),preferencePatchRpc);
+    assert.equal(writes.length,2);assert.equal(writes[1].args.p_expected_version,1);
+    assert.notEqual(writes[0].args.p_event_id,writes[1].args.p_event_id);
+    assert.deepEqual(writes[1].args.p_patch,{audio_voice:'m'});
+  },true);
+
+  for(const kind of ['newer-slower','older-higher','older-lower-noop']){
+    const at=kind==='newer-slower'?'2026-01-01T10:00:00.000Z':new Date(Date.now()+120000).toISOString();
+    const before={cpm:kind==='older-higher'?1:9000,last:kind==='older-higher'?1:700,at};
+    await scenario(`F2E2d actual typing best: ${kind} keeps maximum CPM separate from latest run`, 'preferences', async page=>{
+      await preferencesReady(page);
+      assert.equal(await page.getByRole('button',{name:/Sentences/}).count(),0,'A legacy source setting cannot introduce restricted sentence provenance');
+      if(kind==='older-higher'){
+        await page.setViewportSize({width:390,height:844});
+        await page.evaluate(name=>window.__kgF1.fault(name,'hold'),preferenceReadRpc);
+      }
+      await finishPreferenceTyping(page);
+      if(kind==='older-higher'){
+        await page.waitForFunction(name=>window.__kgF1.snapshot().preferenceRequests.filter(request=>request.name===name).length===2,preferenceReadRpc);
+        await page.getByText('This run is not confirmed as an account personal best. Your current-run score is shown above.',{exact:true}).waitFor();
+        assert.equal(await page.getByText('New personal best!',{exact:true}).count(),0);
+        assert.equal(await page.getByText('Typing best confirmed.',{exact:true}).count(),0);
+        if(process.env.KG_PREF_SCREENSHOT)await page.screenshot({path:process.env.KG_PREF_SCREENSHOT,fullPage:true});
+        await page.evaluate(()=>window.__kgF1.release());
+      }
+      await page.getByText('Typing best confirmed.',{exact:true}).waitFor();
+      const db=await snapshot(page),writes=preferenceCalls(db,preferencePatchRpc);
+      assert.equal(writes.length,1);assert.deepEqual(Object.keys(writes[0].args.p_patch),['typing_best']);
+      const entries=Object.entries(writes[0].args.p_patch.typing_best);
+      assert.equal(entries.length,1);assert.equal(entries[0][0],'my|copy|words|food');
+      const run=entries[0][1],actual=db.tables.kg_chart_user_prefs.find(row=>row.user_id===db.owner).typing_best[entries[0][0]];
+      assert.equal(run.cpm,run.last,'Only this run is authored; the previous account best is not copied into its patch');
+      assert.ok(run.cpm>1&&run.cpm<9000,'The real short typing run has a finite bounded CPM');
+      assert.equal(actual.cpm,Math.max(before.cpm,run.cpm));
+      assert.equal(actual.last,kind==='newer-slower'?run.last:before.last);
+      assert.equal(actual.at,kind==='newer-slower'?run.at:before.at);
+      assert.equal(db.preferenceVersions[db.owner],1,'Even an accepted value-preserving new event advances the account version once');
+      if(kind==='older-lower-noop')assert.deepEqual(actual,before);
+      assert.equal(await page.getByText('New personal best!',{exact:true}).count(),kind==='older-higher'?1:0);
+      assert.equal(db.reads.some(read=>read.table==='kg_chart_user_prefs'||read.table==='kg_chart_sentences'),false);
+      assert.equal((await pendingPreferences(page)).length,0);
+    },true,{preferences:{typing_best:{'my|copy|words|food':before}},
+      local:{kg_chart_typing:{languageCode:'my',mode:'copy',source:'sentences',topicId:'food',duration:60}}});
+  }
+
+  await scenario('F2E2d actual typing recovery: original mode and topic survive a failed preference save and later setup changes', 'preferences', async page=>{
+    await preferencesReady(page);
+    await page.evaluate(name=>window.__kgF1.fault(name,'fail'),preferencePatchRpc);
+    await finishPreferenceTyping(page);
+    await preferenceRegion(page).getByText('Typing best change is not confirmed',{exact:true}).waitFor();
+    await page.getByText('This run is not confirmed as an account personal best. Your current-run score is shown above.',{exact:true}).waitFor();
+    const [original]=await pendingPreferences(page);
+    assert.deepEqual(Object.keys(original.patch.typing_best),['my|recall|words|food']);
+    assert.equal((await snapshot(page)).tables[sessions].length,1,'Quiz confirmation remains independent of the failed preference event');
+    await page.getByRole('button',{name:'← Back to Setup',exact:true}).click();
+    await page.getByRole('button',{name:'👀 Copy the word',exact:true}).click();
+    await page.getByLabel('Topic',{exact:true}).selectOption('all');
+    await preferenceRegion(page).getByRole('button',{name:'Refresh preferences',exact:true}).click();
+    await preferencesReady(page);
+    assert.deepEqual((await pendingPreferences(page))[0],original);
+    assert.equal(preferenceCalls(await snapshot(page),preferencePatchRpc).length,1);
+    await preferenceRegion(page).getByRole('button',{name:'Retry exact preference change',exact:true}).click();
+    await preferenceRegion(page).getByText('Preference change confirmed.',{exact:true}).waitFor();
+    let db=await snapshot(page),writes=preferenceCalls(db,preferencePatchRpc);
+    assert.deepEqual(writes[0],writes[1]);
+    assert.equal(await page.getByText(/^Your best:/).count(),0,'An earlier recall/topic result must not become a copy/all best');
+    await finishPreferenceTyping(page);
+    await page.getByText('Typing best confirmed.',{exact:true}).waitFor();
+    db=await snapshot(page);writes=preferenceCalls(db,preferencePatchRpc);
+    assert.equal(writes.length,3);assert.deepEqual(Object.keys(writes[2].args.p_patch.typing_best),['my|copy|words']);
+    assert.notEqual(writes[2].args.p_event_id,writes[0].args.p_event_id);
+    assert.equal(writes[2].args.p_expected_version,1);
+    assert.deepEqual(Object.keys(db.tables.kg_chart_user_prefs.find(row=>row.user_id===db.owner).typing_best).sort(),
+      ['my|copy|words','my|recall|words|food']);
+  },true,{local:{kg_chart_typing:{languageCode:'my',mode:'recall',source:'words',topicId:'food',duration:60}}});
+
+  await scenario('F2E2d actual shared preferences: typing finished during held audio save keeps a separate original event without automatic rebasing', 'preferences', async page=>{
+    await preferencesReady(page);
+    await page.evaluate(name=>window.__kgF1.fault(name,'hold'),preferencePatchRpc);
+    await audioVoice(page).click();
+    await page.waitForFunction(name=>window.__kgF1.snapshot().preferenceRequests.some(request=>request.name===name),preferencePatchRpc);
+    await finishPreferenceTyping(page);
+    await preferenceRegion(page).getByText('Typing best change is not confirmed',{exact:true}).waitFor();
+    const events=await pendingPreferences(page),typing=events.find(event=>event.patch.typing_best),voice=events.find(event=>event.patch.audio_voice);
+    assert.equal(events.length,2);assert.equal(typing.expectedVersion,0);assert.equal(voice.expectedVersion,0);
+    assert.notEqual(typing.eventId,voice.eventId);
+    assert.equal(preferenceCalls(await snapshot(page),preferencePatchRpc).length,1,'The second event is retained without another in-flight owner RPC');
+    await page.evaluate(()=>window.__kgF1.release());
+    await preferenceRegion(page).getByText('Preference change confirmed.',{exact:true}).waitFor();
+    assert.deepEqual(await pendingPreferences(page),[typing]);
+    assert.equal(preferenceCalls(await snapshot(page),preferencePatchRpc).length,1,'Clearing the first event cannot automatically replay the next');
+    await preferenceRegion(page).getByRole('button',{name:'Retry exact preference change',exact:true}).click();
+    await preferenceRegion(page).getByText(/original preference version or event conflicts/i).first().waitFor();
+    assert.deepEqual(await pendingPreferences(page),[typing]);
+    const db=await snapshot(page),writes=preferenceCalls(db,preferencePatchRpc);
+    assert.equal(writes.length,2);assert.equal(writes[1].args.p_event_id,typing.eventId);assert.equal(writes[1].args.p_expected_version,0);
+    assert.deepEqual(writes[1].args.p_patch,typing.patch);
+    assert.deepEqual(db.tables.kg_chart_user_prefs.find(row=>row.user_id===db.owner).typing_best,{});
+  },true);
+
+  await scenario('F2E2d actual audio lifecycle: old account read cannot replace the newly verified owner', 'preferences-audio', async page=>{
+    await page.waitForFunction(name=>window.__kgF1.snapshot().preferenceRequests.length===1,preferenceReadRpc);
+    await page.evaluate(()=>window.__kgF1.changeScope({ownerId:'11000000-0000-4000-8000-000000000099'}));
+    await preferencesReady(page,'f',true);
+    await page.evaluate(()=>window.__kgF1.release());
+    await preferencesReady(page,'f',true);
+    assert.deepEqual(await page.evaluate(()=>window.KGAudio.prefs),{voice:'f',muted:true});
+    assert.equal(preferenceCalls(await snapshot(page),preferencePatchRpc).length,0);
+  },true,{preferences:{audio_voice:'m',audio_muted:false},otherPreferences:{audio_voice:'f',audio_muted:true},
+    faults:[{table:preferenceReadRpc,mode:'hold'}]});
+
+  for(const [kind,patch] of [
+    ['owner',{ownerId:'11000000-0000-4000-8000-000000000099'}],
+    ['revision',{revision:18}],
+    ['logout',{logout:true}],
+  ])await scenario(`F2E2d actual preference lifecycle: ${kind} change holds the original event and prevents a stale audio result`, 'preferences-audio', async page=>{
+    await preferencesReady(page);
+    await page.evaluate(name=>window.__kgF1.fault(name,'hold'),preferencePatchRpc);
+    await audioVoice(page).click();
+    await page.waitForFunction(name=>window.__kgF1.snapshot().preferenceRequests.some(request=>request.name===name),preferencePatchRpc);
+    const [original]=await pendingPreferences(page);
+    await page.evaluate(value=>window.__kgF1.changeScope(value),patch);
+    if(kind==='owner')await preferencesReady(page,'f',true);
+    else if(kind==='revision')await preferencesReady(page,'m',false);
+    else await audioVoice(page).waitFor({state:'detached'});
+    await page.evaluate(()=>window.__kgF1.release());
+    assert.deepEqual((await pendingPreferences(page))[0],original);
+    assert.equal(preferenceCalls(await snapshot(page),preferencePatchRpc).length,1);
+    assert.equal(await preferenceRegion(page).getByText('Preference change confirmed.',{exact:true}).count(),0);
+    if(kind==='owner')assert.deepEqual(await page.evaluate(()=>window.KGAudio.prefs),{voice:'f',muted:true});
+    if(kind==='revision'){
+      await preferenceRegion(page).getByText('This change belongs to an earlier permission revision and is held for review.',{exact:true}).waitFor();
+      assert.equal(await preferenceRegion(page).getByRole('button',{name:'Retry exact preference change',exact:true}).isDisabled(),true);
+      assert.equal(await preferenceRegion(page).getByRole('button',{name:'Archive outdated preference change',exact:true}).count(),0);
+    }
+    if(kind==='logout')assert.equal(await page.evaluate(()=>window.KGAudio.prefs.muted),true);
+  },true,{otherPreferences:{audio_voice:'f',audio_muted:true}});
+
+  await scenario('F2E2d actual audio lifecycle: a same-owner legacy initialization reply cannot undo a later voice choice', 'preferences-audio', async page=>{
+    await page.waitForFunction(()=>window.__kgF1.snapshot().reads.some(read=>read.table==='kg_chart_user_prefs'));
+    await audioVoice(page).click();
+    await page.waitForFunction(()=>window.__kgF1.snapshot().requests.some(request=>request.table==='kg_chart_user_prefs'));
+    assert.equal(await audioVoice(page).getAttribute('title'),'Voice: male (tap to switch)');
+    await page.evaluate(()=>window.__kgF1.release());
+    await audioVoice(page).click({trial:true});
+    assert.equal(await audioVoice(page).getAttribute('title'),'Voice: male (tap to switch)');
+    assert.equal(await page.evaluate(()=>window.KGAudio.prefs.voice),'m');
+    const db=await snapshot(page);
+    assert.equal(db.tables.kg_chart_user_prefs.find(row=>row.user_id===db.owner).audio_voice,'m');
+    assert.equal(db.preferenceRequests.length,0);
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_user_prefs','hold-read'));
+    await page.evaluate(()=>window.__kgF1.changeScope({ownerId:'11000000-0000-4000-8000-000000000099'}));
+    await page.waitForFunction(()=>window.__kgF1.snapshot().reads.filter(read=>read.table==='kg_chart_user_prefs').length===2);
+    await page.evaluate(()=>window.__kgF1.changeScope({ownerId:'11000000-0000-4000-8000-000000000001',policyState:'restricted'}));
+    await preferencesReady(page,'m',false);
+    await page.evaluate(()=>window.__kgF1.release());
+    await audioVoice(page).click({trial:true});
+    assert.deepEqual(await page.evaluate(()=>window.KGAudio.prefs),{voice:'m',muted:false},
+      'A different former legacy owner cannot replace the current restricted audio snapshot');
+    assert.equal(preferenceCalls(await snapshot(page),preferencePatchRpc).length,0);
+  },true,{policyState:'legacy',faults:[{table:'kg_chart_user_prefs',mode:'hold-read'}]});
+
+  await scenario('F2E2d actual preferences: offline facade keeps an exact pending event and revoked typing history is not uploaded or erased', 'preferences-audio', async page=>{
+    await preferencesReady(page);
+    await page.evaluate(()=>{window.KGOffline={client:window.__fakeClient};});
+    await audioVoice(page).click();
+    await preferenceRegion(page).getByText(/Restricted preferences require the online server/).first().waitFor();
+    const [original]=await pendingPreferences(page);
+    assert.equal(preferenceCalls(await snapshot(page),preferencePatchRpc).length,0);
+    await page.evaluate(()=>{delete window.KGOffline;});
+    await preferenceRegion(page).getByRole('button',{name:'Retry exact preference change',exact:true}).click();
+    await preferenceRegion(page).getByText('Preference change confirmed.',{exact:true}).waitFor();
+    const db=await snapshot(page),writes=preferenceCalls(db,preferencePatchRpc),row=db.tables.kg_chart_user_prefs.find(row=>row.user_id===db.owner);
+    assert.equal(writes.length,1);assert.equal(writes[0].args.p_event_id,original.eventId);
+    assert.deepEqual(writes[0].args.p_patch,{audio_voice:'m'});
+    assert.deepEqual(row.typing_best,{'my|copy|words|food':{cpm:95,last:80,at:'2026-01-01T10:00:00Z'}});
+    assert.equal(row.audio_voice,'m');assert.equal((await pendingPreferences(page)).length,0);
+  },true,{typingAllowed:false,preferences:{typing_best:{'my|copy|words|food':{cpm:95,last:80,at:'2026-01-01T10:00:00Z'}}}});
+
+  await scenario('F2E2d actual typing attribution: current authored baseline and exact current key determine confirmation, not run-start best', 'preferences', async page=>{
+    await preferencesReady(page);
+    const began=Date.now();
+    await page.clock.setFixedTime(began);
+    await page.getByRole('button',{name:'Start',exact:true}).click();
+    const word=await page.locator('[aria-label^="Native "]').getAttribute('aria-label');
+    await page.getByRole('textbox',{name:'Type here'}).fill(word);
+    await page.evaluate(at=>window.__kgF1.externalPreferences({typing_best:{
+      'my|copy|words':{cpm:180,last:180,at}}}),new Date(began-1000).toISOString());
+    await preferenceRegion(page).getByRole('button',{name:'Refresh preferences',exact:true}).click();
+    await preferencesReady(page);
+    // Seven non-space characters over 2.333 seconds round to 180 CPM. This
+    // uses the actual run clock/input path with Playwright's supported Date
+    // control; no preference or metric is injected into the component.
+    await page.clock.setFixedTime(began+2333);
+    await page.getByRole('button',{name:'← Back',exact:true}).click();
+    await page.getByText('Typing best confirmed.',{exact:true}).waitFor();
+    assert.equal(await page.getByText('New personal best!',{exact:true}).count(),0);
+    let db=await snapshot(page),write=preferenceCalls(db,preferencePatchRpc)[0];
+    assert.equal(write.args.p_expected_version,1);assert.equal(write.args.p_patch.typing_best['my|copy|words'].cpm,180);
+    assert.equal(db.preferenceVersions[db.owner],2);
+    await page.evaluate(()=>{
+      const db=window.__kgF1.snapshot(),row=db.tables.kg_chart_user_prefs.find(row=>row.user_id===db.owner);
+      window.__kgF1.seedPreferences({typing_best:{...row.typing_best,
+        'my|recall|words':{cpm:50,last:50,at:'2026-01-01T10:00:00Z'}}},{version:2});
+    });
+    await preferenceRegion(page).getByRole('button',{name:'Refresh preferences',exact:true}).click();
+    await preferencesReady(page);
+    await page.getByText('Typing best confirmed.',{exact:true}).waitFor();
+    await page.evaluate(()=>{
+      const db=window.__kgF1.snapshot(),row=db.tables.kg_chart_user_prefs.find(row=>row.user_id===db.owner);
+      window.__kgF1.seedPreferences({typing_best:{...row.typing_best,
+        'my|copy|words':{...row.typing_best['my|copy|words'],cpm:181}}},{version:2});
+    });
+    await preferenceRegion(page).getByRole('button',{name:'Refresh preferences',exact:true}).click();
+    await preferencesReady(page);
+    await page.getByText('This run is not confirmed as an account personal best. Your current-run score is shown above.',{exact:true}).waitFor();
+    assert.equal(await page.getByText('Typing best confirmed.',{exact:true}).count(),0);
+    assert.equal(await page.getByText('New personal best!',{exact:true}).count(),0);
+    assert.equal(preferenceCalls(await snapshot(page),preferencePatchRpc).length,1);
+  },true,{preferences:{typing_best:{'my|copy|words':{cpm:100,last:100,at:'2026-01-01T10:00:00Z'}}}});
+
+  await scenario('F2E2d actual typing lifecycle: language switch retains original quiz history without relabelling an unfinished run as a new best', 'preferences', async page=>{
+    await preferencesReady(page);
+    await page.getByRole('button',{name:'Start',exact:true}).click();
+    const word=await page.locator('[aria-label^="Native "]').getAttribute('aria-label');
+    await page.getByRole('textbox',{name:'Type here'}).fill(word);
+    await page.evaluate(()=>window.__kgF1.changeScope({languageCode:'ja'}));
+    await page.getByRole('button',{name:'Start',exact:true}).waitFor();
+    assert.equal(preferenceCalls(await snapshot(page),preferencePatchRpc).length,0);
+    assert.equal((await pendingPreferences(page)).length,0);
+    const drafts=await page.evaluate(()=>Object.keys(localStorage).filter(key=>key.startsWith(window.KGQuizSave.timedStoragePrefix))
+      .map(key=>JSON.parse(localStorage.getItem(key))));
+    assert.equal(drafts.length,1);assert.equal(drafts[0].languageCode,'my');assert.equal(drafts[0].session.quiz_type,'typing_copy');
+    assert.equal(drafts[0].answers.length,1);
+    assert.equal(await page.getByText('New personal best!',{exact:true}).count(),0);
+  },true);
+
+  await scenario('F2E2d actual legacy typing: late reads cannot overwrite a newer run or continue after owner and access changes', 'preferences', async page=>{
+    const ownerA='11000000-0000-4000-8000-000000000001',ownerB='11000000-0000-4000-8000-000000000099';
+    const keyA='kg_chart_typing_best:owner:'+ownerA,keyB='kg_chart_typing_best:owner:'+ownerB;
+    await page.waitForFunction(()=>window.__kgF1.snapshot().reads.some(read=>
+      read.table==='kg_chart_user_prefs'&&read.columns==='typing_best'));
+    await finishPreferenceTyping(page);
+    await page.waitForFunction(()=>window.__kgF1.snapshot().requests.filter(request=>request.table==='kg_chart_user_prefs').length===1);
+    const fresh=await page.evaluate(key=>JSON.parse(localStorage.getItem(key)),keyA);
+    assert.ok(fresh['my|copy|words'].cpm>1);
+    assert.equal(fresh['my|copy|words'].last,fresh['my|copy|words'].cpm);
+    await page.evaluate(()=>window.__kgF1.release());
+    await audioVoice(page).click({trial:true});
+    assert.deepEqual(await page.evaluate(key=>JSON.parse(localStorage.getItem(key)),keyA),fresh,
+      'A late initialization read must not restore the older owner-scoped best after a fresh run');
+    let db=await snapshot(page);
+    assert.equal(db.requests.filter(request=>request.table==='kg_chart_user_prefs').length,1);
+    assert.deepEqual(db.tables.kg_chart_user_prefs.find(row=>row.user_id===ownerA).typing_best,fresh);
+
+    const withPendingMerge={...fresh,'my|recall|words':{cpm:333,last:333,at:'2026-01-03T10:00:00Z'}};
+    await page.evaluate(({key,value})=>localStorage.setItem(key,JSON.stringify(value)),{key:keyA,value:withPendingMerge});
+    const reads=db.reads.filter(read=>read.table==='kg_chart_user_prefs'&&read.columns==='typing_best').length;
+    await page.getByRole('button',{name:'Leave quiz view',exact:true}).click();
+    await page.getByText('Outside quiz',{exact:true}).waitFor();
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_user_prefs','hold-typing-read'));
+    await page.getByRole('button',{name:'Reopen quiz view',exact:true}).click();
+    await page.waitForFunction(count=>window.__kgF1.snapshot().reads.filter(read=>
+      read.table==='kg_chart_user_prefs'&&read.columns==='typing_best').length===count,reads+1);
+    await page.evaluate(ownerId=>window.__kgF1.changeScope({ownerId,revision:18,policyState:'restricted'}),ownerB);
+    await preferencesReady(page);
+    await page.evaluate(()=>window.__kgF1.release());
+    await audioVoice(page).click({trial:true});
+    db=await snapshot(page);
+    assert.equal(db.requests.filter(request=>request.table==='kg_chart_user_prefs').length,1,
+      'The obsolete legacy merge must stop before any raw upsert after owner/revision/mode changed');
+    assert.deepEqual(await page.evaluate(key=>JSON.parse(localStorage.getItem(key)),keyA),withPendingMerge);
+    assert.deepEqual(await page.evaluate(key=>JSON.parse(localStorage.getItem(key)),keyB),
+      {'my|copy|words':{cpm:777,last:777,at:'2026-01-02T10:00:00Z'}});
+    assert.deepEqual(db.tables.kg_chart_user_prefs.find(row=>row.user_id===ownerA).typing_best,fresh);
+    assert.equal(await page.getByText(/^Your best:/).count(),0,'The new restricted owner must not adopt even its old legacy local mirror');
+    assert.equal(preferenceCalls(db,preferencePatchRpc).length,0);
+  },true,{policyState:'legacy',preferences:{typing_best:{'my|copy|words':{cpm:0,last:0,at:'2026-01-01T10:00:00Z'}}},
+    otherPreferences:{typing_best:{}},faults:[{table:'kg_chart_user_prefs',mode:'hold-typing-read'}],local:{
+      'kg_chart_typing_best:owner:11000000-0000-4000-8000-000000000001':{'my|copy|words':{cpm:1,last:1,at:'2026-01-02T10:00:00Z'}},
+      'kg_chart_typing_best:owner:11000000-0000-4000-8000-000000000099':{'my|copy|words':{cpm:777,last:777,at:'2026-01-02T10:00:00Z'}}}});
 
   assert.ok(passed>0,'The scenario filter must select at least one real scenario');
   console.log(`U4B2B3D_RENDERED_QUIZ_UI_PASS: ${passed} scenarios; isolated fictional clients; physical devices not tested`);

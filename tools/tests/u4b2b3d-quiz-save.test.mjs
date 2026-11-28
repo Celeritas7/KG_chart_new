@@ -1516,3 +1516,288 @@ test('F2E2c: device mutation acknowledgement is not a confirmed server action',a
   assert.equal(result.status,'reconciled');assert.equal(result.error.code,'KG_LEVEL_DEVICE');
   assert.equal(result.advanced,null);assert.equal(levelWrites(f).length,1);
 });
+
+// F2E2d: invented account preference state and immutable receipts. Native
+// PostgreSQL CI separately exercises the actual authorization/merge SQL.
+const PreferenceAPI=context.window.KGPreferenceSave;
+const PREF_READ='kg_chart_f2_my_preferences',PREF_PATCH='kg_chart_f2_patch_preferences';
+const BEST_KEY='my|copy|words|animals';
+const bestRun=(cpm,at=AT)=>({cpm,last:cpm,at});
+function preferenceFixture(initial={}){
+  let state={owner_id:OWNER,permission_revision:17,version:0,audio_voice:'f',audio_muted:false,typing_best:{},...copy(initial)};
+  let owner=state.owner_id,live={ownerId:state.owner_id,policy:{state:'restricted',revision:17}},revision=17;
+  const storage=memoryStorage(),store=PreferenceAPI.createStore({storage,makeId:uuid,now:()=>AT});
+  const calls=[],faults=[],receipts=new Map();
+  const client={auth:{async getSession(){return {data:{session:{user:{id:owner}}}};}},
+    from(){throw Error('Restricted preferences must not use raw account tables');},
+    async rpc(name,args){
+      calls.push({name,args:copy(args)});
+      const i=faults.findIndex(f=>f.name===name),fault=i<0?null:faults.splice(i,1)[0];
+      if(fault?.before)await fault.before();
+      if(fault?.throwBefore)throw Error('Synthetic connection loss');
+      if(fault?.error&&!fault.commit)return {error:copy(fault.error)};
+      if(args.p_owner_id!==owner)return {error:deny};
+      if(args.p_expected_revision!==revision)return {error:{code:'40001'}};
+      let data;
+      if(name===PREF_READ)data=copy(state);
+      else{
+        assert.equal(name,PREF_PATCH);
+        const prior=receipts.get(args.p_event_id),payload=JSON.stringify(args);
+        if(prior){
+          if(prior.payload!==payload)return {error:{code:'23505'}};
+          data={...copy(prior.receipt),current_version:state.version,replayed:true};
+        }else{
+          if(args.p_expected_version!==state.version)return {error:{code:'40001'}};
+          const next=copy(state),patch=args.p_patch;
+          if(Object.hasOwn(patch,'audio_voice'))next.audio_voice=patch.audio_voice;
+          if(Object.hasOwn(patch,'audio_muted'))next.audio_muted=patch.audio_muted;
+          for(const [key,value] of Object.entries(patch.typing_best||{})){
+            const old=next.typing_best[key];
+            if(!old)next.typing_best[key]=copy(value);
+            else{
+              const a=PreferenceAPI.instant(old.at),b=PreferenceAPI.instant(value.at);
+              if(a===b&&old.last!==value.last)return {error:{code:'23505'}};
+              next.typing_best[key]={...(b>a?value:old),cpm:Math.max(old.cpm,value.cpm)};
+            }
+          }
+          next.version++;state=next;
+          data={owner_id:owner,event_id:args.p_event_id,event_version:state.version,current_version:state.version,permission_revision:revision,replayed:false};
+          receipts.set(args.p_event_id,{payload,receipt:copy(data)});
+        }
+      }
+      if(fault?.after)await fault.after();
+      if(fault?.throwAfter)throw Error('Synthetic lost reply after commit');
+      if(fault?.error)return {error:copy(fault.error)};
+      if(fault&&Object.hasOwn(fault,'data'))data=typeof fault.data==='function'?fault.data(data):copy(fault.data);
+      return {data,...(fault?.destination?{saveDestination:fault.destination}:{})};
+    }};
+  const options={client,store,getScope:()=>live},target={ownerId:state.owner_id,revision:17};
+  return {client,options,target,storage,store,calls,faults,receipts,
+    get state(){return copy(state);},set state(v){state=copy(v);},
+    get live(){return live;},set live(v){live=v;},set owner(v){owner=v;},set revision(v){revision=v;},
+    read:()=>PreferenceAPI.read(options,target),
+    make:async patch=>{const e=store.make(target,await PreferenceAPI.read(options,target),patch);store.put(e);return e;},
+    save:e=>PreferenceAPI.save(options,e)};
+}
+const preferenceWrites=f=>f.calls.filter(c=>c.name===PREF_PATCH);
+test('F2E2d: missing-row baseline is verified, owner-bound and independent of device mirrors',async()=>{
+  const f=preferenceFixture();f.storage.setItem('kg_chart_audio_prefs',JSON.stringify({voice:'m',muted:true}));
+  f.storage.setItem('kg_chart_typing_best',JSON.stringify({[BEST_KEY]:bestRun(999)}));
+  const before=[...f.storage.entries];
+  assert.deepEqual(copy(await f.read()),f.state);
+  assert.deepEqual(f.calls,[{name:PREF_READ,args:{p_expected_revision:17,p_owner_id:OWNER}}]);
+  assert.deepEqual([...f.storage.entries],before);assert.equal(preferenceWrites(f).length,0);
+});
+test('F2E2d: malformed, foreign or unsafe preference projections fail closed',async()=>{
+  const f=preferenceFixture();
+  for(const bad of [null,[],{}, {...f.state,owner_id:OTHER},{...f.state,permission_revision:18},
+    {...f.state,version:'0'},{...f.state,version:-1},{...f.state,version:Number.MAX_SAFE_INTEGER+1},
+    {...f.state,audio_voice:'x'},{...f.state,audio_muted:0},{...f.state,typing_best:[]},
+    {...f.state,typing_best:{'my|copy|sentences':bestRun(1)}},{...f.state,typing_best:{[BEST_KEY]:{...bestRun(1),last:2}}}]){
+    f.faults.push({name:PREF_READ,data:bad});await assert.rejects(f.read(),e=>e.code==='KG_PREF_STATE');
+  }
+  assert.equal(preferenceWrites(f).length,0);
+});
+test('F2E2d: drafts contain only supplied fields and copies of touched baseline keys',async()=>{
+  const f=preferenceFixture({typing_best:{[BEST_KEY]:bestRun(100),'ja|recall|words':bestRun(200)}});
+  const patch={audio_voice:'m',typing_best:{[BEST_KEY]:bestRun(20,'2026-11-26T11:00:00Z')}};
+  const event=await f.make(patch);patch.typing_best[BEST_KEY].cpm=999;
+  assert.deepEqual(copy(event.originalState),{audio_voice:'f',audio_muted:false,typing_best:{[BEST_KEY]:bestRun(100)}});
+  assert.equal(event.patch.typing_best[BEST_KEY].cpm,20);
+  const result=await f.save(event);assert.equal(result.status,'saved');
+  assert.deepEqual(preferenceWrites(f)[0].args,{p_expected_revision:17,p_owner_id:OWNER,p_event_id:event.eventId,p_expected_version:0,
+    p_patch:{audio_voice:'m',typing_best:{[BEST_KEY]:bestRun(20,'2026-11-26T11:00:00Z')}}});
+  assert.equal(f.state.audio_muted,false);assert.equal(f.state.typing_best['ja|recall|words'].cpm,200);
+});
+test('F2E2d: invalid fields, replacement maps, typing keys, bounds and timestamps cannot form events',async()=>{
+  const f=preferenceFixture(),before=await f.read();
+  const badPatches=[{},[],{user_id:OWNER},{updated_at:AT},{audio_voice:'female'},{audio_muted:1},{typing_best:{}},
+    ...['my|copy|sentences','my|copy|words|all','my|copy|words| bad','my|copy|words|','my|copy|words|a|b','MY|copy|words','my|write|words'].map(k=>({typing_best:{[k]:bestRun(10)}})),
+    ...[{cpm:-1,last:0,at:AT},{cpm:100001,last:10,at:AT},{cpm:1.5,last:1,at:AT},{cpm:10,last:11,at:AT},
+      {cpm:10,last:1,at:'2026-02-30T10:00:00Z'},{cpm:10,last:1,at:'2026-01-01'},
+      {cpm:10,last:1,at:'2026-11-26T10:00:00.1234567Z'},{cpm:10,last:1,at:'9999-01-01T00:00:00Z'},
+      {...bestRun(10),owner:OWNER}].map(v=>({typing_best:{[BEST_KEY]:v}})),
+    {typing_best:Object.fromEntries(Array.from({length:51},(_,i)=>['my|copy|words|t'+i,bestRun(i)]))}];
+  for(const patch of badPatches)assert.throws(()=>f.store.make(f.target,before,patch),e=>e.code==='KG_PREF_INVALID');
+  assert.equal(f.storage.length,0);assert.equal(preferenceWrites(f).length,0);
+});
+test('F2E2d: microsecond and timezone comparisons preserve exact timestamp order',()=>{
+  assert.equal(PreferenceAPI.instant('2026-11-26T10:00:00.123456Z'),PreferenceAPI.instant('2026-11-26T19:00:00.123456+09:00'));
+  assert.equal(PreferenceAPI.instant('2026-11-26T10:00:00.123457Z')-PreferenceAPI.instant('2026-11-26T10:00:00.123456Z'),1n);
+  for(const value of ['2026-02-29T00:00:00Z','2026-11-26T24:00:00Z','2026-11-26T10:60:00Z','2026-11-26T10:00:00+16:00','0000-01-01T00:00:00Z'])
+    assert.throws(()=>PreferenceAPI.instant(value));
+});
+test('F2E2d: audio change waits for readback and never sends the untouched audio field',async()=>{
+  const f=preferenceFixture(),event=await f.make({audio_voice:'m'}),entered=deferred(),release=deferred();
+  f.faults.push({name:PREF_READ,before:async()=>{entered.resolve();await release.promise;}});
+  let settled=false;const task=f.save(event).then(r=>{settled=true;return r;});await entered.promise;
+  assert.equal(settled,false);assert.equal(f.store.list(OWNER).length,1);assert.equal(f.state.audio_voice,'m');
+  release.resolve();const result=await task;assert.equal(result.status,'saved');assert.equal(f.store.list(OWNER).length,0);
+  assert.deepEqual(preferenceWrites(f)[0].args.p_patch,{audio_voice:'m'});assert.equal(result.current.audio_muted,false);
+});
+test('F2E2d: a no-op accepted preference event still increments the account version',async()=>{
+  const f=preferenceFixture(),event=await f.make({audio_muted:false});
+  const result=await f.save(event);assert.equal(result.status,'saved');assert.equal(result.receipt.event_version,1);assert.equal(f.state.version,1);
+});
+test('F2E2d: duplicate saves join, account-wide competing changes remain separately recoverable',async()=>{
+  const f=preferenceFixture(),voice=await f.make({audio_voice:'m'}),typing=await f.make({typing_best:{[BEST_KEY]:bestRun(90)}});
+  const entered=deferred(),release=deferred();f.faults.push({name:PREF_PATCH,before:async()=>{entered.resolve();await release.promise;}});
+  const task=f.save(voice);assert.equal(task,f.save(copy(voice)));await entered.promise;
+  const held=await f.save(typing);assert.equal(held.status,'blocked');assert.equal(held.error.code,'KG_PREF_BUSY');
+  assert.equal(f.store.list(OWNER).length,2);release.resolve();assert.equal((await task).status,'saved');
+  const stale=await f.save(typing);assert.equal(stale.status,'conflict');assert.equal(f.store.list(OWNER).length,1);
+  assert.equal(preferenceWrites(f).length,2);assert.equal(preferenceWrites(f)[1].args.p_expected_version,0);
+});
+test('F2E2d: different learners do not share an in-flight preference lock',async()=>{
+  const f=preferenceFixture(),g=preferenceFixture({owner_id:OTHER});
+  const a=await f.make({audio_voice:'m'}),b=await g.make({audio_muted:true}),entered=deferred(),release=deferred();
+  f.faults.push({name:PREF_PATCH,before:async()=>{entered.resolve();await release.promise;}});
+  const task=f.save(a);await entered.promise;assert.equal((await g.save(b)).status,'saved');release.resolve();await task;
+});
+test('F2E2d: faster older runs and slower newer runs merge maximum and last independently',async()=>{
+  const f=preferenceFixture({typing_best:{[BEST_KEY]:bestRun(150,'2026-11-26T12:00:00Z')}});
+  const older=await f.make({typing_best:{[BEST_KEY]:bestRun(200,'2026-11-26T11:00:00Z')}});
+  assert.equal((await f.save(older)).status,'saved');
+  assert.deepEqual(f.state.typing_best[BEST_KEY],{cpm:200,last:150,at:'2026-11-26T12:00:00Z'});
+  const newer=await f.make({typing_best:{[BEST_KEY]:bestRun(80,'2026-11-26T13:00:00Z')}});
+  assert.equal((await f.save(newer)).status,'saved');
+  assert.deepEqual(f.state.typing_best[BEST_KEY],{cpm:200,last:80,at:'2026-11-26T13:00:00Z'});
+});
+test('F2E2d: equivalent timestamp conflicts hold while distinct microseconds retain the later run',async()=>{
+  const f=preferenceFixture({typing_best:{[BEST_KEY]:bestRun(90,'2026-11-26T10:00:00.123456Z')}});
+  const event=await f.make({typing_best:{[BEST_KEY]:bestRun(100,'2026-11-26T19:00:00.123456+09:00')}});
+  assert.equal((await f.save(event)).status,'conflict');assert.equal(f.state.version,0);assert.equal(f.store.list(OWNER).length,1);
+  const g=preferenceFixture({typing_best:{[BEST_KEY]:bestRun(90,'2026-11-26T10:00:00.123456Z')}});
+  const next=await g.make({typing_best:{[BEST_KEY]:bestRun(80,'2026-11-26T10:00:00.123457Z')}});
+  assert.equal((await g.save(next)).status,'saved');
+  assert.deepEqual(g.state.typing_best[BEST_KEY],{cpm:90,last:80,at:'2026-11-26T10:00:00.123457Z'});
+});
+test('F2E2d: failed and lost replies retain exact events across reopening without automatic replay',async()=>{
+  for(const fault of [{throwBefore:true},{throwAfter:true},{error:lost,commit:true}]){
+    const f=preferenceFixture(),event=await f.make({audio_muted:true});f.faults.push({name:PREF_PATCH,...fault});
+    const result=await f.save(event);assert.equal(result.status,'pending');assert.equal(result.current,undefined);
+    const reopened=PreferenceAPI.createStore({storage:f.storage,makeId:uuid,now:()=>AT}),saved=reopened.list(OWNER)[0];
+    assert.deepEqual(copy(saved),copy(event));await f.read();assert.equal(preferenceWrites(f).length,1);
+    f.options.store=reopened;const retried=await f.save(saved);assert.equal(retried.status,'saved');
+    assert.deepEqual(preferenceWrites(f)[0].args,preferenceWrites(f)[1].args);assert.equal(f.receipts.size,1);assert.equal(f.state.version,1);
+  }
+});
+test('F2E2d: replay of an older accepted event shows current state without restoring the old fields',async()=>{
+  const f=preferenceFixture(),event=await f.make({audio_voice:'m'});f.faults.push({name:PREF_PATCH,throwAfter:true});
+  await f.save(event);f.state={...f.state,version:2,audio_voice:'f',audio_muted:true};
+  const result=await f.save(event);assert.equal(result.status,'superseded');assert.equal(result.receipt.event_version,1);assert.equal(result.receipt.current_version,2);
+  assert.equal(result.current.audio_voice,'f');assert.equal(result.current.audio_muted,true);assert.equal(f.state.version,2);
+  assert.deepEqual(preferenceWrites(f)[0].args,preferenceWrites(f)[1].args);
+});
+test('F2E2d: stale baseline and changed revision stay held without rebasing or archive proof',async()=>{
+  const f=preferenceFixture(),event=await f.make({audio_voice:'m'});f.state={...f.state,version:1,audio_muted:true};
+  assert.equal((await f.save(event)).status,'conflict');assert.equal(event.expectedVersion,0);
+  f.live={ownerId:OWNER,policy:{state:'restricted',revision:18}};f.revision=18;
+  assert.equal((await f.save(event)).status,'blocked');assert.equal(preferenceWrites(f).length,1);
+  assert.throws(()=>f.store.archive(event,{...f.state,permission_revision:18}));assert.equal(f.store.list(OWNER).length,1);
+});
+test('F2E2d: malformed receipts cannot clear or confirm original events',async()=>{
+  for(const mutate of [d=>({...d,owner_id:OTHER}),d=>({...d,permission_revision:18}),d=>({...d,event_id:uuid()}),
+    d=>({...d,event_version:2}),d=>({...d,current_version:0}),d=>({...d,current_version:2}),d=>({...d,replayed:'true'}),()=>null]){
+    const f=preferenceFixture(),event=await f.make({audio_voice:'m'});f.faults.push({name:PREF_PATCH,data:mutate});
+    const result=await f.save(event);assert.equal(result.status,'pending');assert.equal(result.error.code,'KG_PREF_RECEIPT');
+    assert.equal(f.store.list(OWNER).length,1);assert.equal(f.calls.filter(c=>c.name===PREF_READ).length,1);
+  }
+});
+test('F2E2d: missing, regressed or mismatched readback retains the receipt event for exact retry',async()=>{
+  for(const fault of [{error:lost},{data:d=>({...d,version:0})},{data:d=>({...d,audio_voice:'f'})},
+    {data:d=>({...d,audio_muted:true})},{data:null},{destination:'device'}]){
+    const f=preferenceFixture(),event=await f.make({audio_voice:'m'});f.faults.push({name:PREF_READ,...fault});
+    const result=await f.save(event);assert.equal(result.status,'pending');assert.equal(result.current,undefined);assert.equal(f.store.list(OWNER).length,1);
+    assert.equal((await f.save(event)).status,'saved');assert.equal(f.state.version,1);
+  }
+});
+test('F2E2d: touched typing merge must match but newly visible unrelated projection keys are accepted',async()=>{
+  const f=preferenceFixture({typing_best:{[BEST_KEY]:bestRun(100)}});
+  const event=await f.make({typing_best:{[BEST_KEY]:bestRun(50,'2026-11-26T11:00:00Z')}});
+  f.faults.push({name:PREF_READ,data:d=>({...d,typing_best:{...d.typing_best,[BEST_KEY]:bestRun(50,'2026-11-26T11:00:00Z')}})});
+  assert.equal((await f.save(event)).error.code,'KG_PREF_READBACK');assert.equal(f.store.list(OWNER).length,1);
+  f.faults.push({name:PREF_READ,data:d=>({...d,typing_best:{...d.typing_best,'ja|copy|words':bestRun(70)}})});
+  assert.equal((await f.save(event)).status,'saved');assert.equal(f.state.version,1);
+  const g=preferenceFixture();const first=await g.read();g.state={...g.state,typing_best:{[BEST_KEY]:bestRun(10)}};
+  const second=await g.read();assert.equal(first.version,second.version);assert.equal(second.typing_best[BEST_KEY].cpm,10);
+});
+test('F2E2d: current readback newer than the acknowledgement is not event-specific success',async()=>{
+  const f=preferenceFixture(),event=await f.make({audio_muted:true});
+  f.faults.push({name:PREF_PATCH,after:()=>{f.state={...f.state,version:2,audio_muted:false};}});
+  const result=await f.save(event);assert.equal(result.status,'superseded');assert.equal(result.current.audio_muted,false);
+  assert.equal(result.receipt.event_version,1);assert.equal(f.store.list(OWNER).length,0);
+});
+test('F2E2d: blocked policy, offline facade and mismatched auth never send a preference mutation',async()=>{
+  for(const change of [f=>{f.options.offlineClient=true;},f=>{f.live.policy={state:'legacy'};},
+    f=>{f.live.policy={state:'unavailable'};},f=>{f.live.policy.revision=18;},f=>{f.live.ownerId=OTHER;},f=>{f.owner=OTHER;}]){
+    const f=preferenceFixture(),event=await f.make({audio_voice:'m'});change(f);
+    assert.equal((await f.save(event)).status,'blocked');assert.equal(preferenceWrites(f).length,0);assert.equal(f.store.list(OWNER).length,1);
+  }
+});
+test('F2E2d: scope changes while read, mutation or readback is pending discard stale replies',async()=>{
+  for(const stage of ['read','patch','readback'])for(const change of [f=>{f.owner=OTHER;},f=>{f.live.ownerId=OTHER;},f=>{f.live.policy.revision=18;},f=>{f.live=null;}]){
+    const f=preferenceFixture();
+    if(stage==='read'){
+      f.faults.push({name:PREF_READ,after:()=>change(f)});await assert.rejects(f.read());
+    }else{
+      const event=await f.make({audio_voice:'m'});f.faults.push({name:stage==='patch'?PREF_PATCH:PREF_READ,after:()=>change(f)});
+      const result=await f.save(event);assert.equal(result.status,'blocked');assert.equal(result.current,undefined);assert.equal(f.store.list(OWNER).length,1);
+    }
+  }
+});
+test('F2E2d: a device acknowledgement cannot masquerade as an account preference receipt',async()=>{
+  const f=preferenceFixture(),event=await f.make({audio_muted:true});f.faults.push({name:PREF_PATCH,destination:'device'});
+  const result=await f.save(event);assert.equal(result.status,'pending');assert.equal(result.error.code,'KG_PREF_DEVICE');assert.equal(f.store.list(OWNER).length,1);
+});
+test('F2E2d: durable identity is required, payload changes are rejected and failed clearing is retryable',async()=>{
+  const f=preferenceFixture(),before=await f.read(),event=f.store.make(f.target,before,{audio_voice:'m'});
+  assert.equal((await f.save(event)).status,'storage-error');assert.equal(preferenceWrites(f).length,0);
+  f.store.put(event);const changed=copy(event);changed.patch.audio_voice='f';assert.throws(()=>f.store.put(changed));
+  assert.equal((await f.save(changed)).status,'storage-error');assert.equal(preferenceWrites(f).length,0);
+  f.storage.failRemove=true;assert.equal((await f.save(event)).status,'storage-error');assert.equal(f.state.version,1);
+  f.storage.failRemove=false;assert.equal((await f.save(event)).status,'saved');assert.equal(f.state.version,1);
+});
+test('F2E2d: explicit archive requires newer same-scope proof and preserves original event before removal',async()=>{
+  const f=preferenceFixture(),event=await f.make({audio_voice:'m'}),before=await f.read();
+  assert.throws(()=>f.store.archive(event,before),e=>e.code==='KG_PREF_ARCHIVE_UNCERTAIN');
+  f.state={...f.state,version:1,audio_muted:true};const current=await f.read();
+  f.storage.failSet=true;assert.throws(()=>f.store.archive(event,current));assert.equal(f.store.list(OWNER).length,1);
+  f.storage.failSet=false;f.store.archive(event,current);assert.equal(f.store.list(OWNER).length,0);
+  const archive=JSON.parse(f.storage.getItem(PreferenceAPI.archivePrefix+OWNER+':'+event.eventId));
+  assert.deepEqual(archive.event,copy(event));assert.deepEqual(archive.observed,copy(current));assert.throws(()=>f.store.put(event));
+  assert.equal(preferenceWrites(f).length,0);
+});
+test('F2E2d: foreign recovery namespaces and old unversioned outbox records are preserved',async()=>{
+  const f=preferenceFixture(),event=await f.make({audio_voice:'m'});
+  const other={...copy(event),ownerId:OTHER,eventId:uuid()};f.store.put(other);
+  f.storage.setItem('kg_chart_audio_prefs','legacy audio bytes');f.storage.setItem('kg_chart_typing_best','legacy typing bytes');
+  f.storage.setItem('kg-offline-outbox','unversioned preferences');const retained=[...f.storage.entries].filter(([k])=>!k.startsWith(PreferenceAPI.storagePrefix+OWNER+':'));
+  assert.equal((await f.save(event)).status,'saved');assert.deepEqual([...f.storage.entries],retained);
+  assert.equal(f.store.list(OTHER).length,1);assert.equal(f.store.list(OWNER).length,0);
+});
+test('F2E2d: a device clock correction cannot hide or rewrite a durable preference event',async()=>{
+  const f=preferenceFixture({typing_best:{[BEST_KEY]:bestRun(120)}}),event=await f.make({typing_best:{[BEST_KEY]:bestRun(80,'2026-11-26T11:00:00Z')}});
+  // The VM clock belongs only to the isolated helper, not the test process.
+  vm.runInContext('globalThis.preferenceTestNow=Date.now;Date.now=()=>0;',context);
+  try{
+    const reopened=PreferenceAPI.createStore({storage:f.storage,makeId:uuid,now:()=>AT});
+    assert.deepEqual(copy(reopened.list(OWNER)),[copy(event)]);assert.deepEqual(copy(reopened.sameStored(event)),copy(event));
+    assert.equal(JSON.stringify(reopened.list(OWNER)[0]),JSON.stringify(event),'Export retains exact authored timestamps');
+    assert.throws(()=>reopened.make(f.target,f.state,{typing_best:{[BEST_KEY]:bestRun(80)}}),'A new intent still requires a valid current-time baseline');
+    f.options.store=reopened;f.faults.push({name:PREF_PATCH,error:{code:'22023'}});
+    const result=await f.save(event);assert.equal(result.status,'pending');assert.equal(preferenceWrites(f).length,1);
+    assert.deepEqual(preferenceWrites(f)[0].args.p_patch,copy(event.patch));assert.equal(reopened.list(OWNER).length,1);
+  }finally{vm.runInContext('Date.now=globalThis.preferenceTestNow;delete globalThis.preferenceTestNow;',context);}
+});
+test('F2E2d: malformed or mismatched archive proof cannot remove pending recovery',async()=>{
+  for(const corrupt of [a=>({event:a.event}),a=>({...a,observed:null}),a=>({...a,observed:{...a.observed,owner_id:OTHER}}),
+    a=>({...a,observed:{...a.observed,permission_revision:18}}),a=>({...a,observed:{...a.observed,version:0}}),
+    a=>({...a,archivedAt:'not a timestamp'}),a=>({...a,unexpected:true})]){
+    const f=preferenceFixture(),event=await f.make({audio_voice:'m'});f.state={...f.state,version:1};
+    const current=await f.read(),archive={event:copy(event),observed:copy(current),archivedAt:AT};
+    f.storage.setItem(PreferenceAPI.archivePrefix+OWNER+':'+event.eventId,JSON.stringify(corrupt(archive)));
+    assert.throws(()=>f.store.archive(event,current));assert.equal(f.store.list(OWNER).length,1);
+    assert.deepEqual(copy(f.store.sameStored(event)),copy(event));
+  }
+});
