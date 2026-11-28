@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
+import {webcrypto} from 'node:crypto';
 
 // Invented records only. The fake models atomic INSERT and persistent rows;
 // it never opens a socket or uses an application Supabase configuration.
-const context = {window: {}, console, setTimeout, clearTimeout};
+const context = {window: {crypto:webcrypto}, console, setTimeout, clearTimeout, TextEncoder};
 vm.createContext(context);
 vm.runInContext(await fs.readFile(new URL('../../js/kg-quiz-save.js', import.meta.url), 'utf8'), context);
 const API = context.KGQuizSave || context.window.KGQuizSave;
@@ -1800,4 +1801,323 @@ test('F2E2d: malformed or mismatched archive proof cannot remove pending recover
     assert.throws(()=>f.store.archive(event,current));assert.equal(f.store.list(OWNER).length,1);
     assert.deepEqual(copy(f.store.sameStored(event)),copy(event));
   }
+});
+
+// F2E2e: invented reports, atomic batch receipts and independent moderator
+// state. Native PostgreSQL CI remains authoritative for the candidate SQL contract.
+const FlagAPI=context.window.KGFlagSave,FLAG_RPC='kg_chart_f2_submit_flags';
+const flagRow=(kind='word',reason='pronunciation',extra={})=>({language_code:'my',
+  vocabulary_id:kind==='word'?uuid():null,sentence_id:kind==='sentence'?uuid():null,
+  colour_phrase_id:kind==='colour'?uuid():null,reason,notes:'Authored report',status:'open',
+  shown_devanagari:'क',suggestion:reason==='pronunciation'?'ख':null,...extra});
+const flagAuthored=r=>JSON.stringify(Object.fromEntries(Object.entries(r).filter(([k])=>k!=='status')));
+function flagFixture(){
+  const storage=memoryStorage(),store=FlagAPI.createStore({storage,makeId:uuid,now:()=>AT});
+  let owner=OWNER,revision=17,permitted=true,live={ownerId:OWNER,languageCode:'my',policy:{state:'restricted',revision:17}};
+  const calls=[],faults=[],rows=new Map(),receipts=new Map(),authFaults=[];
+  const client={auth:{async getSession(){
+      const fault=authFaults.shift();if(fault)await fault();
+      return {data:{session:owner?{user:{id:owner}}:null}};
+    }},from(){throw Error('Restricted flags must never fall back to raw inserts');},
+    async rpc(name,args){
+      assert.equal(name,FLAG_RPC);calls.push({name,args:copy(args)});
+      const ix=faults.findIndex(f=>!f.at||f.at===calls.length),fault=ix<0?null:faults.splice(ix,1)[0];
+      if(fault?.before)await fault.before();if(fault?.throwBefore)throw Error('Synthetic transport loss');
+      if(fault?.error&&!fault.commit)return {error:copy(fault.error)};
+      if(!permitted||!owner||args.p_owner_id!==owner)return {error:deny};
+      if(args.p_expected_revision!==revision)return {error:{code:'40001'}};
+      assert.ok(args.p_flags.length>=1&&args.p_flags.length<=10);
+      // Current authorization is checked before any historical acknowledgement.
+      for(const row of args.p_flags){
+        const previous=receipts.get(row.id),existing=rows.get(row.id);
+        if(previous){
+          if(previous.owner!==owner||previous.payload!==flagAuthored(row)||!existing||
+            previous.payload!==flagAuthored(existing.authored))return {error:{code:'23505'}};
+        }else if(existing)return {error:{code:'23505'}};
+      }
+      for(const row of args.p_flags)if(!receipts.has(row.id)){
+        rows.set(row.id,{authored:copy(row),reporter_id:owner,status:'open',resolved_at:null});
+        receipts.set(row.id,{owner,payload:flagAuthored(row)});
+      }
+      if(fault?.after)await fault.after();if(fault?.throwAfter)throw Error('Synthetic lost reply after commit');
+      if(fault?.error)return {error:copy(fault.error)};
+      let data={flag_ids:args.p_flags.map(r=>r.id).sort().reverse(),count:args.p_flags.length,expected_revision:revision};
+      if(fault&&Object.hasOwn(fault,'data'))data=typeof fault.data==='function'?fault.data(data):copy(fault.data);
+      return {data,...(fault?.destination?{saveDestination:fault.destination}:{})};
+    }};
+  const target={ownerId:OWNER,languageCode:'my',revision:17},options={client,store,getScope:()=>live};
+  return {storage,store,client,target,options,calls,faults,rows,receipts,authFaults,
+    get live(){return live;},set live(v){live=v;},set owner(v){owner=v;},set revision(v){revision=v;},set permitted(v){permitted=v;},
+    make:(input=[flagRow()])=>{const d=store.make(target,input);store.put(d);return d;},
+    save:d=>FlagAPI.save(options,d),
+    reopen:()=>FlagAPI.createStore({storage,makeId:uuid,now:()=>AT})};
+}
+const flagKey=(prefix,d)=>prefix+d.ownerId+':'+d.languageCode+':'+d.submissionId;
+const batchRows=d=>d.batches.map(ids=>ids.map(id=>d.flags.find(r=>r.id===id)));
+const jsonbText=v=>Array.isArray(v)?'['+v.map(jsonbText).join(', ')+']':v&&typeof v==='object'
+  ?'{'+Object.entries(v).map(([k,x])=>JSON.stringify(k)+': '+jsonbText(x)).join(', ')+'}':JSON.stringify(v);
+
+test('F2E2e: authored word, sentence and colour reports keep distinct IDs and exact fields',async()=>{
+  const f=flagFixture(),input=[flagRow(),flagRow('sentence'),flagRow('colour')],before=copy(input),d=f.make(input);
+  input[0].notes='later edit';assert.equal(d.flags[0].notes,before[0].notes);
+  assert.deepEqual(copy(d.flags.map(({id,...r})=>r)),before);assert.equal(new Set(d.flags.map(r=>r.id)).size,3);
+  const result=await f.save(d);assert.equal(result.status,'saved');assert.equal(result.confirmedCount,3);
+  assert.deepEqual(f.calls[0].args,{p_expected_revision:17,p_owner_id:OWNER,p_flags:copy(d.flags)});
+  assert.equal(f.store.list(OWNER,'my').length,0);assert.equal(f.rows.size,3);
+  assert.ok([...f.rows.values()].every(r=>r.status==='open'));
+  assert.ok([...f.storage.entries.values()].every(raw=>!raw.includes('Authored report')),'Completed recovery retains IDs/hash, not a second authored-text copy');
+});
+test('F2E2e: complete selections are persisted and partitioned before the first batch',async()=>{
+  const f=flagFixture(),d=f.make(Array.from({length:23},()=>flagRow())),progress=[];
+  assert.deepEqual(copy(d.batches.map(b=>b.length)),[10,10,3]);
+  f.faults.push({before:()=>{assert.deepEqual(copy(f.store.sameStored(d)),copy(d));assert.equal(f.store.list(OWNER,'my')[0].flags.length,23);}});
+  f.options.onProgress=p=>progress.push(copy(p));const result=await f.save(d);
+  assert.equal(result.status,'saved');assert.deepEqual(progress.map(p=>p.confirmedCount),[10,20,23]);
+  assert.deepEqual(f.calls.map(c=>c.args.p_flags),copy(batchRows(d)));assert.equal(f.rows.size,23);
+});
+test('F2E2e: stable partitions include UTF-8, JSONB separators and escaped-text size',()=>{
+  for(const fields of [{notes:'a'.repeat(16384),shown_devanagari:'क'.repeat(2730),suggestion:'b'.repeat(8192)},
+    {notes:'\u0001'.repeat(16384),shown_devanagari:'\u0001'.repeat(8192),suggestion:'\u0001'.repeat(8192)}]){
+    const f=flagFixture(),d=f.make(Array.from({length:15},()=>flagRow('word','pronunciation',fields)));
+    assert.ok(d.batches.length>2);
+    for(const batch of batchRows(d)){assert.ok(batch.length<=10);assert.ok(Buffer.byteLength(jsonbText(batch))<=262144);}
+    assert.deepEqual(copy(f.reopen().list(OWNER,'my')[0].batches),copy(d.batches));
+  }
+});
+test('F2E2e: invalid targets, reasons, injected fields and malformed text cannot become drafts',()=>{
+  const f=flagFixture(),row=flagRow(),bad=[{...row,id:uuid()},{...row,reporter_id:OWNER},{...row,created_at:AT},
+    {...row,language_code:'ja'},{...row,vocabulary_id:null},{...row,sentence_id:uuid()},{...row,vocabulary_id:'word-1'},
+    {...row,status:'resolved'},{...row,reason:'misc'},flagRow('sentence','missing_image'),flagRow('colour','missing_translation'),
+    flagRow('word','needs_review',{suggestion:'not a pronunciation'}),{...row,notes:3},{...row,notes:'a'.repeat(16385)},
+    {...row,shown_devanagari:'क'.repeat(2731)},{...row,suggestion:'😀'.repeat(2049)},
+    {...row,notes:'\u0000'},{...row,notes:'\ud800'},{...row,notes:'\udfff'}];
+  for(const r of bad)assert.throws(()=>f.store.make(f.target,[r]),e=>e.code==='KG_FLAG_INVALID');
+  for(const t of [{...f.target,ownerId:'anon'},{...f.target,revision:0},{...f.target,revision:'17'},
+    {...f.target,revision:Number.MAX_SAFE_INTEGER+1},{...f.target,languageCode:'MY'},{...f.target,languageCode:['my']}])
+    assert.throws(()=>f.store.make(t,[row]));
+  assert.throws(()=>f.store.make(f.target,[]));assert.equal(f.calls.length,0);assert.equal(f.storage.length,0);
+  assert.ok(f.store.make(f.target,[flagRow('word','missing_image',{notes:'😀'.repeat(4096)})]));
+});
+test('F2E2e: changed partitions, duplicate UUIDs and altered durable originals stay held',async()=>{
+  const f=flagFixture(),d=f.make(Array.from({length:12},()=>flagRow()));
+  for(const change of [x=>{x.batches.reverse();},x=>{x.batches[0].pop();},x=>{x.flags[1].id=x.flags[0].id;},
+    x=>{x.flags[0].owner_id=OWNER;},x=>{x.unexpected=true;},x=>{x.createdAt='bad';}]){
+    const bad=copy(d);change(bad);assert.equal((await f.save(bad)).status,'blocked');
+  }
+  const edited=copy(d);edited.flags[0].notes='changed content';assert.throws(()=>f.store.put(edited));
+  assert.equal((await f.save(edited)).status,'storage-error');assert.equal(f.calls.length,0);
+  assert.deepEqual(copy(f.store.sameStored(d)),copy(d));
+  const duplicates=FlagAPI.createStore({storage:memoryStorage(),makeId:()=>OWNER,now:()=>AT});
+  assert.throws(()=>duplicates.make(f.target,[flagRow(),flagRow()]));
+});
+test('F2E2e: an unavailable durable copy blocks all transmission',async()=>{
+  const f=flagFixture(),d=f.store.make(f.target,[flagRow()]);
+  f.storage.failSet=true;assert.throws(()=>f.store.put(d));
+  assert.equal((await f.save(d)).status,'storage-error');assert.equal(f.calls.length,0);
+  f.storage.failSet=false;f.store.put(d);assert.equal((await f.save(d)).status,'saved');
+});
+test('F2E2e: a lost first receipt retries the exact report IDs and authored text',async()=>{
+  const f=flagFixture(),d=f.make([flagRow('sentence')]);f.faults.push({throwAfter:true});
+  const first=await f.save(d);assert.equal(first.status,'pending');assert.equal(first.confirmedCount,0);
+  assert.equal(f.rows.size,1);assert.equal(f.store.list(OWNER,'my').length,1);
+  const reopened=f.reopen();f.options.store=reopened;const recovered=reopened.list(OWNER,'my')[0];
+  assert.equal((await f.save(recovered)).status,'saved');assert.deepEqual(f.calls[1].args,f.calls[0].args);assert.equal(f.rows.size,1);
+});
+test('F2E2e: partial multi-batch loss stops and reload retries only unresolved original batches',async()=>{
+  const f=flagFixture(),d=f.make(Array.from({length:23},()=>flagRow()));f.faults.push({at:2,throwAfter:true});
+  const first=await f.save(d);assert.equal(first.status,'pending');assert.equal(first.confirmedCount,10);
+  assert.equal(f.calls.length,2);assert.equal(f.rows.size,20);assert.equal(f.store.list(OWNER,'my')[0].flags.length,23);
+  const reopened=f.reopen();f.options.store=reopened;const retained=reopened.list(OWNER,'my')[0];
+  assert.deepEqual(copy(reopened.progress(retained)),{confirmedCount:10,total:23,acknowledgedBatches:[0]});
+  assert.equal((await f.save(retained)).status,'saved');assert.equal(f.calls.length,4);assert.equal(f.rows.size,23);
+  assert.deepEqual(f.calls[2].args,f.calls[1].args);assert.deepEqual(f.calls[3].args.p_flags,copy(batchRows(d)[2]));
+});
+test('F2E2e: checkpoint storage failure holds the whole selection and safely replays its committed batch',async()=>{
+  const f=flagFixture(),d=f.make(Array.from({length:12},()=>flagRow()));
+  f.faults.push({after:()=>{f.storage.failSet=true;}});
+  const first=await f.save(d);assert.equal(first.status,'storage-error');assert.equal(first.confirmedCount,0);
+  assert.equal(f.calls.length,1);assert.equal(f.rows.size,10);assert.deepEqual(copy(f.store.sameStored(d)),copy(d));
+  f.storage.failSet=false;assert.equal((await f.save(d)).status,'saved');assert.equal(f.rows.size,12);
+  assert.deepEqual(f.calls[1].args,f.calls[0].args);
+});
+test('F2E2e: receipt storage readback must match before any later batch is sent',async()=>{
+  for(const mode of ['drop','foreign']){
+    const f=flagFixture(),d=f.make(Array.from({length:12},()=>flagRow())),set=f.storage.setItem;
+    f.storage.setItem=(k,v)=>{if(k.startsWith(FlagAPI.receiptPrefix)){
+      if(mode==='drop')return;const value=JSON.parse(v);value.flag_ids[0]=OTHER;return set(k,JSON.stringify(value));
+    }return set(k,v);};
+    assert.equal((await f.save(d)).status,'storage-error');assert.equal(f.calls.length,1);
+    assert.deepEqual(copy(f.store.sameStored(d)),copy(d));
+  }
+});
+test('F2E2e: malformed or mismatched receipts never advance progress',async()=>{
+  const variants=[()=>null,()=>[],()=>({}),a=>({...a,flag_ids:a.flag_ids.slice(1)}),a=>({...a,flag_ids:[a.flag_ids[0],a.flag_ids[0]]}),
+    a=>({...a,flag_ids:[OTHER,...a.flag_ids.slice(1)]}),a=>({...a,count:'2'}),a=>({...a,count:1}),
+    a=>({...a,expected_revision:18}),a=>({...a,expected_revision:'17'}),a=>({...a,unexpected:true})];
+  for(const data of variants){const f=flagFixture(),d=f.make([flagRow(),flagRow()]);f.faults.push({data});
+    const r=await f.save(d);assert.equal(r.status,'pending');assert.equal(r.error.code,'KG_FLAG_RECEIPT');
+    assert.equal(r.confirmedCount,0);assert.equal(f.store.progress(d).confirmedCount,0);assert.equal(f.store.list(OWNER,'my').length,1);
+  }
+});
+test('F2E2e: denied, conflicting and transient replies retain original data without raw fallback',async()=>{
+  for(const [error,status] of [[{code:'42501'},'blocked'],[{code:'PGRST301'},'blocked'],[{status:403},'blocked'],
+    [{code:'40001'},'conflict'],[{code:'23505'},'conflict'],[{code:'22023'},'pending'],[{code:'PGRST204'},'pending']]){
+    const f=flagFixture(),d=f.make(Array.from({length:12},()=>flagRow()));f.faults.push({error});
+    assert.equal((await f.save(d)).status,status);assert.equal(f.calls.length,1);assert.equal(f.rows.size,0);
+    assert.deepEqual(copy(f.store.sameStored(d)),copy(d));
+  }
+});
+test('F2E2e: offline facade, unknown policy, owner, language and revision changes block sending',async()=>{
+  for(const mutate of [f=>{f.options.offlineClient=true;},f=>{f.owner=OTHER;},f=>{f.owner=null;},
+    f=>{f.live={...f.live,ownerId:OTHER};},f=>{f.live={...f.live,languageCode:'ja'};},
+    f=>{f.live={...f.live,policy:{state:'unknown'}};},f=>{f.live={...f.live,policy:{state:'legacy_unrestricted'}};},
+    f=>{f.live={...f.live,policy:{state:'restricted',revision:18}};}]){
+    const f=flagFixture(),d=f.make();mutate(f);assert.equal((await f.save(d)).status,'blocked');assert.equal(f.calls.length,0);
+    assert.equal(f.store.list(OWNER,'my').length,1);
+  }
+});
+test('F2E2e: late replies after owner or scope changes cannot checkpoint or continue',async()=>{
+  for(const mutate of [f=>{f.owner=OTHER;},f=>{f.live={...f.live,languageCode:'ja'};},
+    f=>{f.live={...f.live,policy:{state:'restricted',revision:18}};}]){
+    const f=flagFixture(),d=f.make(Array.from({length:12},()=>flagRow()));f.faults.push({after:()=>mutate(f)});
+    const result=await f.save(d);assert.equal(result.status,'blocked');assert.equal(result.confirmedCount,0);
+    assert.equal(f.calls.length,1);assert.equal(f.rows.size,10);assert.equal(f.store.progress(d).confirmedCount,0);
+    f.owner=OWNER;f.live={ownerId:OWNER,languageCode:'my',policy:{state:'restricted',revision:17}};
+    assert.equal((await f.save(d)).status,'saved');assert.equal(f.rows.size,12);
+    assert.deepEqual(f.calls[1].args,f.calls[0].args);
+  }
+});
+test('F2E2e: a generation fence catches away-and-back transitions during one request',async()=>{
+  const f=flagFixture(),d=f.make(Array.from({length:12},()=>flagRow()));let current=true;
+  f.options.getScope=()=>current?f.live:null;f.faults.push({after:()=>{current=false;}});
+  assert.equal((await f.save(d)).status,'blocked');assert.equal(f.calls.length,1);assert.equal(f.store.progress(d).confirmedCount,0);
+  current=true;assert.equal((await f.save(d)).status,'saved');assert.equal(f.rows.size,12);
+});
+test('F2E2e: authentication lookup failure before or after mutation retains exact recovery',async()=>{
+  for(const after of [false,true]){
+    const f=flagFixture(),d=f.make();const fail=()=>{throw Error('No session response');};
+    if(after)f.faults.push({after:()=>f.authFaults.push(fail)});else f.authFaults.push(fail);
+    assert.equal((await f.save(d)).status,'blocked');assert.equal(f.calls.length,after?1:0);
+    assert.equal(f.store.list(OWNER,'my').length,1);assert.equal(f.store.progress(d).confirmedCount,0);
+  }
+});
+test('F2E2e: a device queue acknowledgement cannot become a report receipt',async()=>{
+  const f=flagFixture(),d=f.make();f.faults.push({destination:'device'});const result=await f.save(d);
+  assert.equal(result.status,'pending');assert.equal(result.error.code,'KG_FLAG_DEVICE');assert.equal(result.confirmedCount,0);
+  assert.equal(f.store.list(OWNER,'my').length,1);assert.equal((await f.save(d)).status,'saved');assert.equal(f.rows.size,1);
+});
+test('F2E2e: current authorization and original revision are rechecked before replay',async()=>{
+  for(const revoked of [true,false]){
+    const f=flagFixture(),d=f.make();f.faults.push({throwAfter:true});await f.save(d);
+    if(revoked)f.permitted=false;else f.revision=18;
+    const r=await f.save(d);assert.equal(r.status,revoked?'blocked':'conflict');assert.equal(r.confirmedCount,0);
+    assert.equal(f.rows.size,1);assert.equal(f.calls[1].args.p_expected_revision,17);
+    assert.deepEqual(copy(f.store.sameStored(d)),copy(d));
+  }
+});
+test('F2E2e: exact replay of moderated reports preserves resolution and only confirms submission',async()=>{
+  for(const status of ['resolved','dismissed']){
+    const f=flagFixture(),d=f.make();f.faults.push({throwAfter:true});await f.save(d);
+    const row=f.rows.get(d.flags[0].id);row.status=status;row.resolved_at=AT;
+    const result=await f.save(d);assert.equal(result.status,'saved');assert.equal(row.status,status);assert.equal(row.resolved_at,AT);
+    assert.equal(Object.hasOwn(result,'moderationStatus'),false);assert.equal(f.rows.size,1);
+  }
+});
+test('F2E2e: deleted, authored-edited and historical unreceipted reports remain conflicts',async()=>{
+  for(const change of [(f,d)=>f.rows.delete(d.flags[0].id),(f,d)=>{f.rows.get(d.flags[0].id).authored.notes='moderator authored edit';},
+    (f,d)=>f.receipts.delete(d.flags[0].id)]){
+    const f=flagFixture(),d=f.make();f.faults.push({throwAfter:true});await f.save(d);change(f,d);
+    assert.equal((await f.save(d)).status,'conflict');assert.equal(f.store.list(OWNER,'my').length,1);
+    assert.deepEqual(f.calls[1].args,f.calls[0].args);
+  }
+});
+test('F2E2e: a deliberately new report on the same target is not deduplicated by content',async()=>{
+  const f=flagFixture(),input=[flagRow()],a=f.make(input);assert.equal((await f.save(a)).status,'saved');
+  const b=f.make(input);assert.notEqual(a.flags[0].id,b.flags[0].id);assert.notEqual(a.submissionId,b.submissionId);
+  assert.equal((await f.save(b)).status,'saved');assert.equal(f.rows.size,2);
+});
+test('F2E2e: double submission shares one immutable request and cannot replace its text',async()=>{
+  const f=flagFixture(),d=f.make(),entered=deferred(),release=deferred();
+  f.faults.push({before:async()=>{entered.resolve();await release.promise;}});
+  const first=f.save(d),second=f.save(copy(d));assert.equal(first,second);await entered.promise;
+  const changed=copy(d);changed.flags[0].notes='different report';assert.equal((await f.save(changed)).status,'blocked');
+  d.flags[0].notes='external mutation after save';release.resolve();assert.equal((await first).status,'saved');
+  assert.equal(f.calls.length,1);assert.equal(f.calls[0].args.p_flags[0].notes,'Authored report');
+});
+test('F2E2e: separate receipt keys preserve other tabs acknowledgement progress',async()=>{
+  const f=flagFixture(),d=f.make(Array.from({length:23},()=>flagRow())),other=f.reopen();
+  for(const [store,i] of [[f.store,0],[other,1],[f.store,0]])store.checkpoint(d,i,{flag_ids:[...d.batches[i]].reverse(),count:d.batches[i].length,expected_revision:17});
+  assert.deepEqual(copy(other.progress(d)),{confirmedCount:20,total:23,acknowledgedBatches:[0,1]});
+  f.options.store=other;assert.equal((await f.save(d)).status,'saved');assert.equal(f.calls.length,1);
+  assert.deepEqual(f.calls[0].args.p_flags,copy(batchRows(d)[2]));
+});
+test('F2E2e: a failed final marker write retains confirmed progress and retries without resending',async()=>{
+  const f=flagFixture(),d=f.make(),set=f.storage.setItem;
+  f.storage.setItem=(k,v)=>{if(k.startsWith(FlagAPI.completePrefix))throw Error('No marker space');return set(k,v);};
+  let r=await f.save(d);assert.equal(r.status,'storage-error');assert.equal(r.confirmedCount,1);
+  assert.equal(f.store.list(OWNER,'my').length,1);assert.equal(f.calls.length,1);
+  f.storage.setItem=set;r=await f.save(d);assert.equal(r.status,'saved');assert.equal(f.calls.length,1);
+});
+test('F2E2e: a malformed final marker cannot erase the durable original',async()=>{
+  for(const corrupt of [()=>null,v=>({...v,payloadHash:'0'.repeat(64)}),v=>({...v,revision:18}),v=>({...v,ownerId:OTHER}),v=>({...v,unexpected:true})]){
+    const f=flagFixture(),d=f.make(),set=f.storage.setItem;
+    f.storage.setItem=(k,v)=>set(k,k.startsWith(FlagAPI.completePrefix)?JSON.stringify(corrupt(JSON.parse(v))):v);
+    assert.equal((await f.save(d)).status,'storage-error');assert.equal(f.store.list(OWNER,'my').length,1);
+    assert.deepEqual(copy(f.store.sameStored(d)),copy(d));assert.equal(f.calls.length,1);
+  }
+});
+test('F2E2e: pending cleanup failure cannot become success; exact completed retry needs no new RPC',async()=>{
+  const f=flagFixture(),d=f.make();f.storage.failRemove=true;
+  const first=await f.save(d);assert.equal(first.status,'storage-error');assert.equal(first.confirmedCount,1);
+  assert.equal(f.store.list(OWNER,'my').length,1);assert.ok(f.storage.getItem(flagKey(FlagAPI.completePrefix,d)));
+  f.storage.failRemove=false;assert.equal((await f.save(d)).status,'saved');assert.equal(f.calls.length,1);
+  assert.equal(f.store.list(OWNER,'my').length,0);
+});
+test('F2E2e: stale completed memory verifies exact content and current owner before dismissal',async()=>{
+  const f=flagFixture(),d=f.make();assert.equal((await f.save(d)).status,'saved');const after=[...f.storage.entries];
+  f.store.put(d);assert.equal(f.store.list(OWNER,'my').length,0);assert.equal((await f.save(d)).status,'saved');
+  assert.equal(f.calls.length,1);assert.deepEqual([...f.storage.entries],after);
+  const changed=copy(d);changed.flags[0].notes='modified after completion';f.store.put(changed);
+  assert.equal((await f.save(changed)).status,'storage-error');assert.equal(f.calls.length,1);
+  f.owner=OTHER;assert.equal((await f.save(d)).status,'blocked');assert.deepEqual([...f.storage.entries],after);
+});
+test('F2E2e: preexisting malformed receipt data is held without overwriting or uploading',async()=>{
+  const f=flagFixture(),d=f.make(),k=flagKey(FlagAPI.receiptPrefix,d)+':0';
+  f.storage.setItem(k,JSON.stringify({flag_ids:[OTHER],count:1,expected_revision:17}));
+  const original=[...f.storage.entries];assert.equal((await f.save(d)).status,'storage-error');
+  assert.equal(f.calls.length,0);assert.deepEqual([...f.storage.entries],original);
+});
+test('F2E2e: UI callback exceptions cannot duplicate acknowledged work, and a closed scope stops later batches',async()=>{
+  const f=flagFixture(),d=f.make(Array.from({length:12},()=>flagRow()));
+  f.options.onProgress=()=>{throw Error('Rendering callback failed');};assert.equal((await f.save(d)).status,'saved');assert.equal(f.rows.size,12);
+  const g=flagFixture(),held=g.make(Array.from({length:12},()=>flagRow()));let current=true;
+  g.options.getScope=()=>current?g.live:null;g.options.onProgress=()=>{current=false;};
+  const result=await g.save(held);assert.equal(result.status,'blocked');assert.equal(result.confirmedCount,10);
+  assert.equal(g.calls.length,1);assert.equal(g.store.progress(held).confirmedCount,10);
+});
+test('F2E2e: old outbox records and other owners or languages remain byte-for-byte unchanged',async()=>{
+  const f=flagFixture(),d=f.make(),other=f.store.make({...f.target,ownerId:OTHER},[flagRow()]),
+    japanese=f.store.make({...f.target,languageCode:'ja'},[flagRow('word','needs_review',{language_code:'ja'})]);
+  f.store.put(other);f.store.put(japanese);f.storage.setItem('kg-offline-outbox','unversioned reports');
+  f.storage.setItem('kg_chart_flag_drafts','legacy flags');const before=[...f.storage.entries].filter(([k])=>k!==flagKey(FlagAPI.storagePrefix,d));
+  assert.equal((await f.save(d)).status,'saved');for(const [k,v] of before)assert.equal(f.storage.getItem(k),v);
+  assert.equal(f.store.list(OTHER,'my').length,1);assert.equal(f.store.list(OWNER,'ja').length,1);
+});
+test('F2E2e: clock changes cannot hide or rewrite a retained selection',async()=>{
+  const f=flagFixture(),d=f.make();vm.runInContext('globalThis.flagTestNow=Date.now;Date.now=()=>0;',context);
+  try{assert.deepEqual(copy(f.reopen().list(OWNER,'my')),[copy(d)]);assert.equal((await f.save(d)).status,'saved');}
+  finally{vm.runInContext('Date.now=globalThis.flagTestNow;delete globalThis.flagTestNow;',context);}
+});
+test('F2E2e: a losing cross-tab checkpoint is recoverable through exact completed proof without resending',async()=>{
+  const f=flagFixture(),d=f.make(Array.from({length:12},()=>flagRow())),other=f.reopen();
+  const digest=await webcrypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(d)));
+  const hash=Buffer.from(digest).toString('hex');
+  f.faults.push({at:2,after:()=>{
+    other.checkpoint(d,1,{flag_ids:[...d.batches[1]],count:d.batches[1].length,expected_revision:17});
+    other.finish(d,hash);
+  }});
+  const first=await f.save(d);assert.equal(first.status,'storage-error');assert.equal(first.confirmedCount,10);
+  assert.equal(f.store.list(OWNER,'my').length,0);assert.equal(f.rows.size,12);
+  f.store.put(d);assert.equal(f.store.list(OWNER,'my').length,0);
+  assert.equal((await f.save(d)).status,'saved');assert.equal(f.calls.length,2);assert.equal(f.rows.size,12);
 });

@@ -1195,3 +1195,219 @@
   root.KGPreferenceSave={createStore,parseState,read,save,validate,typingKey,instant,
     storagePrefix:PREFIX,archivePrefix:ARCHIVE};
 })(typeof window !== 'undefined' ? window : globalThis);
+
+// F2E2e: immutable authored flag selections and separate batch receipts.
+// These records never adopt legacy queued flags, invent replacement IDs or
+// imply that an accepted report still has a particular moderation status.
+(function(root){
+  'use strict';
+  const PREFIX='kg-chart-flag-recovery-v1:',ACK='kg-chart-flag-receipt-v1:',DONE='kg-chart-flag-complete-v1:';
+  const BATCH_LIMIT=10,BYTE_LIMIT=262144;
+  const cp=x=>JSON.parse(JSON.stringify(x));
+  const obj=x=>!!x&&typeof x==='object'&&!Array.isArray(x);
+  const own=(x,k)=>Object.prototype.hasOwnProperty.call(x,k);
+  const exact=(x,keys)=>obj(x)&&Object.keys(x).length===keys.length&&keys.every(k=>own(x,k));
+  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  const uuid=x=>typeof x==='string'&&/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(x);
+  const lang=x=>typeof x==='string'&&/^[a-z]{2,3}$/.test(x);
+  const target=x=>obj(x)&&uuid(x.ownerId)&&lang(x.languageCode)&&
+    Number.isSafeInteger(x.revision)&&x.revision>0;
+  const err=(message,code,status='pending')=>Object.assign(Error(message),{code,status});
+  const invalid=()=>err('Invalid flag recovery data. The original data is retained.','KG_FLAG_INVALID','blocked');
+  const storageError=()=>err('The original flag selection or its confirmation could not be stored. Keep it and retry exactly.','KG_FLAG_STORAGE','storage-error');
+  const detail=e=>({code:e?.code||'KG_FLAG_FAILED',message:e?.message||'The reports were not fully confirmed.'});
+  function bytes(s){let n=0;for(const c of s){const p=c.codePointAt(0);n+=p<=127?1:p<=2047?2:p<=65535?3:4;}return n;}
+  // JSONB emits a space after each comma and colon. Include that overhead,
+  // string escaping and UTF-8 bytes when fixing the original partitions.
+  const wireJson=x=>Array.isArray(x)?'['+x.map(wireJson).join(', ')+']':obj(x)
+    ?'{'+Object.entries(x).map(([k,v])=>JSON.stringify(k)+': '+wireJson(v)).join(', ')+'}':JSON.stringify(x);
+  const textValid=(s,max)=>s===null||(typeof s==='string'&&bytes(s)<=max&&
+    [...s].every(c=>{const p=c.codePointAt(0);return p!==0&&(p<0xd800||p>0xdfff);}));
+  const FIELDS=['id','language_code','vocabulary_id','sentence_id','colour_phrase_id','reason','notes','status','shown_devanagari','suggestion'];
+  function rowValid(r,languageCode){
+    return exact(r,FIELDS)&&uuid(r.id)&&r.language_code===languageCode&&r.status==='open'&&
+      [r.vocabulary_id,r.sentence_id,r.colour_phrase_id].every(x=>x===null||uuid(x))&&
+      [r.vocabulary_id,r.sentence_id,r.colour_phrase_id].filter(x=>x!==null).length===1&&
+      ['pronunciation','wrong_word','missing_image','missing_translation','needs_review'].includes(r.reason)&&
+      !(r.sentence_id&&r.reason==='missing_image')&&!(r.colour_phrase_id&&r.reason==='missing_translation')&&
+      (r.reason==='pronunciation'||r.suggestion===null)&&textValid(r.notes,16384)&&
+      textValid(r.shown_devanagari,8192)&&textValid(r.suggestion,8192);
+  }
+  function partition(flags){
+    const batches=[];let batch=[];
+    for(const row of flags){
+      if(batch.length&&(batch.length===BATCH_LIMIT||bytes(wireJson([...batch,row]))>BYTE_LIMIT)){
+        batches.push(batch.map(r=>r.id));batch=[];
+      }
+      if(bytes(wireJson([row]))>BYTE_LIMIT)throw invalid();
+      batch.push(row);
+    }
+    if(batch.length)batches.push(batch.map(r=>r.id));
+    return batches;
+  }
+  function validate(d){
+    if(!exact(d,['contract','ownerId','languageCode','revision','submissionId','flags','batches','createdAt'])||
+      d.contract!==1||!target(d)||!uuid(d.submissionId)||!Array.isArray(d.flags)||!d.flags.length||
+      !d.flags.every(r=>rowValid(r,d.languageCode))||new Set(d.flags.map(r=>r.id)).size!==d.flags.length||
+      typeof d.createdAt!=='string'||!Number.isFinite(Date.parse(d.createdAt))||!same(d.batches,partition(d.flags)))throw invalid();
+    return d;
+  }
+  const suffix=d=>d.ownerId+':'+d.languageCode+':'+d.submissionId;
+  const key=d=>PREFIX+suffix(d),ackKey=(d,i)=>ACK+suffix(d)+':'+i,doneKey=d=>DONE+suffix(d);
+  function receipt(value,d,i){
+    const ids=d.batches[i];
+    if(!ids||!exact(value,['flag_ids','count','expected_revision'])||value.count!==ids.length||
+      value.expected_revision!==d.revision||!Array.isArray(value.flag_ids)||value.flag_ids.length!==ids.length||
+      value.flag_ids.some(id=>!uuid(id))||new Set(value.flag_ids).size!==ids.length||
+      !same([...value.flag_ids].sort(),[...ids].sort()))
+      throw err('The server did not confirm exactly this original batch of reports.','KG_FLAG_RECEIPT');
+    return {flag_ids:[...value.flag_ids].sort(),count:ids.length,expected_revision:d.revision};
+  }
+  async function fingerprint(d){
+    // A compact completed marker must bind the authored text as well as IDs.
+    // The browser's SHA-256 avoids retaining a second completed copy of notes.
+    if(!root.crypto?.subtle)throw storageError();
+    const data=new TextEncoder().encode(JSON.stringify(d));
+    const digest=await root.crypto.subtle.digest('SHA-256',data);
+    return Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
+  }
+  function createStore({storage,makeId=()=>root.crypto.randomUUID(),now=()=>new Date().toISOString()}={}){
+    const disk=storage||root.localStorage;
+    const load=k=>{
+      const raw=disk.getItem(k);if(raw===null)return null;
+      const d=validate(JSON.parse(raw));if(key(d)!==k)throw invalid();return d;
+    };
+    const sameStored=d=>{validate(d);const old=load(key(d));if(!old||!same(old,d))throw storageError();return cp(old);};
+    const progress=d=>{
+      validate(d);const acknowledgedBatches=[];let confirmedCount=0;
+      d.batches.forEach((ids,i)=>{const raw=disk.getItem(ackKey(d,i));if(raw!==null){
+        const ack=receipt(JSON.parse(raw),d,i);acknowledgedBatches.push(i);confirmedCount+=ack.count;
+      }});
+      return {confirmedCount,total:d.flags.length,acknowledgedBatches};
+    };
+    const marker=(d,hash)=>({contract:1,ownerId:d.ownerId,languageCode:d.languageCode,
+      revision:d.revision,submissionId:d.submissionId,payloadHash:hash});
+    const completed=(d,hash)=>{
+      const raw=disk.getItem(doneKey(d));if(raw===null)return false;
+      if(!/^[0-9a-f]{64}$/.test(hash)||!same(JSON.parse(raw),marker(d,hash)))throw storageError();
+      return true;
+    };
+    return {
+      make(t,rows){
+        if(!target(t)||!Array.isArray(rows)||!rows.length)throw invalid();
+        const flags=rows.map(r=>{
+          if(!obj(r)||Object.keys(r).some(k=>k==='id'||!FIELDS.includes(k)))throw invalid();
+          return {id:makeId(),language_code:r.language_code??t.languageCode,
+            vocabulary_id:r.vocabulary_id??null,sentence_id:r.sentence_id??null,colour_phrase_id:r.colour_phrase_id??null,
+            reason:r.reason,notes:r.notes??null,status:r.status??'open',shown_devanagari:r.shown_devanagari??null,suggestion:r.suggestion??null};
+        });
+        return cp(validate({contract:1,ownerId:t.ownerId,languageCode:t.languageCode,revision:t.revision,
+          submissionId:makeId(),flags,batches:partition(flags),createdAt:now()}));
+      },
+      put(d){
+        validate(d);const old=load(key(d));if(old){if(!same(old,d))throw invalid();return cp(d);}
+        // save() must verify the exact completed hash before presenting success.
+        // A stale in-memory copy may not recreate pending work behind that proof.
+        if(disk.getItem(doneKey(d))!==null)return cp(d);
+        if(progress(d).confirmedCount)throw storageError();
+        disk.setItem(key(d),JSON.stringify(d));sameStored(d);return cp(d);
+      },
+      list(ownerId,languageCode){
+        if(!uuid(ownerId)||!lang(languageCode))return [];
+        const out=[],prefix=PREFIX+ownerId+':'+languageCode+':';
+        for(let i=0;i<disk.length;i++){const k=disk.key(i);if(typeof k==='string'&&k.startsWith(prefix)){
+          const d=load(k);if(!d||d.ownerId!==ownerId||d.languageCode!==languageCode)throw invalid();out.push(d);
+        }}
+        return out.sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.submissionId.localeCompare(b.submissionId));
+      },
+      sameStored,progress,completed,
+      checkpoint(d,i,value){
+        sameStored(d);const ack=receipt(value,d,i),k=ackKey(d,i),old=disk.getItem(k);
+        if(old===null)disk.setItem(k,JSON.stringify(ack));
+        if(!same(receipt(JSON.parse(disk.getItem(k)),d,i),ack))throw storageError();
+        sameStored(d);return progress(d);
+      },
+      finish(d,hash){
+        const already=completed(d,hash),old=load(key(d));
+        if(!already){
+          sameStored(d);if(progress(d).confirmedCount!==d.flags.length)throw storageError();
+          disk.setItem(doneKey(d),JSON.stringify(marker(d,hash)));
+          if(!completed(d,hash))throw storageError();
+        }
+        if(old){sameStored(d);disk.removeItem(key(d));if(disk.getItem(key(d))!==null)throw storageError();}
+        // Keep compact ID receipts and the hash marker for exact cross-tab or
+        // stale-memory reconciliation. They contain no authored report text.
+      },
+    };
+  }
+  function checkScope(o,d){
+    const live=o.getScope?.();
+    if(!target(d)||live?.ownerId!==d.ownerId||live.languageCode!==d.languageCode||
+      live.policy?.state!=='restricted'||live.policy.revision!==d.revision)
+      throw err('Account, language or permission revision changed. The original reports are retained.','KG_FLAG_SCOPE','blocked');
+    if(o.offlineClient)throw err('Restricted reports require the online server. The original selection is retained.','KG_FLAG_OFFLINE','blocked');
+  }
+  async function owner(o,d){
+    checkScope(o,d);let auth;
+    try{auth=await o.client.auth.getSession();}catch(_){throw err('The report owner could not be verified.','KG_FLAG_AUTH','blocked');}
+    checkScope(o,d);
+    if(auth?.error||auth?.data?.session?.user?.id!==d.ownerId)
+      throw err('The signed-in account no longer matches the original report owner.','KG_FLAG_OWNER','blocked');
+  }
+  const rpcError=e=>['40001','23505'].includes(e?.code)
+    ?err('The original report IDs or permission revision conflict. They are retained for review.',e.code,'conflict')
+    :['42501','PGRST301','PGRST302'].includes(e?.code)||[401,403].includes(e?.status)
+      ?err('These reports are not currently permitted. Their original IDs and scope are retained.','KG_FLAG_DENIED','blocked')
+      :err('This batch was not confirmed. Retry the original reports.',e?.code||'KG_FLAG_RPC');
+  async function perform(o,d){
+    let confirmedCount=0;
+    const result=(status,error)=>({status,draft:cp(d),confirmedCount,total:d.flags.length,...(error?{error:detail(error)}:{})});
+    try{
+      validate(d);checkScope(o,d);
+      let hash,done;
+      try{hash=await fingerprint(d);done=o.store.completed(d,hash);
+        if(!done)o.store.sameStored(d);
+        confirmedCount=done?d.flags.length:o.store.progress(d).confirmedCount;
+      }catch(_){throw storageError();}
+      await owner(o,d);
+      if(!done){
+        const byId=new Map(d.flags.map(r=>[r.id,r]));
+        for(let i=0;i<d.batches.length;i++){
+          checkScope(o,d);
+          let progress;
+          try{o.store.sameStored(d);progress=o.store.progress(d);confirmedCount=progress.confirmedCount;}
+          catch(_){throw storageError();}
+          if(progress.acknowledgedBatches.includes(i))continue;
+          await owner(o,d);let reply,thrown;
+          try{reply=await o.client.rpc('kg_chart_f2_submit_flags',{p_expected_revision:d.revision,
+            p_owner_id:d.ownerId,p_flags:d.batches[i].map(id=>cp(byId.get(id)))});}catch(error){thrown=error;}
+          await owner(o,d);
+          if(thrown)throw rpcError(thrown);if(reply?.error)throw rpcError(reply.error);
+          if(reply?.saveDestination==='device')throw err('A device queue cannot confirm report submission.','KG_FLAG_DEVICE');
+          const ack=receipt(reply?.data,d,i);
+          try{progress=o.store.checkpoint(d,i,ack);confirmedCount=progress.confirmedCount;}catch(_){throw storageError();}
+          // A rendering callback may not turn a durable acknowledgement into
+          // a new report. A changed generation is checked before the next call.
+          try{o.onProgress?.(cp(progress));}catch(_){}
+        }
+      }
+      checkScope(o,d);
+      try{o.store.finish(d,hash);}catch(_){throw storageError();}
+      confirmedCount=d.flags.length;return result('saved');
+    }catch(error){return result(error?.status||'pending',error);}
+  }
+  const inFlight=new Map();
+  function save(o,d){
+    try{validate(d);}catch(error){return Promise.resolve({status:'blocked',error:detail(error)});}
+    const k=key(d),prior=inFlight.get(k);
+    if(prior){
+      if(prior.client===o.client&&same(prior.draft,d))return prior.task;
+      return Promise.resolve({status:'blocked',draft:cp(d),confirmedCount:0,total:d.flags.length,
+        error:detail(err('This original flag selection is already being submitted.','KG_FLAG_BUSY'))});
+    }
+    const original=cp(d),task=perform(o,original).finally(()=>{if(inFlight.get(k)?.task===task)inFlight.delete(k);});
+    inFlight.set(k,{client:o.client,draft:original,task});return task;
+  }
+  root.KGFlagSave={createStore,save,validate,storagePrefix:PREFIX,receiptPrefix:ACK,completePrefix:DONE,
+    batchLimit:BATCH_LIMIT,byteLimit:BYTE_LIMIT};
+})(typeof window !== 'undefined' ? window : globalThis);
