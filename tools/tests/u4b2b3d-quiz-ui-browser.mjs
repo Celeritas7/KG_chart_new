@@ -588,10 +588,91 @@ function installFakeClient() {
       return chain;
     },
   };
+  // Only the whole-App R1 route uses these controlled auth/session boundaries.
+  // Earlier component fixtures retain their original injected test contexts.
+  if (new URLSearchParams(location.search).get('kind') === 'auth') {
+    const other = '11000000-0000-4000-8000-000000000002';
+    const holds = [...(initial?.authHolds || [])], requests = [], waiting = new Map();
+    const callbacks = new Set();
+    let serial = 0, signouts = 0;
+    const session = id => id ? {user:{id,email:id === owner ? 'a@example.invalid' : 'b@example.invalid'}} : null;
+    const event = (id, type = id ? 'SIGNED_IN' : 'SIGNED_OUT') => {
+      state.owner = id;
+      persist();
+      for (const cb of [...callbacks]) cb(type, session(id));
+    };
+    const request = async (kind, result) => {
+      const id = ++serial, hold = holds.indexOf(kind);
+      const row = {id,kind,owner:state.owner,held:hold >= 0,released:false};
+      requests.push(row);
+      if (hold < 0) return result;
+      holds.splice(hold,1);
+      return new Promise(resolve => waiting.set(id, override => {
+        row.released = true;
+        resolve(override === undefined ? result : override);
+      }));
+    };
+    window.__kgAuth = {
+      a:owner,b:other, emit:event, silent:id=>{state.owner=id;persist();},
+      hold:kind=>holds.push(kind),
+      requests:()=>copy(requests), signouts:()=>signouts,
+      subscribers:()=>callbacks.size,
+      release:(id,override)=>{const fn=waiting.get(id);assertFixture(fn,'Expected held auth request '+id);waiting.delete(id);fn(override);},
+      seed:()=>{
+        const rating = window.KGRatingSave.createStore().make(
+          {ownerId:owner,languageCode:'my',vocabularyId:words[0].id,revision:17},
+          {version:0,state:null,permission_revision:17},4);
+        window.KGRatingSave.createStore().put(rating);
+        const completion={contract:1,ownerId:owner,languageCode:'my',revision:17,
+          eventId:crypto.randomUUID(),topicId:'food',expectedVersion:0,resetAt:null,evidenceAt:state.pathEligible};
+        window.KGCompletionSave.createStore().put(completion);
+        return {rating,completion};
+      },
+      pending:()=>({
+        rating:window.KGRatingSave.createStore().list(owner,'my'),
+        completion:window.KGCompletionSave.createStore().list(owner,'my')
+      }),
+    };
+    const original = window.__fakeClient;
+    state.tables.kg_chart_languages = [{code:'my',name_english:'Burmese',is_active:true,sort_order:1}];
+    state.tables.kg_chart_topics = [{id:'food',sort_order:1,title_english:'Food',
+      translations:[{language_code:'my',title_native:'Food',question_native:'Which?',question_english:'Which?'}]}];
+    state.tables.kg_chart_vocabulary = words.map(w=>({...w,translations:[{language_code:'my',...w.translation}]}));
+    for (const table of ['kg_chart_settings','kg_chart_topic_unlocks','kg_chart_progress_resets','kg_chart_topic_completions']) state.tables[table]=[];
+    window.__fakeClient = {...original,
+      auth:{
+        getSession:()=>request('session',{data:{session:session(state.owner)},error:null}),
+        onAuthStateChange:cb=>{callbacks.add(cb);return {data:{subscription:{unsubscribe:()=>callbacks.delete(cb)}}};},
+        signOut:async()=>{++signouts;event(null);return {error:null};},
+      },
+      async rpc(name,args) {
+        if(name==='kg_chart_is_allowed') return request('approval',{data:true,error:null});
+        if(name==='kg_chart_u3_my_access_snapshot') return request('access',{data:{
+          contract:1,mode:'restricted',revision:17,server_enforced:true,languages:['my'],
+          topics:[{language_code:'my',topic_id:'food'}],
+          features:state.owner===owner?['chart','quiz.words']:['chart'],
+        },error:null});
+        if(name==='kg_chart_my_private_lesson_visibility')return {data:{contract:1,topics:[],groups:[]},error:null};
+        if(name==='kg_chart_u3c2_my_sentence_groups')return {data:null,error:{message:'No sentence scope'}};
+        if(name==='kg_chart_is_admin')return {data:false,error:null};
+        if(name==='kg_chart_f2_my_completion_path')return {data:{
+          owner_id:state.owner,language_code:'my',permission_revision:17,reset_at:null,
+          bypass:false,unlocks:[],rules:{min_attempts:1,quiz_types:['native_to_image']},
+          topics:[{topic_id:'food',version:0,complete:false,completed_at:null,eligible_at:state.pathEligible}],counts:[]
+        },error:null};
+        if(name==='kg_chart_f2_my_preferences')return {data:{
+          owner_id:state.owner,permission_revision:17,version:0,audio_voice:'f',audio_muted:false,typing_best:{}
+        },error:null};
+        return original.rpc(name,args);
+      }
+    };
+  }
   window.KGAudio = {
     subscribe: () => () => {}, getVersion: () => 0, stop() {}, play() { return false; },
     autoPlay() {}, has: () => false, stateOf: () => '', toast() {},
     canUsePublicMedia: () => true, requireVerifiedMediaPolicy() {},
+    setVerifiedMediaPolicy() {}, loadManifest() {}, initPrefs() {},
+    setPreferenceScope() {}, applyPreferenceState() {},
     prefs: {voice: 'm', muted: true},
   };
 }
@@ -706,24 +787,32 @@ const harness = `
 `;
 const {code} = await transform(script.replace(clientSource, 'const supabase = window.__fakeClient;')
   .replace(mountSource, harness), {loader: 'jsx', target: 'es2022', format: 'iife'});
+// Compile the complete canonical App without injecting AuthContext. The
+// restricted flag is altered only in this disposable test string.
+const authSource = script.replace(clientSource, 'const supabase = window.__fakeClient;')
+  .replace('const U3C1_SCOPED_UI_ENABLED = false;', "const U3C1_SCOPED_UI_ENABLED = new URLSearchParams(location.search).get('restricted') === 'yes';")
+  .replace(mountSource, "const authRoot = ReactDOM.createRoot(document.getElementById('root')); authRoot.render(<App />); window.__kgUnmount = () => authRoot.unmount();");
+assert.notEqual(authSource,script);
+const {code:authCode} = await transform(authSource,{loader:'jsx',target:'es2022',format:'iife'});
 const assets = new Map([
   ['/react.js', await readFile('node_modules/react/umd/react.development.js')],
   ['/react-dom.js', await readFile('node_modules/react-dom/umd/react-dom.development.js')],
   ['/fixture.js', `(${installFakeClient.toString()})();`],
   ['/app.js', code],
+  ['/auth-app.js', authCode],
   ['/app.css', canonicalStyles],
 ]);
 for (const filename of ['kg-shared.js', 'kg-learner-access.js', 'kg-sentence-access.js', 'kg-quiz-save.js']) {
   assets.set('/' + filename, await readFile('js/' + filename));
 }
 assets.set('/kg-audio.js',await readFile('js/kg-audio.js'));
-const html = actualAudio => '<!doctype html><html><head><meta charset="UTF-8"><title>Isolated F1 UI fixture</title>' +
+const html = (actualAudio,authRoute) => '<!doctype html><html><head><meta charset="UTF-8"><title>Isolated F1 UI fixture</title>' +
   '<link rel="stylesheet" href="/app.css"></head><body><div id="root"></div>' +
-  [...assets.keys()].filter(path => path.endsWith('.js') && path !== '/app.js'&&(path!=='/kg-audio.js'||actualAudio)).map(path => `<script src="${path}"></script>`).join('') +
-  '<script src="/app.js"></script></body></html>';
+  [...assets.keys()].filter(path => path.endsWith('.js') && path !== '/app.js' && path !== '/auth-app.js'&&(path!=='/kg-audio.js'||actualAudio)).map(path => `<script src="${path}"></script>`).join('') +
+  '<script src="' + (authRoute ? '/auth-app.js' : '/app.js') + '"></script></body></html>';
 const server = createServer((req, res) => {
   const url=new URL(req.url,'http://127.0.0.1'),path=url.pathname;
-  const content = path === '/' ? html(url.searchParams.get('kind')?.startsWith('preferences')) : assets.get(path);
+  const content = path === '/' ? html(url.searchParams.get('kind')?.startsWith('preferences'),url.searchParams.get('kind')==='auth') : assets.get(path);
   if (content === undefined) { res.writeHead(404); res.end(); return; }
   res.writeHead(200, {'content-type': path === '/' ? 'text/html; charset=utf-8' : path.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8', 'cache-control': 'no-store'});
   res.end(content);
@@ -750,7 +839,8 @@ async function scenario(name, kind, run, restricted = false, initial = null) {
   page.on('pageerror', error => errors.push(error.message));
   try {
     await page.goto(`${origin}/?kind=${kind}${restricted ? '&restricted=yes' : ''}`, {waitUntil: 'load'});
-    if (kind==='typing') await page.getByRole('button', {name:'Start',exact:true}).waitFor();
+    if(kind==='auth') { /* The test controls initial session and approval replies. */ }
+    else if (kind==='typing') await page.getByRole('button', {name:'Start',exact:true}).waitFor();
     else if (kind==='speaking') await page.getByRole('button', {name:/Whole paragraph/}).waitFor();
     else if(['ratings','rating-cards','rating-chart'].includes(kind))await page.locator('[data-ratings-loaded="yes"]').waitFor({state:'attached'});
     else if(kind==='path')await page.locator('[data-path-ready="yes"]').waitFor({state:'attached'});
@@ -898,6 +988,161 @@ try {
   browser = await chromium.launch({headless: true,
     ...(process.env.KG_CHROMIUM_EXECUTABLE ? {executablePath: process.env.KG_CHROMIUM_EXECUTABLE} : {}),
     args: ['--no-sandbox']});
+
+  // R1: wait for specific captured replies rather than substituting an injected
+  // AuthContext or racing arbitrary sleeps.
+  const held=async(page,kind,ownerId=null,exclude=null)=>{
+    const h=await page.waitForFunction(({kind,ownerId,exclude})=>window.__kgAuth.requests().find(r=>
+      r.kind===kind&&r.held&&!r.released&&(!ownerId||r.owner===ownerId)&&r.id!==exclude),{kind,ownerId,exclude});
+    const row=await h.jsonValue();await h.dispose();return row;
+  };
+  const emit=(page,id,type)=>page.evaluate(({id,type})=>window.__kgAuth.emit(id,type),{id,type});
+  const hold=(page,kind)=>page.evaluate(kind=>window.__kgAuth.hold(kind),kind);
+  const releaseAuth=async(page,row,override)=>{
+    await page.evaluate(({id,override})=>window.__kgAuth.release(id,override),{id:row.id,override});
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  };
+  const authA='11000000-0000-4000-8000-000000000001',authB='11000000-0000-4000-8000-000000000002';
+  const header=page=>page.getByRole('heading',{name:'KG Vocabulary Chart'});
+  const welcome=page=>page.getByRole('heading',{name:'Welcome Back'});
+  const ratingDownload=page=>page.getByRole('button',{name:'Download pending rating',exact:true});
+  const completionDownload=page=>page.getByRole('button',{name:'Download pending completion',exact:true});
+  const noRecovery=async page=>{
+    assert.equal(await ratingDownload(page).count(),0);
+    assert.equal(await completionDownload(page).count(),0);
+    assert.equal(await page.getByText(/original completion pending/).count(),0);
+  };
+  const ownerIs=async(page,email)=>{
+    await header(page).waitFor();
+    const menu=page.getByRole('button',{name:'👤',exact:true});
+    await menu.click();await page.getByText(email,{exact:true}).waitFor();await menu.click();
+  };
+  const noSignout=async page=>assert.equal(await page.evaluate(()=>window.__kgAuth.signouts()),0);
+  const noMutations=async page=>{
+    const db=await snapshot(page);
+    assert.equal(db.requests.length,0);
+    assert.equal(db.ratingRequests.filter(r=>r.name==='kg_chart_f2_save_progress').length,0);
+    assert.equal(db.pathRequests.filter(r=>r.name==='kg_chart_f2_complete_topic').length,0);
+    assert.equal(db.preferenceRequests.filter(r=>r.name==='kg_chart_f2_patch_preferences').length,0);
+  };
+  const retained=async(page,original)=>{
+    assert.deepEqual(await page.evaluate(()=>window.__kgAuth.pending()),{rating:[original.rating],completion:[original.completion]});
+  };
+
+  await scenario('R1 late approval after sign-out cannot open the real App','auth',async page=>{
+    const first=await held(page,'approval',authA);
+    await emit(page,null);await welcome(page).waitFor();
+    await releaseAuth(page,first);
+    await welcome(page).waitFor();assert.equal(await header(page).count(),0);
+    await noRecovery(page);await noSignout(page);
+  },true,{authHolds:['approval']});
+
+  for(const approved of [true,false])await scenario('R1 stale A '+(approved?'approval':'denial')+' cannot replace or sign out B','auth',async page=>{
+    const first=await held(page,'approval',authA);
+    const original=await page.evaluate(()=>window.__kgAuth.seed());
+    await emit(page,authB);await ownerIs(page,'b@example.invalid');await noRecovery(page);
+    await releaseAuth(page,first,{data:approved,error:null});
+    await ownerIs(page,'b@example.invalid');await noRecovery(page);await noSignout(page);
+    await retained(page,original);await noMutations(page);
+  },true,{authHolds:['approval']});
+
+  await scenario('R1 A to B to A requires the newest approval generation','auth',async page=>{
+    const old=await held(page,'approval',authA);
+    await emit(page,authB);await ownerIs(page,'b@example.invalid');
+    await hold(page,'approval');await emit(page,authA);
+    const next=await held(page,'approval',authA,old.id);
+    await releaseAuth(page,old);assert.equal(await header(page).count(),0);
+    await releaseAuth(page,next);await ownerIs(page,'a@example.invalid');await noSignout(page);
+  },true,{authHolds:['approval']});
+
+  await scenario('R1 same-owner token event invalidates pending approval','auth',async page=>{
+    const old=await held(page,'approval',authA);
+    await hold(page,'approval');await emit(page,authA,'TOKEN_REFRESHED');
+    const next=await held(page,'approval',authA,old.id);
+    await releaseAuth(page,old,{data:false,error:null});await noSignout(page);
+    assert.equal(await header(page).count(),0);
+    await releaseAuth(page,next);await ownerIs(page,'a@example.invalid');
+  },true,{authHolds:['approval']});
+
+  for(const target of [authB,null])await scenario('R1 delayed initial session loses to '+(target?'B login':'sign-out'),'auth',async page=>{
+    const initial=await held(page,'session',authA);
+    await emit(page,target);
+    if(target)await ownerIs(page,'b@example.invalid');else await welcome(page).waitFor();
+    await releaseAuth(page,initial);
+    if(target)await ownerIs(page,'b@example.invalid');else {
+      await welcome(page).waitFor();assert.equal(await header(page).count(),0);
+    }
+    await noRecovery(page);await noSignout(page);
+  },true,{authHolds:['session']});
+
+  await scenario('R1 current denial still signs out its own account','auth',async page=>{
+    const first=await held(page,'approval',authA);
+    await releaseAuth(page,first,{data:false,error:null});
+    await welcome(page).waitFor();await page.getByText(/isn't approved for KG Chart/).waitFor();
+    assert.equal(await page.evaluate(()=>window.__kgAuth.signouts()),1);
+    assert.equal(await header(page).count(),0);
+  },true,{authHolds:['approval']});
+
+  await scenario('R1 access reply after owner change stays isolated; original downloads return with A','auth',async page=>{
+    const first=await held(page,'access',authA);
+    const original=await page.evaluate(()=>window.__kgAuth.seed());
+    await emit(page,authB);await ownerIs(page,'b@example.invalid');await noRecovery(page);
+    await releaseAuth(page,first);await ownerIs(page,'b@example.invalid');await noRecovery(page);
+    await retained(page,original);
+    await emit(page,authA);await ownerIs(page,'a@example.invalid');
+    for(const [button,event] of [[ratingDownload(page),original.rating],[completionDownload(page),original.completion]]){
+      await button.waitFor();
+      const downloaded=page.waitForEvent('download');await button.click();
+      assert.deepEqual(JSON.parse(await readFile(await (await downloaded).path(),'utf8')),event);
+    }
+    await page.getByRole('button',{name:'👤',exact:true}).click();
+    await page.getByRole('button',{name:'Sign Out',exact:true}).click();
+    await welcome(page).waitFor();await noRecovery(page);await retained(page,original);
+    assert.equal(await page.evaluate(()=>window.__kgAuth.signouts()),1);
+    await emit(page,authA);await ratingDownload(page).waitFor();await completionDownload(page).waitFor();
+    await retained(page,original);await noMutations(page);
+  },true,{authHolds:['access']});
+
+  await scenario('R1 current session must match access reply even before auth event arrives','auth',async page=>{
+    const first=await held(page,'access',authA);
+    const original=await page.evaluate(()=>window.__kgAuth.seed());
+    await page.evaluate(id=>window.__kgAuth.silent(id),authB);
+    await releaseAuth(page,first);
+    await page.getByText('Learning access unavailable',{exact:true}).waitFor();
+    await noRecovery(page);assert.equal(await header(page).count(),0);
+    await emit(page,authB);await ownerIs(page,'b@example.invalid');
+    await noRecovery(page);await retained(page,original);await noMutations(page);
+  },true,{authHolds:['access']});
+
+  await scenario('R1 A to B to A cannot adopt an earlier A access snapshot','auth',async page=>{
+    const first=await held(page,'access',authA);
+    const original=await page.evaluate(()=>window.__kgAuth.seed());
+    await emit(page,authB);await ownerIs(page,'b@example.invalid');
+    await hold(page,'access');await emit(page,authA);
+    const next=await held(page,'access',authA,first.id);
+    await releaseAuth(page,first);await noRecovery(page);assert.equal(await header(page).count(),0);
+    await releaseAuth(page,next);await ratingDownload(page).waitFor();await completionDownload(page).waitFor();
+    await ownerIs(page,'a@example.invalid');await retained(page,original);await noMutations(page);
+  },true,{authHolds:['access']});
+
+  await scenario('R1 unmount invalidates deferred callbacks and stale denials','auth',async page=>{
+    const first=await held(page,'approval',authA);
+    await page.evaluate(()=>{window.__kgAuth.emit(window.__kgAuth.b);window.__kgUnmount();});
+    await releaseAuth(page,first,{data:false,error:null});
+    await noSignout(page);
+    assert.equal(await page.evaluate(()=>window.__kgAuth.subscribers()),0);
+    assert.equal(await page.evaluate(()=>window.__kgAuth.requests().filter(r=>r.kind==='approval').length),1);
+    assert.equal(await page.locator('#root').innerText(),'');
+  },true,{authHolds:['approval']});
+
+  await scenario('R1 activation-off real App keeps legacy route without access snapshot RPC','auth',async page=>{
+    await ownerIs(page,'a@example.invalid');
+    assert.equal(await page.evaluate(()=>window.__kgAuth.requests().filter(r=>r.kind==='access').length),0);
+    await emit(page,authA,'TOKEN_REFRESHED');await ownerIs(page,'a@example.invalid');
+    assert.equal(await page.evaluate(()=>window.__kgAuth.requests().filter(r=>r.kind==='approval').length),1);
+    await noRecovery(page);
+  },false,{authHolds:[]});
+
   for (const kind of ['word', 'sentence']) {
     await scenario(`${kind}: failed session, visible unsaved state, repeated retry clicks`, kind, async page => {
       await page.evaluate(table => window.__kgF1.fault(table, 'fail'), sessions);

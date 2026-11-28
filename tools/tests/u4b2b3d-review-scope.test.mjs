@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {assertF1ReviewScope,assertAudioPreferenceReviewScope} from '../check-f1-review-scope.mjs';
+import {assertF1ReviewScope,assertAudioPreferenceReviewScope,assertR1ReviewScope} from '../check-f1-review-scope.mjs';
 
 const source = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
 const audioSource = readFileSync(new URL('../../js/kg-audio.js', import.meta.url), 'utf8');
@@ -274,4 +274,22 @@ test('F2E2d audio boundaries fail closed when missing, duplicated or moved acros
   const moved=without.replace('  function canUsePublicMedia() {',marker+'\n  function canUsePublicMedia() {');
   assert.throws(()=>assertAudioPreferenceReviewScope(audioSource,moved),
     'Moving the preference boundary must not hide media-policy edits');
+});
+
+test('R1 scope admits only authentication, gate and snapshot boundaries at the reviewed checkpoint', () => {
+  const authEdit = source.replace('    function AuthProvider({ children }) {', '    function AuthProvider({ children }) { /* reviewed change */');
+  const accessEdit = authEdit.replace('    function useLearnerAccess(user) {', '    function useLearnerAccess(user) { /* reviewed change */');
+  const gateEdit = accessEdit.replace('    function AuthGate({ children }) {', '    function AuthGate({ children }) { /* reviewed change */');
+  assert.notEqual(gateEdit, source);
+  assert.doesNotThrow(() => assertR1ReviewScope(source, gateEdit));
+  assert.throws(() => assertF1ReviewScope(source, gateEdit));
+  for (const changed of [
+    gateEdit.replace('const U3C1_SCOPED_UI_ENABLED = false;', 'const U3C1_SCOPED_UI_ENABLED = true;'),
+    gateEdit.replace('Results saved', 'Results altered'),
+    gateEdit.replace('    function useLearnerAccess(user) {', '    function RenamedAccess(user) {'),
+    gateEdit.replace('    function Header({', '    function Header(/* changed */{'),
+  ]) {
+    assert.notEqual(changed, gateEdit);
+    assert.throws(() => assertR1ReviewScope(source, changed));
+  }
 });
