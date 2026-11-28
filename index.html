@@ -1476,59 +1476,161 @@
           observed:observed?.token===token?observed:null,confirm,cancel,retry,inspect,download}};
     }
 
-    function RatingConfirmationDialog({review,busy,notice,word,label,onCancel,onConfirm}) {
-      const host=useMemo(()=>document.createElement('div'),[]);
-      const dialog=React.useRef(null),cancelButton=React.useRef(null),live=React.useRef(null);
-      live.current={busy,onCancel};
-      const focusInside=()=>{(live.current.busy?dialog.current:cancelButton.current)?.focus({preventScroll:true});};
-      React.useLayoutEffect(()=>{
-        const app=document.getElementById('root');
-        const priorInert=app?.getAttribute('inert'),priorHidden=app?.getAttribute('aria-hidden');
-        document.body.appendChild(host);
-        focusInside();
-        app?.setAttribute('inert','');app?.setAttribute('aria-hidden','true');
-        const containFocus=event=>{if(!dialog.current?.contains(event.target))focusInside();};
-        document.addEventListener('focusin',containFocus,true);
-        return()=>{
-          document.removeEventListener('focusin',containFocus,true);
-          if(app){
-            if(priorInert===null)app.removeAttribute('inert');else app.setAttribute('inert',priorInert);
-            if(priorHidden===null)app.removeAttribute('aria-hidden');else app.setAttribute('aria-hidden',priorHidden);
-          }
-          host.remove();
-          // Let Cards apply its acknowledged sort/Undo before restoring focus.
-          // A removed control falls back to its closest surviving surface.
-          requestAnimationFrame(()=>{
-            if(!review.canRestoreFocus())return;
-            const selector='button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])';
-            for(const surface of review.focusTrail){
-              if(!surface.isConnected||surface.closest('[inert]'))continue;
-              const candidates=surface.matches(selector)?[surface]:Array.from(surface.querySelectorAll(selector));
-              const target=candidates.find(el=>el.getClientRects().length>0);
-              if(target){target.focus({preventScroll:true});break;}
-            }
-          });
-        };
-      },[host,review]);
-      React.useLayoutEffect(()=>{
-        if(busy||!dialog.current?.contains(document.activeElement)||document.activeElement===dialog.current)focusInside();
-      },[busy]);
-      const onKeyDown=event=>{
-        if(event.key==='Escape'){
-          event.preventDefault();event.stopPropagation();
-          if(!live.current.busy)live.current.onCancel();
-        }else if(event.key==='Tab'){
-          event.preventDefault();event.stopPropagation();
-          const buttons=Array.from(dialog.current.querySelectorAll('button:not(:disabled)'));
-          if(!buttons.length){dialog.current.focus({preventScroll:true});return;}
-          const index=buttons.indexOf(document.activeElement);
-          const next=event.shiftKey?(index<=0?buttons.length-1:index-1):(index+1)%buttons.length;
-          buttons[next].focus({preventScroll:true});
+    // R2: shared modal ownership for rating review and single/batch flags.
+    // Keep the first editor active; a late review waits without taking focus
+    // or discarding the editor's contents. Root isolation belongs to the
+    // whole queue, not to any particular portal.
+    const kgModalSelector = 'button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])';
+    const kgModalControls = surface => [...surface.querySelectorAll(kgModalSelector)]
+      .filter(node => !node.disabled && node.getClientRects().length > 0 && !node.closest('[inert],[aria-hidden="true"]'));
+    const kgRestoreModalFocus = trail => {
+      for (const surface of trail) {
+        if (!surface?.isConnected || surface === document.body || surface.closest('[inert],[aria-hidden="true"]')) continue;
+        const controls = surface.matches(kgModalSelector) && !surface.disabled && surface.getClientRects().length > 0
+          ? [surface] : kgModalControls(surface);
+        for (const target of controls) {
+          target.focus({preventScroll:true});
+          if (document.activeElement === target) return;
+        }
+      }
+    };
+
+    const kgModalLayers = (() => {
+      const queue = [];
+      let rootState = null, revision = 0, redirecting = false;
+      const active = entry => !!entry && queue[0] === entry;
+      const focus = entry => {
+        if (!active(entry) || redirecting) return;
+        redirecting = true;
+        try { entry.focusInside(); } finally { redirecting = false; }
+      };
+      const containFocus = event => {
+        const entry = queue[0];
+        if (entry && !entry.dialog.current?.contains(event.target)) focus(entry);
+      };
+      const cover = (entry, covered) => {
+        // Hide waiting portals visually and from pointer, keyboard and AT.
+        entry.host.hidden = covered;
+        entry.host.style.display = covered ? 'none' : '';
+        if (covered) {
+          entry.host.setAttribute('inert','');
+          entry.host.setAttribute('aria-hidden','true');
+        } else {
+          entry.host.removeAttribute('inert');
+          entry.host.removeAttribute('aria-hidden');
         }
       };
+      const restoreRoot = () => {
+        if (!rootState) return;
+        const {app,inert,hidden} = rootState;
+        rootState = null;
+        if (!app) return;
+        if (inert === null) app.removeAttribute('inert'); else app.setAttribute('inert',inert);
+        if (hidden === null) app.removeAttribute('aria-hidden'); else app.setAttribute('aria-hidden',hidden);
+      };
+      const add = entry => {
+        ++revision;
+        const first = queue.length === 0;
+        if (first) {
+          const app = document.getElementById('root');
+          rootState = {app,inert:app?.getAttribute('inert') ?? null,hidden:app?.getAttribute('aria-hidden') ?? null};
+          document.addEventListener('focusin',containFocus,true);
+        }
+        cover(entry,!first);
+        queue.push(entry);
+        document.body.appendChild(entry.host);
+        if (first) {
+          focus(entry);
+          rootState.app?.setAttribute('inert','');
+          rootState.app?.setAttribute('aria-hidden','true');
+        }
+        return () => {
+          const index = queue.indexOf(entry);
+          if (index === -1) return;
+          const wasActive = index === 0;
+          const ticket = ++revision;
+          queue.splice(index,1);
+          entry.host.remove();
+          if (queue.length) {
+            if (wasActive) {
+              const next = queue[0];
+              cover(next,false);
+              // Wait for the rest of this React commit. A scope change may
+              // remove the waiting dialog in the same commit.
+              queueMicrotask(() => { if (active(next)) focus(next); });
+            }
+            return;
+          }
+          document.removeEventListener('focusin',containFocus,true);
+          restoreRoot();
+          // Never restore a prior origin through a new or obsolete dialog.
+          requestAnimationFrame(() => {
+            if (!queue.length && revision === ticket) entry.restoreFocus();
+          });
+        };
+      };
+      return {active,add,focus};
+    })();
+
+    function useKGModalLayer({dialog,identity,focusInside,restoreFocus,onEscape}) {
+      const host = useMemo(() => document.createElement('div'),[]);
+      const entry = React.useRef(null), live = React.useRef(null), composing = React.useRef(false);
+      live.current = {focusInside,onEscape};
+      React.useLayoutEffect(() => {
+        composing.current = false;
+        const layer = {host,dialog,focusInside:()=>live.current.focusInside(),restoreFocus};
+        entry.current = layer;
+        const remove = kgModalLayers.add(layer);
+        return () => {
+          composing.current = false;
+          if (entry.current === layer) entry.current = null;
+          remove();
+        };
+      },[host,identity]);
+      const isActive = () => kgModalLayers.active(entry.current);
+      const ensureFocus = (force = false) => {
+        if (!isActive()) return;
+        if (force || !dialog.current?.contains(document.activeElement) || document.activeElement?.disabled)
+          kgModalLayers.focus(entry.current);
+      };
+      const keyDown = event => {
+        event.stopPropagation();
+        if (!isActive()) { event.preventDefault(); return; }
+        if (event.key === 'Escape') {
+          // Let the IME cancel composition; Escape is not a dialog dismissal
+          // until composition has ended (including legacy keyCode 229).
+          if (composing.current || event.nativeEvent?.isComposing || event.nativeEvent?.keyCode === 229) return;
+          event.preventDefault();
+          live.current.onEscape();
+        } else if (event.key === 'Tab') {
+          event.preventDefault();
+          const controls = kgModalControls(dialog.current);
+          if (!controls.length) { dialog.current.focus({preventScroll:true}); return; }
+          const index = controls.indexOf(document.activeElement);
+          const next = event.shiftKey ? (index <= 0 ? controls.length - 1 : index - 1) : (index + 1) % controls.length;
+          controls[next].focus({preventScroll:true});
+        }
+      };
+      const clickCapture = event => {
+        if (!isActive()) { event.preventDefault(); event.stopPropagation(); }
+      };
+      return {host,isActive,ensureFocus,keyDown,clickCapture,
+        compositionStart:()=>{composing.current=true;},
+        compositionEnd:()=>{composing.current=false;}};
+    }
+    function RatingConfirmationDialog({review,busy,notice,word,label,onCancel,onConfirm}) {
+      const dialog=React.useRef(null),cancelButton=React.useRef(null);
+      const focusInside=()=>((busy || cancelButton.current?.disabled)?dialog.current:cancelButton.current)?.focus({preventScroll:true});
+      const layer=useKGModalLayer({dialog,identity:review,focusInside,
+        restoreFocus:()=>{if(review.canRestoreFocus())kgRestoreModalFocus(review.focusTrail);},
+        onEscape:()=>{if(!busy)onCancel();}});
+      React.useLayoutEffect(()=>{
+        layer.ensureFocus(busy||document.activeElement===dialog.current);
+      },[busy]);
       return ReactDOM.createPortal(
         <div data-kg-modal ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Confirm rating change"
-          aria-busy={busy} onKeyDown={onKeyDown} className="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style={{zIndex:100}}>
+          aria-busy={busy} onKeyDown={layer.keyDown} onClickCapture={layer.clickCapture}
+          onCompositionStart={layer.compositionStart} onCompositionEnd={layer.compositionEnd} className="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style={{zIndex:100}}>
           <div className="w-full max-w-md max-h-[90vh] overflow-y-auto bg-white rounded-2xl p-6 shadow-xl">
             <h3 className="text-lg font-bold">Confirm rating change</h3>
             <p className="mt-2">{word(review.target.vocabularyId)}</p>
@@ -1540,7 +1642,7 @@
               <button disabled={busy} onClick={onConfirm} className="px-4 py-2 rounded-lg bg-jade-600 text-white">{busy?'Saving…':'Confirm rating'}</button>
             </div>
           </div>
-        </div>,host);
+        </div>,layer.host);
     }
 
     function RatingRecoveryPanel({flow,vocabulary}) {
@@ -2195,59 +2297,26 @@
     }
 
     function FlagDialogShell({ title, busy, onClose, canRestoreFocus, children }) {
-      const host = useMemo(() => document.createElement('div'), []);
-      const dialog = React.useRef(null), live = React.useRef(null);
+      const dialog = React.useRef(null);
       const origin = React.useRef(document.activeElement);
-      live.current = { onClose, canRestoreFocus };
-      const focusInside = () => (dialog.current?.querySelector('[data-flag-close]') || dialog.current)?.focus({ preventScroll: true });
-      React.useLayoutEffect(() => {
-        const app = document.getElementById('root');
-        const priorInert = app?.getAttribute('inert'), priorHidden = app?.getAttribute('aria-hidden');
-        const trail = [origin.current, origin.current?.closest?.('main'), document.querySelector('main'), app];
-        document.body.appendChild(host);
-        focusInside();
-        app?.setAttribute('inert', ''); app?.setAttribute('aria-hidden', 'true');
-        const containFocus = event => { if (!dialog.current?.contains(event.target)) focusInside(); };
-        document.addEventListener('focusin', containFocus, true);
-        return () => {
-          document.removeEventListener('focusin', containFocus, true);
-          if (app) {
-            if (priorInert === null) app.removeAttribute('inert'); else app.setAttribute('inert', priorInert);
-            if (priorHidden === null) app.removeAttribute('aria-hidden'); else app.setAttribute('aria-hidden', priorHidden);
-          }
-          host.remove();
-          requestAnimationFrame(() => {
-            if (!live.current.canRestoreFocus()) return;
-            const selector = 'button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])';
-            for (const surface of trail) {
-              if (!surface?.isConnected || surface === document.body || surface.closest('[inert]')) continue;
-              const candidates = surface.matches(selector) ? [surface] : [...surface.querySelectorAll(selector)];
-              const target = candidates.find(node => node.getClientRects().length > 0);
-              if (target) { target.focus({ preventScroll: true }); break; }
-            }
-          });
-        };
-      }, [host]);
-      React.useLayoutEffect(() => {
-        if (!dialog.current?.contains(document.activeElement) || document.activeElement?.disabled) focusInside();
-      });
-      const keyDown = event => {
-        event.stopPropagation();
-        if (event.key === 'Escape') { event.preventDefault(); live.current.onClose(); }
-        if (event.key === 'Tab') {
-          event.preventDefault();
-          const controls = [...dialog.current.querySelectorAll('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])')]
-            .filter(node => node.getClientRects().length > 0);
-          if (!controls.length) { dialog.current.focus(); return; }
-          const index = controls.indexOf(document.activeElement);
-          controls[event.shiftKey ? (index <= 0 ? controls.length - 1 : index - 1) : (index + 1) % controls.length].focus();
-        }
+      const live = React.useRef(null);
+      live.current = {onClose,canRestoreFocus};
+      const focusInside = () => {
+        const close = dialog.current?.querySelector('[data-flag-close]:not(:disabled)');
+        (close || dialog.current)?.focus({preventScroll:true});
       };
+      const trail = React.useRef([origin.current, origin.current?.closest?.('main'), document.querySelector('main'), document.getElementById('root')]).current;
+      const layer=useKGModalLayer({dialog,focusInside,
+        restoreFocus:()=>{if(live.current.canRestoreFocus())kgRestoreModalFocus(trail);},
+        onEscape:()=>live.current.onClose()});
+      React.useLayoutEffect(()=>{layer.ensureFocus();});
       return ReactDOM.createPortal(<div data-kg-modal ref={dialog} tabIndex={-1} role="dialog" aria-modal="true"
-        aria-label={title} aria-busy={busy} onKeyDown={keyDown} onClick={event => { if (event.target === event.currentTarget) live.current.onClose(); }}
+        aria-label={title} aria-busy={busy} onKeyDown={layer.keyDown} onClickCapture={layer.clickCapture}
+        onCompositionStart={layer.compositionStart} onCompositionEnd={layer.compositionEnd}
+        onClick={event => { if (layer.isActive() && event.target === event.currentTarget) live.current.onClose(); }}
         className="fixed inset-0 bg-black/60 flex items-center justify-center p-4" style={{ zIndex: 100 }}>
         <div className="bg-white rounded-2xl w-full max-w-lg p-6 shadow-2xl animate-scale-in max-h-[90vh] overflow-y-auto">{children}</div>
-      </div>, host);
+      </div>, layer.host);
     }
 
     function FlagDraftStatus({ flow, draft, allowRetry = true }) {
