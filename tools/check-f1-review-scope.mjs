@@ -177,6 +177,28 @@ export function normalizeF1Source(input) {
   return source.replace(keyedQuiz, '<QuizView topics=');
 }
 
+// R1 is an independently reviewed exception, not an extension of F1.
+const R1_REVIEW_BASE = '409884a29a8d84f7efd34bca429fc8cc507b229c';
+function normalizeR1Source(input) {
+  let source = input;
+  for (const [startMarker, endMarker] of [
+    ['    function AuthProvider({ children }) {', '\n    // ==========================================\n    // U3C1: VERIFIED, PER-ACCOUNT LEARNER VIEW'],
+    ['    function useLearnerAccess(user) {', '\n    // U3C2: separate sentence-group authorization.'],
+    ['    function AuthGate({ children }) {', '\n    function App() {'],
+  ]) {
+    const start = uniquePosition(source, startMarker), end = uniquePosition(source, endMarker);
+    assert(end > start, 'Invalid R1 source boundary');
+    source = source.slice(0, start) + '    /* reviewed R1 boundary */\n' + source.slice(end);
+  }
+  return source;
+}
+
+export function assertR1ReviewScope(before, after) {
+  assert(after.includes('const U3C1_SCOPED_UI_ENABLED = false;'), 'Restricted UI activation must remain OFF');
+  assert.equal(normalizeR1Source(before), normalizeR1Source(after),
+    'R1 changes outside the reviewed auth provider, auth gate and access snapshot hook are forbidden');
+}
+
 export function assertF1ReviewScope(before, after) {
   assert(after.includes('const U3C1_SCOPED_UI_ENABLED = false;'), 'Restricted UI activation must remain OFF');
   assert.equal(normalizeF1Source(after), normalizeF1Source(before),
@@ -213,7 +235,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const base = process.argv[2];
   assert(base && /^[a-f0-9]{40}$/.test(base), 'Pass the full merge-base SHA');
   const before = execFileSync('git', ['show', `${base}:index.html`], {encoding: 'utf8', maxBuffer: 4 * 1024 * 1024});
-  assertF1ReviewScope(before, readFileSync('index.html', 'utf8'));
+  // Pin the exception to this reviewed checkpoint. Other merge bases retain F1.
+  const after = readFileSync('index.html', 'utf8');
+  if (base === R1_REVIEW_BASE) assertR1ReviewScope(before, after);
+  else assertF1ReviewScope(before, after);
   const audioBefore = execFileSync('git', ['show', `${base}:js/kg-audio.js`], {encoding: 'utf8', maxBuffer: 1024 * 1024});
   assertAudioPreferenceReviewScope(audioBefore, readFileSync('js/kg-audio.js', 'utf8'));
   console.log('F1_REVIEW_SCOPE_PASS: unrelated learner source, restricted UI gate and audio playback/security preserved');

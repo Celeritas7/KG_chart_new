@@ -776,44 +776,134 @@
     const useAuth = () => useContext(AuthContext);
 
     function AuthProvider({ children }) {
-      const [user, setUser] = useState(null);
-      const [loading, setLoading] = useState(true);
+      const [state, setState] = useState({ user: null, loading: true, generation: 0, epoch: 0 });
       const [authError, setAuthError] = useState('');
-      const verifiedRef = React.useRef(null);
+      // Invalidate synchronously on arrival, not when a deferred callback runs.
+      // Owner equality alone cannot distinguish A -> B -> A.
+      const auth = React.useRef({ active: false, generation: 0, epoch: 0, owner: null, approved: null, timer: null });
+      const isCurrentAuth = useCallback((owner, generation) => {
+        const a = auth.current;
+        return a.active && a.generation === generation && a.owner === owner && a.approved === owner;
+      }, []);
+      const current = (owner, generation) => {
+        const a = auth.current;
+        return a.active && a.generation === generation && a.owner === owner;
+      };
+      const publish = (user, loading = false) => {
+        const a = auth.current;
+        if (a.active) setState({ user, loading, generation: a.generation, epoch: a.epoch });
+      };
+      const cancelDeferred = () => {
+        clearTimeout(auth.current.timer);
+        auth.current.timer = null;
+      };
+      const sessionMatches = async (owner, generation) => {
+        if (!current(owner, generation)) return false;
+        const result = await supabase.auth.getSession();
+        return current(owner, generation) && !result?.error && result?.data?.session?.user?.id === owner;
+      };
+      const failClosed = (owner, generation, message) => {
+        if (!current(owner, generation)) return;
+        auth.current.approved = null;
+        setAuthError(message);
+        publish(null);
+      };
 
-      // Only approved emails (kg_chart_allowed_emails) or the admin may stay signed in.
-      const verify = async (session) => {
-        const u = session?.user ?? null;
-        if (!u) { verifiedRef.current = null; setUser(null); return; }
-        if (verifiedRef.current === u.id) { setUser(u); return; }
-        if (u.id !== ADMIN_USER_ID) {
-          const { data, error } = await supabase.rpc('kg_chart_is_allowed');
-          if (error || data !== true) {
-            setAuthError(error
-              ? `Couldn't verify access: ${error.message}`
-              : `${u.email || 'This account'} isn't approved for KG Chart. Ask the admin to add your email.`);
-            verifiedRef.current = null;
-            setUser(null);
-            await supabase.auth.signOut();
+      // An approval belongs to the session that requested it. Never publish
+      // or sign out using an obsolete result.
+      const verify = async (u, generation) => {
+        const owner = u.id;
+        if (!current(owner, generation)) return;
+        try {
+          if (!await sessionMatches(owner, generation)) {
+            failClosed(owner, generation, 'The signed-in account could not be verified. Please sign in again.');
             return;
           }
+          if (!current(owner, generation)) return;
+          const { data, error } = owner === ADMIN_USER_ID
+            ? { data: true, error: null } : await supabase.rpc('kg_chart_is_allowed');
+          if (!current(owner, generation)) return;
+          if (!await sessionMatches(owner, generation)) {
+            failClosed(owner, generation, 'The signed-in account changed. Please sign in again.');
+            return;
+          }
+          if (!current(owner, generation)) return;
+          if (error || data !== true) {
+            failClosed(owner, generation, error
+              ? `Couldn't verify access: ${error.message}`
+              : `${u.email || 'This account'} isn't approved for KG Chart. Ask the admin to add your email.`);
+            if (current(owner, generation)) await supabase.auth.signOut();
+            return;
+          }
+          auth.current.approved = owner;
+          setAuthError('');
+          publish(u);
+        } catch (_) {
+          failClosed(owner, generation, "Couldn't verify access. Reconnect and sign in again.");
         }
-        verifiedRef.current = u.id;
-        setAuthError('');
-        setUser(u);
+      };
+
+      const begin = (session) => {
+        const a = auth.current;
+        if (!a.active) return;
+        cancelDeferred();
+        const generation = ++a.generation;
+        const u = session?.user?.id ? session.user : null;
+        const owner = u?.id ?? null;
+        if (a.owner !== owner) {
+          ++a.epoch;
+          a.approved = null;
+        }
+        a.owner = owner;
+        if (!u) {
+          a.approved = null;
+          publish(null);
+          return;
+        }
+        // Same-owner token events invalidate older work. Already approved
+        // owners retain the legacy UI without another allowlist RPC.
+        if (a.approved === owner) {
+          publish(u);
+          return;
+        }
+        publish(null, true);
+        a.timer = setTimeout(() => {
+          a.timer = null;
+          if (current(owner, generation)) void verify(u, generation);
+        }, 0); // No Supabase calls inside the auth callback.
       };
 
       useEffect(() => {
-        supabase.auth.getSession().then(async ({ data: { session } }) => {
-          await verify(session);
-          setLoading(false);
-        });
-
+        const a = auth.current;
+        a.active = true;
+        const initialGeneration = ++a.generation;
         const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-          setTimeout(() => verify(session), 0); // defer: no Supabase calls inside the auth callback
+          begin(session);
         });
-
-        return () => subscription.unsubscribe();
+        // Later auth events supersede a delayed initial getSession.
+        const initial = async () => {
+          try {
+            const result = await supabase.auth.getSession();
+            if (!a.active || a.generation !== initialGeneration) return;
+            if (result?.error) throw result.error;
+            begin(result?.data?.session);
+          } catch (_) {
+            if (a.active && a.generation === initialGeneration) {
+              setAuthError("Couldn't load the session. Reconnect and sign in again.");
+              begin(null);
+            }
+          }
+        };
+        void initial();
+        return () => {
+          a.active = false;
+          ++a.generation;
+          ++a.epoch;
+          a.owner = null;
+          a.approved = null;
+          cancelDeferred();
+          subscription.unsubscribe();
+        };
       }, []);
 
       const signInWithEmail = async (email, password) => {
@@ -825,7 +915,18 @@
       };
 
       const signOut = async () => {
-        return await supabase.auth.signOut();
+        // Do not wait for the SDK sign-out event before hiding the old owner.
+        begin(null);
+        const generation = auth.current.generation;
+        try {
+          const result = await supabase.auth.signOut();
+          if (result?.error && current(null, generation))
+            setAuthError(result.error.message || 'Sign out could not be confirmed.');
+          return result;
+        } catch (error) {
+          if (current(null, generation)) setAuthError('Sign out could not be confirmed.');
+          return { error };
+        }
       };
 
       const signInWithGoogle = async () => {
@@ -835,8 +936,9 @@
         });
       };
 
+      const { user, loading, generation: authGeneration, epoch: authEpoch } = state;
       return (
-        <AuthContext.Provider value={{ user, loading, authError, signInWithEmail, signUpWithEmail, signOut, signInWithGoogle }}>
+        <AuthContext.Provider value={{ user, loading, authError, authGeneration, authEpoch, isCurrentAuth, signInWithEmail, signUpWithEmail, signOut, signInWithGoogle }}>
           {!loading && children}
         </AuthContext.Provider>
       );
@@ -858,27 +960,41 @@
     // must be installed and declared enforced before restricted mode opens.
     // No offline or error path silently assumes a missing policy = legacy.
     function useLearnerAccess(user) {
-      const [result, setResult] = useState({ owner: null, policy: null, error: null, loading: true });
+      const { authGeneration, isCurrentAuth } = useAuth();
+      const [result, setResult] = useState({ owner: null, generation: null, policy: null, error: null, loading: true });
       useEffect(() => {
         if (!U3C1_SCOPED_UI_ENABLED) return;
-        if (!user?.id) {
-          setResult({ owner: null, policy: null, error: null, loading: true });
+        const owner = user?.id;
+        if (!owner) {
+          setResult({ owner: null, generation: null, policy: null, error: null, loading: true });
           return;
         }
         let stopped = false;
         let sequence = 0;
+        const current = call => !stopped && call === sequence && isCurrentAuth(owner, authGeneration);
+        const matches = async call => {
+          if (!current(call)) return false;
+          const session = await supabase.auth.getSession();
+          return current(call) && !session?.error && session?.data?.session?.user?.id === owner;
+        };
         const reload = async () => {
           const call = ++sequence;
-          setResult({ owner: user.id, policy: null, error: null, loading: true });
+          if (!current(call)) return;
+          setResult({ owner, generation: authGeneration, policy: null, error: null, loading: true });
           try {
+            // Verify the caller before the snapshot RPC and again at adoption.
+            if (!await matches(call)) throw Error('Signed-in account changed.');
+            if (!current(call)) return;
             const { data, error } = await supabase.rpc('kg_chart_u3_my_access_snapshot');
-            if (stopped || call !== sequence) return;
+            if (!current(call)) return;
             if (error) throw Error('Learner access permissions are unavailable.');
+            if (!await matches(call)) throw Error('Signed-in account changed.');
+            if (!current(call)) return;
             const policy = window.KGLearnerAccess.parseSnapshot(data);
-            setResult({ owner: user.id, policy, error: null, loading: false });
+            setResult({ owner, generation: authGeneration, policy, error: null, loading: false });
           } catch (_) {
-            if (!stopped && call === sequence) setResult({
-              owner: user.id, policy: null,
+            if (current(call)) setResult({
+              owner, generation: authGeneration, policy: null,
               error: 'Unable to verify learner permissions. Reconnect and reopen KG Chart.',
               loading: false,
             });
@@ -893,14 +1009,15 @@
           window.removeEventListener('online', reload);
           window.removeEventListener('focus', reload);
         };
-      }, [user?.id]);
+      }, [user?.id, authGeneration, isCurrentAuth]);
       // Until the gated rollout, preserve the exact legacy navigation and
       // offline startup contract without making a new Supabase RPC request.
       // This flag is immutable source code, not a user-toggleable setting.
       if (!U3C1_SCOPED_UI_ENABLED) return {
         owner: user?.id, policy: U3C1_LEGACY_POLICY, error: null, loading: false,
       };
-      return result.owner === user?.id ? result
+      return result.owner === user?.id && result.generation === authGeneration
+        && isCurrentAuth(user?.id, authGeneration) ? result
         : { owner: user?.id, policy: null, error: null, loading: true };
     }
 
@@ -8071,8 +8188,11 @@
 
     // Signed-out (or unapproved) visitors only see the sign-in card.
     function AuthGate({ children }) {
-      const { user } = useAuth();
-      if (user) return children;
+      const { user, authGeneration, authEpoch, isCurrentAuth } = useAuth();
+      // Remount account-local consumers on a real owner transition, even
+      // when React batches A -> B -> A. Token refresh alone does not remount.
+      if (user && isCurrentAuth(user.id, authGeneration))
+        return <React.Fragment key={authEpoch}>{children}</React.Fragment>;
       return <div className="min-h-screen bg-jade-700"><AuthModal onClose={() => {}} /></div>;
     }
 
