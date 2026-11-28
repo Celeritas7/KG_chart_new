@@ -1611,9 +1611,13 @@ try {
     ['language',{languageCode:'ja'}],['revision',{revision:18}]
   ])await scenario('R2 queued rating removed on '+kind+' change without stealing focus or unlocking flag editor','rating-flags',async page=>{
     await startHeldRating(page,true);
-    const flag=await openFlagWhileHeld(page,true);
-    await releaseIntoQueue(page,flag);
+    // Flag Mode replaces the inline rating controls; keep the actual original
+    // element before changing modes. Also retain the live batch opener, which
+    // is still connected under the root's inert layer.
     const origin=await chartCard(page).getByTitle("Don't know",{exact:true}).elementHandle();
+    const flag=await openFlagWhileHeld(page,true);
+    const flagOrigin=await page.getByText('Submit Flags →',{exact:true}).elementHandle();
+    await releaseIntoQueue(page,flag);
     await observeIsolation(page);
     await page.evaluate(patch=>window.__kgF1.changeScope(patch),patch);
     await queuedRating(page).waitFor({state:'detached'});
@@ -1624,7 +1628,8 @@ try {
     await flag.waitFor({state:'hidden'});
     assert.deepEqual(await rootAttributes(page),{inert:null,hidden:null});
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-    assert.equal(await origin.evaluate(el=>document.activeElement===el),false,'No focus restore to obsolete scope');
+    assert.equal(await origin.evaluate(el=>document.activeElement===el),false,'No focus restore to obsolete rating scope');
+    assert.equal(await flagOrigin.evaluate(el=>document.activeElement===el),false,'No focus restore to the old flag opener');
     assert.equal(ratingWrites(await snapshot(page)).length,0);
     assert.equal((await snapshot(page)).flagRequests.length,0);
   },true);
