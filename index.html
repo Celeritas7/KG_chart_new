@@ -1922,9 +1922,275 @@
     // Before kg-chart-flags-devanagari.sql the flag table has no shown_devanagari / suggestion / sentence_id
     const isMissingColumn = (error) => !!error && (error.code === 'PGRST204' || error.code === '42703' || /Could not find the '[^']*' column|schema cache/i.test(error.message || ''));
 
+    // F2E2e — exact restricted flag submissions and recovery.
+    const flagSaveStore = window.KGFlagSave.createStore({ storage: {
+      get length() { return window.localStorage.length; },
+      key: i => window.localStorage.key(i),
+      getItem: key => window.localStorage.getItem(key),
+      setItem: (key, value) => window.localStorage.setItem(key, value),
+      removeItem: key => window.localStorage.removeItem(key),
+    } });
+    const flagSaveMemory = new Map(), flagSaveResults = new Map(), flagSaveTasks = new Map();
+    const flagRecoveryChanged = () => window.dispatchEvent(new Event('kg-flag-recovery-changed'));
+    const flagTargets = rows => JSON.stringify(rows.map(row => [row.vocabulary_id || null, row.sentence_id || null, row.colour_phrase_id || null])
+      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
+    let activeFlagScope = null;
+    window.addEventListener('beforeunload', event => {
+      if ([...flagSaveResults.values()].some(result => result.status === 'storage-error')) {
+        event.preventDefault(); event.returnValue = '';
+      }
+    });
+
+    function useFlagSubmission(user, languageCode, policy, targetKey = 'recovery') {
+      const scopeRef = React.useRef(null), mounted = React.useRef(true);
+      const identity = JSON.stringify([user?.id, languageCode, policy?.state, policy?.revision, targetKey]);
+      if (scopeRef.current?.identity !== identity) scopeRef.current = {
+        identity, ownerId: user?.id || null, languageCode, policy,
+      };
+      const scope = scopeRef.current;
+      const [view, setView] = useState({ scope, pending: [], storageError: '', message: '' });
+      const current = token => mounted.current && scopeRef.current === token;
+      const update = (token, values) => {
+        if (current(token)) setView(old => ({ ...(old.scope === token ? old : {
+          scope: token, pending: [], storageError: '', message: '',
+        }), ...values }));
+      };
+      const refresh = () => {
+        const token = scopeRef.current, records = new Map();
+        let storageError = '';
+        try { for (const draft of flagSaveStore.list(token.ownerId, token.languageCode)) records.set(draft.submissionId, draft); }
+        catch (_) { storageError = 'Flag recovery records could not be read. Existing records have been kept.'; }
+        for (const draft of flagSaveMemory.values()) {
+          if (draft.ownerId === token.ownerId && draft.languageCode === token.languageCode) records.set(draft.submissionId, draft);
+        }
+        update(token, { pending: [...records.values()], storageError });
+      };
+      const progress = draft => {
+        const result = flagSaveResults.get(draft.submissionId);
+        if (result) return result;
+        try { return { status: 'pending', ...flagSaveStore.progress(draft) }; }
+        catch (_) { return { status: 'storage-error', confirmedCount: 0, total: draft.flags.length }; }
+      };
+      const author = (rows, allowAnother = false) => {
+        const token = scopeRef.current;
+        if (!current(token) || token.policy?.state !== 'restricted') throw Error('The report context is not verified. Close and reopen this report.');
+        let stored = [], readable = true;
+        try { stored = flagSaveStore.list(token.ownerId, token.languageCode); }
+        catch (_) { readable = false; }
+        const pending = [...stored, ...flagSaveMemory.values()];
+        if (!allowAnother && pending.some(draft => draft.ownerId === token.ownerId && draft.languageCode === token.languageCode && flagTargets(draft.flags) === flagTargets(rows))) {
+          refresh();
+          throw Error('Original reports for this selection are waiting. Retry them exactly, or choose Create another report for a separate submission.');
+        }
+        const draft = flagSaveStore.make({ ownerId: token.ownerId, languageCode: token.languageCode, revision: token.policy.revision }, rows);
+        flagSaveMemory.set(draft.submissionId, draft);
+        let retained = true;
+        try {
+          if (!readable) throw Error('Flag recovery storage could not be read. Download this original selection before leaving.');
+          flagSaveStore.put(draft);
+          flagSaveResults.set(draft.submissionId, { status: 'pending', draft, confirmedCount: 0, total: draft.flags.length });
+        } catch (error) {
+          retained = false;
+          flagSaveResults.set(draft.submissionId, { status: 'storage-error', draft, confirmedCount: 0, total: draft.flags.length,
+            error: { message: error.message || 'The original flags could not be retained on this device.' } });
+        }
+        flagRecoveryChanged();
+        return { draft, retained };
+      };
+      const retry = draft => {
+        if (flagSaveTasks.has(draft.submissionId)) return flagSaveTasks.get(draft.submissionId);
+        const token = scopeRef.current;
+        if (!current(token) || token.ownerId !== draft.ownerId || token.languageCode !== draft.languageCode ||
+            token.policy?.state !== 'restricted' || token.policy.revision !== draft.revision)
+          return Promise.resolve({ ...progress(draft), status: 'blocked', draft, error: { message: 'The original account, language, or permissions are no longer current.' } });
+        const before = progress(draft);
+        flagSaveMemory.set(draft.submissionId, draft);
+        flagSaveResults.set(draft.submissionId, { ...before, status: 'saving', draft });
+        flagRecoveryChanged();
+        const task = (async () => {
+          let result;
+          try {
+            // Repair an initial storage failure with the exact original draft.
+            // A completed tombstone is verified by save, never by this put.
+            flagSaveStore.put(draft);
+            result = await window.KGFlagSave.save({ client: supabase, store: flagSaveStore,
+              getScope: () => current(token) ? { ownerId: token.ownerId, languageCode: token.languageCode, policy: token.policy } : null,
+              offlineClient: window.KGOffline?.client === supabase,
+              onProgress: confirmed => {
+                flagSaveResults.set(draft.submissionId, { ...confirmed, status: 'saving', draft });
+                flagRecoveryChanged();
+              },
+            }, draft);
+          } catch (error) {
+            const confirmed = flagSaveResults.get(draft.submissionId) || before;
+            result = { status: 'storage-error', draft, confirmedCount: confirmed.confirmedCount || 0, total: draft.flags.length,
+              error: { message: error.message || 'The exact flags could not be retained. Download them before leaving.' } };
+          }
+          if (result.status === 'saved') flagSaveMemory.delete(draft.submissionId);
+          else flagSaveMemory.set(draft.submissionId, draft);
+          flagSaveResults.set(draft.submissionId, result);
+          update(token, { message: result.status === 'saved' ? `${result.total} flags confirmed for review.`
+            : result.error?.message || 'Some flags are not confirmed. Their original IDs and contents are retained.' });
+          return result;
+        })().finally(() => {
+          if (flagSaveTasks.get(draft.submissionId) === task) flagSaveTasks.delete(draft.submissionId);
+          flagRecoveryChanged();
+        });
+        flagSaveTasks.set(draft.submissionId, task);
+        return task;
+      };
+      const download = draft => {
+        const blob = new Blob([JSON.stringify({ contract: 'kg-flag-recovery-v1', draft }, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob), link = document.createElement('a');
+        link.href = url; link.download = `kg-flag-recovery-${draft.submissionId}.json`; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+      React.useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, [scope]);
+      useEffect(() => {
+        refresh();
+        window.addEventListener('storage', refresh);
+        window.addEventListener('kg-flag-recovery-changed', refresh);
+        return () => {
+          window.removeEventListener('storage', refresh);
+          window.removeEventListener('kg-flag-recovery-changed', refresh);
+        };
+      }, [scope]);
+      const visible = view.scope === scope ? view : { pending: [], storageError: '', message: '' };
+      return { ...visible, scope, author, retry, refresh, progress, download, current,
+        sameScope: token => scopeRef.current === token,
+        busy: draft => !!draft && flagSaveTasks.has(draft.submissionId) };
+    }
+
+    function useFlagEditor(languageCode, targetKey) {
+      const { user } = useAuth();
+      const media = useContext(KGMediaScopeContext);
+      const policy = media ? (media.ownerId === user?.id ? media.policy : null)
+        : !U3C1_SCOPED_UI_ENABLED ? U3C1_LEGACY_POLICY : null;
+      const flow = useFlagSubmission(user, languageCode, policy, targetKey);
+      const original = React.useRef(flow.scope).current;
+      const focusScope = React.useRef(activeFlagScope).current;
+      const valid = flow.scope === original;
+      const canRestoreFocus = () => flow.sameScope(original) && activeFlagScope === focusScope && activeFlagScope?.ownerId === original.ownerId &&
+        activeFlagScope.languageCode === original.languageCode && activeFlagScope.policy?.state === original.policy?.state &&
+        activeFlagScope.policy?.revision === original.policy?.revision;
+      return { flow, original, valid, canRestoreFocus, restricted: original.policy?.state === 'restricted',
+        legacy: original.policy?.state === 'legacy', current: () => flow.current(original) };
+    }
+
+    function FlagDialogShell({ title, busy, onClose, canRestoreFocus, children }) {
+      const host = useMemo(() => document.createElement('div'), []);
+      const dialog = React.useRef(null), live = React.useRef(null);
+      const origin = React.useRef(document.activeElement);
+      live.current = { onClose, canRestoreFocus };
+      const focusInside = () => (dialog.current?.querySelector('[data-flag-close]') || dialog.current)?.focus({ preventScroll: true });
+      React.useLayoutEffect(() => {
+        const app = document.getElementById('root');
+        const priorInert = app?.getAttribute('inert'), priorHidden = app?.getAttribute('aria-hidden');
+        const trail = [origin.current, origin.current?.closest?.('main'), document.querySelector('main'), app];
+        document.body.appendChild(host);
+        focusInside();
+        app?.setAttribute('inert', ''); app?.setAttribute('aria-hidden', 'true');
+        const containFocus = event => { if (!dialog.current?.contains(event.target)) focusInside(); };
+        document.addEventListener('focusin', containFocus, true);
+        return () => {
+          document.removeEventListener('focusin', containFocus, true);
+          if (app) {
+            if (priorInert === null) app.removeAttribute('inert'); else app.setAttribute('inert', priorInert);
+            if (priorHidden === null) app.removeAttribute('aria-hidden'); else app.setAttribute('aria-hidden', priorHidden);
+          }
+          host.remove();
+          requestAnimationFrame(() => {
+            if (!live.current.canRestoreFocus()) return;
+            const selector = 'button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])';
+            for (const surface of trail) {
+              if (!surface?.isConnected || surface === document.body || surface.closest('[inert]')) continue;
+              const candidates = surface.matches(selector) ? [surface] : [...surface.querySelectorAll(selector)];
+              const target = candidates.find(node => node.getClientRects().length > 0);
+              if (target) { target.focus({ preventScroll: true }); break; }
+            }
+          });
+        };
+      }, [host]);
+      React.useLayoutEffect(() => {
+        if (!dialog.current?.contains(document.activeElement) || document.activeElement?.disabled) focusInside();
+      });
+      const keyDown = event => {
+        event.stopPropagation();
+        if (event.key === 'Escape') { event.preventDefault(); live.current.onClose(); }
+        if (event.key === 'Tab') {
+          event.preventDefault();
+          const controls = [...dialog.current.querySelectorAll('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])')]
+            .filter(node => node.getClientRects().length > 0);
+          if (!controls.length) { dialog.current.focus(); return; }
+          const index = controls.indexOf(document.activeElement);
+          controls[event.shiftKey ? (index <= 0 ? controls.length - 1 : index - 1) : (index + 1) % controls.length].focus();
+        }
+      };
+      return ReactDOM.createPortal(<div data-kg-modal ref={dialog} tabIndex={-1} role="dialog" aria-modal="true"
+        aria-label={title} aria-busy={busy} onKeyDown={keyDown} onClick={event => { if (event.target === event.currentTarget) live.current.onClose(); }}
+        className="fixed inset-0 bg-black/60 flex items-center justify-center p-4" style={{ zIndex: 100 }}>
+        <div className="bg-white rounded-2xl w-full max-w-lg p-6 shadow-2xl animate-scale-in max-h-[90vh] overflow-y-auto">{children}</div>
+      </div>, host);
+    }
+
+    function FlagDraftStatus({ flow, draft, allowRetry = true }) {
+      if (!draft) return null;
+      const result = flow.progress(draft), busy = flow.busy(draft);
+      const saved = result.status === 'saved';
+      return <div className="my-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+        <p role="status">{result.confirmedCount || 0} of {result.total || draft.flags.length} flags confirmed{saved ? ' for review.' : '.'}</p>
+        {!saved && <p className="mt-1">{result.error?.message || (busy ? 'Submitting the original reports. Closing keeps any unconfirmed flags for exact retry.' : 'Unconfirmed reports retain their original IDs and contents.')}</p>}
+        {result.status === 'storage-error' && <p className="mt-1">Recovery storage is unavailable. Download the original flags before leaving this page.</p>}
+        {!saved && <div className="mt-2 flex flex-wrap gap-2">
+          <button disabled={busy || !allowRetry} onClick={() => flow.retry(draft)} className="rounded-lg bg-red-600 px-3 py-2 text-white disabled:opacity-40">Retry exact flags</button>
+          <button onClick={() => flow.download(draft)} className="rounded-lg border border-amber-300 bg-white px-3 py-2">Download pending flags</button>
+        </div>}
+      </div>;
+    }
+
+    function FlagRecoveryPanel({ user, languageCode, policy }) {
+      const flow = useFlagSubmission(user, languageCode, policy);
+      React.useLayoutEffect(() => {
+        activeFlagScope = flow.scope;
+        return () => { if (activeFlagScope === flow.scope) activeFlagScope = null; };
+      }, [flow.scope]);
+      if (policy?.state === 'legacy' || (!flow.pending.length && !flow.storageError && !flow.message)) return null;
+      return <section aria-label="Flag recovery" className="max-w-5xl mx-auto my-3 rounded-xl border border-amber-200 bg-white p-4 text-sm">
+        <h3 className="font-bold">Flags waiting for confirmation</h3>
+        {flow.message && <p role="status" className="mt-2">{flow.message}</p>}
+        {flow.storageError && <p role="alert" className="mt-2 text-amber-900">{flow.storageError}</p>}
+        {flow.pending.map(draft => <div key={draft.submissionId} className="mt-3 border-t border-gray-200 pt-2">
+          <p>{draft.flags.length} original report{draft.flags.length === 1 ? '' : 's'} · {new Date(draft.createdAt).toLocaleString()}</p>
+          {draft.revision !== policy?.revision && <p className="mt-1">These flags belong to an earlier permission revision and are held for review.</p>}
+          <FlagDraftStatus flow={flow} draft={draft} allowRetry={policy?.state === 'restricted' && draft.revision === policy.revision} />
+        </div>)}
+      </section>;
+    }
+
+    function ExistingFlagReports({ flow, drafts, onNew, onClose, onDone = onClose }) {
+      const saved = drafts.every(draft => flow.progress(draft).status === 'saved');
+      return <div>
+        <h3 className="text-xl font-bold">{saved ? 'Flags Submitted' : 'Original reports are waiting'}</h3>
+        <p className="mt-2 text-sm text-gray-600">{saved ? 'The original reports were acknowledged for review.' : 'Retry the retained reports exactly. Choose Create another report only to send a separate report about this selection.'}</p>
+        {drafts.map(draft => <div key={draft.submissionId} className="mt-3">
+          <p className="text-sm font-medium">{FLAG_REASONS.find(reason => reason.id === draft.flags[0].reason)?.label || draft.flags[0].reason}</p>
+          {draft.flags[0].notes && <p className="mt-1 whitespace-pre-wrap text-sm">{draft.flags[0].notes}</p>}
+          {draft.flags[0].suggestion && <p className="mt-1 whitespace-pre-wrap text-sm">Suggestion: {draft.flags[0].suggestion}</p>}
+          {draft.revision !== flow.scope.policy?.revision && <p className="mt-1 text-sm text-amber-900">This original report belongs to an earlier permission revision and is held for review.</p>}
+          <FlagDraftStatus flow={flow} draft={draft} allowRetry={flow.scope.policy?.state === 'restricted' && draft.revision === flow.scope.policy.revision} />
+        </div>)}
+        <div className="mt-4 flex flex-wrap gap-3">
+          <button data-flag-close onClick={saved ? onDone : onClose} className="rounded-xl bg-gray-100 px-4 py-2">{saved ? 'Done' : 'Close'}</button>
+          <button onClick={onNew} className="rounded-xl border border-red-300 px-4 py-2">Create another report</button>
+        </div>
+      </div>;
+    }
+
     // Flag one word (item), one sentence or one colour phrase ({ id, native, meaning, hint }):
     // what's on screen is saved with it, so it can be reviewed later
     function FlagModal({ item, sentence, phrase, languageCode, onClose, defaultReason = 'pronunciation' }) {
+      const editor = useFlagEditor(languageCode, JSON.stringify(['single', item?.id || null, sentence?.id || null, phrase?.id || null]));
+      const flow = editor.flow;
       const fontClass = LANGUAGE_FONTS[languageCode] || 'font-body';
       const native = sentence ? sentence.native_text : phrase ? phrase.native : item?.translation?.native_text;
       const shownDev = (sentence ? sentenceHint(sentence.native_text, languageCode) : phrase ? phrase.hint : item?.translation?.devanagari) || '';
@@ -1937,40 +2203,77 @@
       const [submitting, setSubmitting] = useState(false);
       const [submitted, setSubmitted] = useState(false);
       const [errMsg, setErrMsg] = useState('');
+      const [queued, setQueued] = useState(false);
+      const [draft, setDraft] = useState(null);
+      const [anotherReport, setAnotherReport] = useState(false);
+      const existingAtOpen = React.useRef([]);
+      const draftRef = React.useRef(null), running = React.useRef(false), closeTimer = React.useRef(null);
       const isPron = selectedReason === 'pronunciation';
-
-      useEffect(() => {
-        const onEsc = (e) => { if (e.key === 'Escape') onClose(); };
-        window.addEventListener('keydown', onEsc);
-        return () => window.removeEventListener('keydown', onEsc);
-      }, [onClose]);
+      const busy = submitting || flow.busy(draft);
+      const saved = editor.restricted ? !!draft && flow.progress(draft).status === 'saved' : submitted;
+      const locked = !!draft || busy;
+      const existing = flow.pending.filter(pending => flagTargets(pending.flags) === flagTargets([{
+        vocabulary_id: item?.id, sentence_id: sentence?.id, colour_phrase_id: phrase?.id,
+      }]));
+      if (!draft && !anotherReport && existing.length) existingAtOpen.current = existing;
+      useEffect(() => () => clearTimeout(closeTimer.current), []);
+      const legacyCurrent = async () => {
+        if (!editor.legacy || !editor.current()) return false;
+        const identity = await supabase.auth.getSession();
+        return !identity.error && identity.data?.session?.user?.id === editor.original.ownerId && editor.current();
+      };
 
       const handleSubmit = async () => {
-        if (!selectedReason) return;
+        if (!selectedReason || running.current || !editor.current() || (!editor.restricted && !editor.legacy)) return;
+        running.current = true;
         setSubmitting(true); setErrMsg('');
-        const base = { vocabulary_id: item?.id || null, language_code: languageCode, reason: selectedReason, notes: notes.trim() || null, status: 'open' };
-        const extra = { shown_devanagari: shownDev || null, suggestion: isPron ? (suggestion.trim() || null) : null, sentence_id: sentence?.id || null,
-          ...(phrase ? { colour_phrase_id: phrase.id } : {}) };
-        let { error } = await supabase.from('kg_chart_flags').insert({ ...base, ...extra });
-        if (error && isMissingColumn(error)) {
-          // Older table: keep the same details in the note
-          const parts = [sentence && `Sentence: ${sentence.native_text}`, phrase && `Colour phrase: ${phrase.native} (${phrase.meaning})`, shownDev && `Devanagari shown: ${shownDev}`, extra.suggestion && `Should be: ${extra.suggestion}`, base.notes];
-          ({ error } = await supabase.from('kg_chart_flags').insert({ ...base, notes: parts.filter(Boolean).join(' · ') || null }));
+        try {
+          const base = { vocabulary_id: item?.id || null, language_code: languageCode, reason: selectedReason, notes: notes.trim() || null, status: 'open' };
+          const extra = { shown_devanagari: shownDev || null, suggestion: isPron ? (suggestion.trim() || null) : null, sentence_id: sentence?.id || null,
+            ...(phrase ? { colour_phrase_id: phrase.id } : {}) };
+          if (editor.restricted) {
+            if (!draftRef.current) {
+              const authored = flow.author([{ ...base, ...extra }], anotherReport);
+              draftRef.current = authored.draft; setDraft(authored.draft);
+              if (!authored.retained) return;
+            }
+            await flow.retry(draftRef.current);
+            return;
+          }
+          if (!await legacyCurrent()) return;
+          let response = await supabase.from('kg_chart_flags').insert({ ...base, ...extra });
+          if (!await legacyCurrent()) return;
+          if (response.error && isMissingColumn(response.error)) {
+            // Compatibility applies only to this uninterrupted legacy scope.
+            const parts = [sentence && `Sentence: ${sentence.native_text}`, phrase && `Colour phrase: ${phrase.native} (${phrase.meaning})`, shownDev && `Devanagari shown: ${shownDev}`, extra.suggestion && `Should be: ${extra.suggestion}`, base.notes];
+            response = await supabase.from('kg_chart_flags').insert({ ...base, notes: parts.filter(Boolean).join(' · ') || null });
+            if (!await legacyCurrent()) return;
+          }
+          if (response.error) { setErrMsg(response.error.message || 'Could not save flag'); return; }
+          setQueued(response.saveDestination === 'device'); setSubmitted(true);
+          closeTimer.current = setTimeout(() => { if (editor.current()) onClose(); }, 1200);
+        } catch (error) {
+          if (editor.current()) setErrMsg(error.message || 'Could not save flag');
+        } finally {
+          running.current = false;
+          if (editor.current()) setSubmitting(false);
         }
-        setSubmitting(false);
-        if (error) { console.error(error); setErrMsg(error.message || 'Could not save flag'); return; }
-        setSubmitted(true);
-        setTimeout(onClose, 1200);
       };
 
       return (
-        <div data-kg-modal className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl animate-scale-in max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-            {submitted ? (
+        <FlagDialogShell title="Flag for review" busy={busy} onClose={onClose} canRestoreFocus={editor.canRestoreFocus}>
+            {!editor.valid ? <div>
+              <h3 className="text-xl font-bold">Report context changed</h3>
+              <p className="mt-2">The account, permissions, language, or selected item changed. Close and reopen the report. Any submitted draft remains available in recovery.</p>
+              <button data-flag-close onClick={onClose} className="mt-4 rounded-xl bg-gray-100 px-4 py-2">Close</button>
+            </div> : editor.restricted && !draft && !anotherReport && existingAtOpen.current.length ?
+              <ExistingFlagReports flow={flow} drafts={existingAtOpen.current} onNew={() => setAnotherReport(true)} onClose={onClose}
+                onDone={() => { if (editor.current()) onClose(); }} /> : saved ? (
               <div className="text-center py-8">
                 <div className="text-5xl mb-4">✅</div>
-                <h3 className="text-xl font-bold text-gray-800">Flag Submitted</h3>
-                <p className="text-gray-500 mt-2">Saved for review in admin → 🚩 Flags.</p>
+                <h3 className="text-xl font-bold text-gray-800">{queued ? 'Flag saved on this device' : 'Flag Submitted'}</h3>
+                <p className="text-gray-500 mt-2">{queued ? 'Waiting to sync when this device reconnects.' : 'The original report was acknowledged for review.'}</p>
+                <button data-flag-close onClick={() => { if (editor.current()) onClose(); }} className="mt-5 rounded-xl bg-gray-100 px-5 py-2">Done</button>
               </div>
             ) : (
               <>
@@ -1982,7 +2285,7 @@
                 </div>
                 <div className="space-y-2 mb-4">
                   {reasons.map(r => (
-                    <button key={r.id} onClick={() => setSelectedReason(r.id)}
+                    <button key={r.id} disabled={locked} onClick={() => setSelectedReason(r.id)}
                       className={`w-full px-4 py-3 rounded-xl text-left text-sm font-medium transition-all flex items-center gap-3 ${
                         selectedReason === r.id ? 'bg-red-50 text-red-700 ring-2 ring-red-300' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
                       }`}>
@@ -1993,32 +2296,33 @@
                 {isPron && (
                   <div className="mb-3">
                     <label className="block text-xs font-semibold text-gray-600 mb-1">What it should be (optional)</label>
-                    <input value={suggestion} onChange={e => setSuggestion(e.target.value)} placeholder={shownDev || 'e.g. अनेʼयाउं, or describe the sound'}
+                    <input disabled={locked} value={suggestion} onChange={e => setSuggestion(e.target.value)} placeholder={shownDev || 'e.g. अनेʼयाउं, or describe the sound'}
                       className="w-full px-4 py-3 border border-gray-200 rounded-xl text-lg font-devanagari focus:ring-2 focus:ring-red-300 focus:border-transparent" />
                   </div>
                 )}
-                <textarea value={notes} onChange={e => setNotes(e.target.value)}
+                <textarea disabled={locked} value={notes} onChange={e => setNotes(e.target.value)}
                   className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-300 focus:border-transparent"
                   placeholder={isPron ? 'What sounds odd? (optional)' : 'Optional notes...'} rows={2} />
                 {errMsg && <div role="alert" className="mt-3 px-4 py-3 rounded-xl bg-red-50 text-red-700 text-sm">Couldn't save: {errMsg}</div>}
+                {!editor.restricted && !editor.legacy && <p role="alert" className="mt-3 text-sm text-amber-900">Report permissions have not been verified. Close and reopen after reconnecting.</p>}
+                <FlagDraftStatus flow={flow} draft={draft} allowRetry={editor.valid && editor.restricted} />
                 <div className="flex gap-3 mt-4">
-                  <button onClick={onClose} className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-medium hover:bg-gray-200 transition">Cancel</button>
-                  <button onClick={handleSubmit} disabled={!selectedReason || submitting}
+                  <button data-flag-close onClick={onClose} className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-medium hover:bg-gray-200 transition">{draft ? 'Close and keep pending flags' : 'Cancel'}</button>
+                  {!draft && <button onClick={handleSubmit} disabled={!selectedReason || busy || (!editor.restricted && !editor.legacy)}
                     className="flex-1 py-3 bg-red-500 text-white rounded-xl font-medium hover:bg-red-600 transition disabled:opacity-40">
                     {submitting ? 'Submitting...' : 'Submit Flag'}
-                  </button>
+                  </button>}
                 </div>
               </>
             )}
-          </div>
-        </div>
+        </FlagDialogShell>
       );
     }
 
     // Small 🚩 for quiz / Speak screens
     function FlagButton({ onClick, compact = false }) {
       return (
-        <button type="button" onClick={(e) => { e.stopPropagation(); onClick(); }} title="Flag wrong Devanagari, word, picture…"
+        <button type="button" onClick={(e) => { e.stopPropagation(); e.currentTarget.focus({ preventScroll: true }); onClick(); }} title="Flag wrong Devanagari, word, picture…"
           className={compact ? 'w-8 h-8 rounded-full text-sm text-gray-400 hover:bg-red-50 hover:text-red-500 transition'
                              : 'px-3 py-1.5 rounded-full text-sm font-medium bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-500 transition'}>
           {compact ? '🚩' : '🚩 Flag'}
@@ -2027,48 +2331,95 @@
     }
 
     function BatchFlagModal({ items, languageCode, onClose, onDone }) {
+      const editor = useFlagEditor(languageCode, JSON.stringify(['batch', items.map(item => item.id)]));
+      const flow = editor.flow;
       const [selectedReason, setSelectedReason] = useState('');
       const [notes, setNotes] = useState('');
       const [submitting, setSubmitting] = useState(false);
       const [progress, setProgress] = useState(0);
       const [done, setDone] = useState(false);
       const [failMsg, setFailMsg] = useState('');
+      const [queued, setQueued] = useState(false);
+      const [draft, setDraft] = useState(null);
+      const [anotherReport, setAnotherReport] = useState(false);
+      const existingAtOpen = React.useRef([]);
+      const draftRef = React.useRef(null), running = React.useRef(false), closeTimer = React.useRef(null);
+      const busy = submitting || flow.busy(draft);
+      const saved = editor.restricted ? !!draft && flow.progress(draft).status === 'saved' : done;
+      const locked = !!draft || busy;
+      const existing = flow.pending.filter(pending => flagTargets(pending.flags) === flagTargets(items.map(item => ({ vocabulary_id: item.id }))));
+      if (!draft && !anotherReport && existing.length) existingAtOpen.current = existing;
+      useEffect(() => () => clearTimeout(closeTimer.current), []);
+      const legacyCurrent = async () => {
+        if (!editor.legacy || !editor.current()) return false;
+        const identity = await supabase.auth.getSession();
+        return !identity.error && identity.data?.session?.user?.id === editor.original.ownerId && editor.current();
+      };
 
       const handleSubmit = async () => {
-        if (!selectedReason) return;
-        setSubmitting(true);
-        const flags = items.map(item => ({
-          vocabulary_id: item.id,
-          language_code: languageCode,
-          reason: selectedReason,
-          notes: notes.trim() || null,
-          status: 'open',
-          shown_devanagari: item.translation?.devanagari || null,
-        }));
-
-        let completed = 0, failed = 0, lastErr = null;
-        // Insert in batches of 10
-        for (let i = 0; i < flags.length; i += 10) {
-          const batch = flags.slice(i, i + 10);
-          let { error } = await supabase.from('kg_chart_flags').insert(batch);
-          if (error && isMissingColumn(error)) ({ error } = await supabase.from('kg_chart_flags').insert(batch.map(({ shown_devanagari, ...f }) => ({ ...f, notes: [shown_devanagari && `Devanagari shown: ${shown_devanagari}`, f.notes].filter(Boolean).join(' · ') || null }))));
-          if (error) { console.error(error); failed += batch.length; lastErr = error; }
-          completed += batch.length;
-          setProgress(Math.round((completed / flags.length) * 100));
+        if (!selectedReason || !items.length || running.current || !editor.current() || (!editor.restricted && !editor.legacy)) return;
+        running.current = true;
+        setSubmitting(true); setFailMsg('');
+        try {
+          const flags = items.map(item => ({
+            vocabulary_id: item.id,
+            language_code: languageCode,
+            reason: selectedReason,
+            notes: notes.trim() || null,
+            status: 'open',
+            shown_devanagari: item.translation?.devanagari || null,
+          }));
+          if (editor.restricted) {
+            if (!draftRef.current) {
+              // Persist every report ID and stable batch before the first RPC.
+              const authored = flow.author(flags, anotherReport);
+              draftRef.current = authored.draft; setDraft(authored.draft);
+              if (!authored.retained) return;
+            }
+            await flow.retry(draftRef.current);
+            return;
+          }
+          let confirmed = 0, failed = 0, lastErr = null, deviceQueued = false;
+          for (let i = 0; i < flags.length; i += 10) {
+            if (!await legacyCurrent()) return;
+            const batch = flags.slice(i, i + 10);
+            let response = await supabase.from('kg_chart_flags').insert(batch);
+            if (!await legacyCurrent()) return;
+            if (response.error && isMissingColumn(response.error)) {
+              response = await supabase.from('kg_chart_flags').insert(batch.map(({ shown_devanagari, ...f }) => ({ ...f, notes: [shown_devanagari && `Devanagari shown: ${shown_devanagari}`, f.notes].filter(Boolean).join(' · ') || null })));
+              if (!await legacyCurrent()) return;
+            }
+            if (response.error) { failed += batch.length; lastErr = response.error; }
+            else if (response.saveDestination === 'device') deviceQueued = true;
+            else confirmed += batch.length;
+            setProgress(confirmed);
+          }
+          if (failed) { setFailMsg(`${failed} of ${flags.length} flags not saved — ${lastErr.message}`); return; }
+          setQueued(deviceQueued); setDone(true);
+          closeTimer.current = setTimeout(() => { if (editor.current()) onDone(); }, 1500);
+        } catch (error) {
+          if (editor.current()) setFailMsg(error.message || 'Could not save flags');
+        } finally {
+          running.current = false;
+          if (editor.current()) setSubmitting(false);
         }
-        if (failed) { setSubmitting(false); setFailMsg(`${failed} of ${flags.length} flags not saved — ${lastErr.message}`); return; }
-        setDone(true);
-        setTimeout(onDone, 1500);
       };
 
       return (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl animate-scale-in" onClick={e => e.stopPropagation()}>
-            {done ? (
+        <FlagDialogShell title="Batch flags for review" busy={busy} onClose={onClose} canRestoreFocus={editor.canRestoreFocus}>
+            {!editor.valid ? <div>
+              <h3 className="text-xl font-bold">Report context changed</h3>
+              <p className="mt-2">The account, permissions, language, or selected items changed. Close and reopen the report. Any submitted selection remains available in recovery.</p>
+              <button data-flag-close onClick={onClose} className="mt-4 rounded-xl bg-gray-100 px-4 py-2">Close</button>
+            </div> : editor.restricted && !draft && !anotherReport && existingAtOpen.current.length ?
+              <ExistingFlagReports flow={flow} drafts={existingAtOpen.current} onNew={() => setAnotherReport(true)} onClose={onClose}
+                onDone={() => { if (editor.current()) onDone(); }} /> : saved ? (
               <div className="text-center py-8">
                 <div className="text-5xl mb-4">✅</div>
-                <h3 className="text-xl font-bold text-gray-800">{items.length} Flag{items.length > 1 ? 's' : ''} Submitted</h3>
-                <p className="text-gray-500 mt-2">All flags will appear in the admin panel.</p>
+                <h3 className="text-xl font-bold text-gray-800">{queued ? 'Flags saved on this device' : `${draft?.flags.length || items.length} Flags Submitted`}</h3>
+                <p className="text-gray-500 mt-2">{queued ? 'Some reports are waiting to sync when this device reconnects.' : 'All original reports were acknowledged for review.'}</p>
+                {draft && <FlagDraftStatus flow={flow} draft={draft} />}
+                <button data-flag-close onClick={() => { if (editor.current()) onDone(); }} className="mt-5 rounded-xl bg-gray-100 px-5 py-2">Done</button>
               </div>
             ) : (
               <>
@@ -2092,7 +2443,7 @@
                 <p className="text-sm text-gray-500 mb-3 font-medium">What's the issue?</p>
                 <div className="space-y-2 mb-4">
                   {FLAG_REASONS.map(r => (
-                    <button key={r.id} onClick={() => setSelectedReason(r.id)}
+                    <button key={r.id} disabled={locked} onClick={() => setSelectedReason(r.id)}
                       className={`w-full px-4 py-3 rounded-xl text-left text-sm font-medium transition-all flex items-center gap-3 ${
                         selectedReason === r.id ? 'bg-red-50 text-red-700 ring-2 ring-red-300' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
                       }`}>
@@ -2100,32 +2451,33 @@
                     </button>
                   ))}
                 </div>
-                <textarea value={notes} onChange={e => setNotes(e.target.value)}
+                <textarea disabled={locked} value={notes} onChange={e => setNotes(e.target.value)}
                   className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-300 focus:border-transparent"
                   placeholder="Optional notes (applies to all selected)..." rows={2} />
 
-                {submitting && (
+                {submitting && !editor.restricted && (
                   <div className="mt-3">
                     <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-red-500 rounded-full transition-all duration-300" style={{width: `${progress}%`}} />
+                      <div className="h-full bg-red-500 rounded-full transition-all duration-300" style={{width: `${Math.round(progress / items.length * 100)}%`}} />
                     </div>
-                    <p className="text-xs text-gray-500 mt-1 text-center">Submitting... {progress}%</p>
+                    <p className="text-xs text-gray-500 mt-1 text-center">{progress} of {items.length} flags confirmed</p>
                   </div>
                 )}
                 {failMsg && <div role="alert" className="mt-3 px-4 py-3 rounded-xl bg-red-50 text-red-700 text-sm">Couldn't save: {failMsg}</div>}
+                {!editor.restricted && !editor.legacy && <p role="alert" className="mt-3 text-sm text-amber-900">Report permissions have not been verified. Close and reopen after reconnecting.</p>}
+                <FlagDraftStatus flow={flow} draft={draft} allowRetry={editor.valid && editor.restricted} />
 
                 <div className="flex gap-3 mt-4">
-                  <button onClick={onClose} disabled={submitting}
-                    className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-medium hover:bg-gray-200 transition disabled:opacity-40">Cancel</button>
-                  <button onClick={handleSubmit} disabled={!selectedReason || submitting}
+                  <button data-flag-close onClick={onClose}
+                    className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-medium hover:bg-gray-200 transition disabled:opacity-40">{draft ? 'Close and keep pending flags' : 'Cancel'}</button>
+                  {!draft && <button onClick={handleSubmit} disabled={!selectedReason || busy || (!editor.restricted && !editor.legacy)}
                     className="flex-1 py-3 bg-red-500 text-white rounded-xl font-medium hover:bg-red-600 transition disabled:opacity-40">
                     {submitting ? 'Submitting...' : `Flag ${items.length} Item${items.length > 1 ? 's' : ''}`}
-                  </button>
+                  </button>}
                 </div>
               </>
             )}
-          </div>
-        </div>
+        </FlagDialogShell>
       );
     }
 
@@ -7648,6 +8000,7 @@
             activeView={selectedView} onViewChange={view => { if (window.KGLearnerAccess.canView(policy, view)) setActiveView(view); }}
             meaning={MEANING_LANGS[selectedLanguage] || null} meaningsInEnglish={meaningsInEnglish} onToggleMeanings={setMeaningsInEnglish} />
 
+          <FlagRecoveryPanel user={user} languageCode={selectedLanguage} policy={policy} />
           <PreferenceRecoveryPanel flow={preferences} />
           <PictureDownloads vocabulary={vocabulary} loading={loadingVocab || !priv.loaded} />
           <RatingRecoveryPanel flow={ratingFlow} vocabulary={vocabulary} />

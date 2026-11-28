@@ -41,6 +41,13 @@ function installFakeClient() {
     topic_id: 'food', english_text: `Word ${i}`, display_text: `Word ${i}`,
     image_filename: `emoji:${emoji}`, translation: {native_text: `Native ${i}`, devanagari: ''},
   }));
+  // Only the flag route uses a selection larger than one server batch. The
+  // original four-word quiz fixtures and all their evidence stay unchanged.
+  const flagWords = Array.from({length:12},(_,i)=>({
+    ...words[i%words.length],id:`22000000-0000-4000-8000-${String(i+1).padStart(12,'0')}`,
+    english_text:`Word ${i}`,display_text:`Word ${i}`,
+    translation:{native_text:`Native ${i}`,devanagari:`शब्द ${i}`},
+  }));
   const sentences = words.map((_, i) => ({
     id: `33000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`,
     language_code: 'my', group_name: 'Fictional group', native_text: `Sentence ${i}`,
@@ -56,6 +63,7 @@ function installFakeClient() {
     levelCalls: 0, ratingCalls: 0, colourReceipts: {}, ratingVersions: {}, ratingReceipts: {}, ratingRequests: [],
     reads: [], levelRequests: [], levelScopes: {}, levelRevisions: {[owner]:17}, mcqReceipts: {},
     preferenceRequests: [], preferenceVersions: {}, preferenceReceipts: {}, typingPermissions: {},
+    flagRequests: [], flagReceipts: {}, flagDeniedTargets: [], accessModes: {[owner]:'restricted'},
     pathRevision:17,pathReset:null,pathVersion:0,pathComplete:false,pathCompletedAt:null,
     pathEligible:'2026-11-27T12:00:00.123456+00:00',pathReceipts:{},pathRequests:[],
     tables: {
@@ -65,11 +73,35 @@ function installFakeClient() {
       kg_chart_user_ratings: [],
       kg_chart_user_prefs: [{user_id:owner,audio_voice:'f',audio_muted:false,typing_best:{}}],
       kg_chart_user_levels: [{email: 'fixture@example.invalid', language_code: 'my', level: 1, unlocked: 1}],
+      kg_chart_flags: [],
     },
   };
   const assertFixture = (condition, message) => { if (!condition) throw Error(message); };
   const persist = () => localStorage.setItem(KEY, JSON.stringify(state));
   persist();
+  const canonicalFlag=flag=>Object.fromEntries(['id','language_code','vocabulary_id','sentence_id',
+    'colour_phrase_id','reason','notes','shown_devanagari','suggestion'].map(key=>[key,flag[key]??null]));
+  const jsonbText=value=>Array.isArray(value)?'['+value.map(jsonbText).join(', ')+']':
+    value&&typeof value==='object'?'{'+Object.entries(value).map(([key,item])=>JSON.stringify(key)+': '+jsonbText(item)).join(', ')+'}':JSON.stringify(value);
+  const flagTargetAllowed=flag=>!state.flagDeniedTargets.includes(flag.vocabulary_id||flag.sentence_id||flag.colour_phrase_id)&&
+    ['my','ja'].includes(flag.language_code)&&(flag.vocabulary_id?flagWords.some(word=>word.id===flag.vocabulary_id):
+      flag.sentence_id?sentences.some(sentence=>sentence.id===flag.sentence_id&&sentence.language_code===flag.language_code):
+      phrases.some(phrase=>phrase.id===flag.colour_phrase_id&&phrase.language_code===flag.language_code));
+  const validFlag=flag=>{
+    const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    const bytes=value=>new TextEncoder().encode(value||'').length;
+    return flag&&typeof flag==='object'&&!Array.isArray(flag)&&uuid.test(flag.id)&&
+      Object.keys(flag).every(key=>['id','language_code','vocabulary_id','sentence_id','colour_phrase_id',
+        'reason','notes','status','shown_devanagari','suggestion'].includes(key))&&
+      Object.values(flag).every(value=>value===null||typeof value==='string')&&
+      typeof flag.language_code==='string'&&flag.language_code.trim().length>0&&flag.language_code.length<=32&&
+      [flag.vocabulary_id,flag.sentence_id,flag.colour_phrase_id].filter(value=>value!==null&&value!==undefined).length===1&&
+      [flag.vocabulary_id,flag.sentence_id,flag.colour_phrase_id].every(value=>value==null||uuid.test(value))&&
+      flag.status==='open'&&['pronunciation','wrong_word','missing_image','missing_translation','needs_review'].includes(flag.reason)&&
+      !(flag.sentence_id&&flag.reason==='missing_image')&&!(flag.colour_phrase_id&&flag.reason==='missing_translation')&&
+      (flag.suggestion==null||flag.reason==='pronunciation')&&bytes(flag.notes)<=16384&&
+      bytes(flag.shown_devanagari)<=8192&&bytes(flag.suggestion)<=8192;
+  };
   const mcqTypes = ['native_to_image','image_to_native','devanagari_to_image',
     'english_to_native','listen_to_image','listen_to_native'];
   const levelKey = (ownerId,languageCode) => ownerId+'|'+languageCode;
@@ -175,6 +207,13 @@ function installFakeClient() {
     rate: () => { state.ratingCalls++; persist(); },
     externalRating: (id,value)=>changeRating(id,value,'2026-11-27T12:00:00Z','2026-11-27T12:00:00Z'),
     setOwner: value => { state.owner=value; persist(); },
+    setAccessMode: value => {state.accessModes[state.owner]=value;persist();},
+    denyFlagTarget: id => {state.flagDeniedTargets.push(id);persist();},
+    moderateFlag: (id,status='resolved')=>{
+      const flag=state.tables.kg_chart_flags.find(row=>row.id===id);
+      assertFixture(flag,'Only an existing fictional flag can be moderated');
+      flag.status=status;flag.resolved_at='2026-11-28T12:00:00Z';persist();
+    },
     seedPreferences: (value,{ownerId=state.owner,version=0,revision=17}={})=>{
       const next={...preferenceRow(ownerId),...copy(value),user_id:ownerId};
       state.tables.kg_chart_user_prefs=state.tables.kg_chart_user_prefs.filter(row=>row.user_id!==ownerId);
@@ -200,11 +239,12 @@ function installFakeClient() {
     },
     resetPath:(at='2026-11-27T13:00:00.123457+00:00')=>{state.pathRevision++;state.pathReset=at;state.pathComplete=false;state.pathEligible=null;persist();},
     eligiblePath:at=>{state.pathEligible=at;persist();},
-    words, user: {id: owner, email: 'fixture@example.invalid'},
+    words, flagWords, user: {id: owner, email: 'fixture@example.invalid'},
   };
   window.__kgF1 = api;
   const initial=window.__kgF1Initial;
   if(initial&&!state.initializedByScenario){
+    if(initial.policyState)api.setAccessMode(initial.policyState);
     if(initial.level)api.setLevel(initial.level);
     for(const fault of initial.faults||[])api.fault(fault.table,fault.mode);
     if(initial.legacyLevel){
@@ -222,6 +262,44 @@ function installFakeClient() {
     auth: {async getSession() { return {data: {session: state.owner?{user: {id: state.owner}}:null}, error: null}; }},
     async rpc(name, args) {
       if(name==='kg_chart_my_answers')return {data:[],error:null};
+      if(name==='kg_chart_f2_submit_flags'){
+        const ownerId=state.owner,revision=state.levelRevisions[ownerId]||17;
+        state.flagRequests.push({name,args:copy(args),ownerId});persist();
+        const i=state.faults.findIndex(fault=>fault.table===name),fault=i<0?null:state.faults.splice(i,1)[0];persist();
+        if(!ownerId||args.p_owner_id!==ownerId||!state.permitted||(state.accessModes[ownerId]||'restricted')!=='restricted')
+          return {error:{code:'42501',message:'Synthetic reporter or permission denied'}};
+        if(args.p_expected_revision!==revision)return {error:{code:'40001',message:'Synthetic permission revision changed'}};
+        const flags=args.p_flags;
+        if(!Array.isArray(flags)||flags.length<1||flags.length>10||new TextEncoder().encode(jsonbText(flags)).length>262144||flags.some(flag=>!validFlag(flag))||
+          new Set(flags.map(flag=>flag.id)).size!==flags.length)return {error:{code:'22023',message:'Synthetic malformed report batch'}};
+        // Current target authorization is checked before even an exact replay.
+        if(flags.some(flag=>!flagTargetAllowed(flag))||fault?.mode==='deny')
+          return {error:{code:'42501',message:'Synthetic flag target denied'}};
+        if(fault?.mode==='fail')return {error:{message:'Synthetic flag connection failure'}};
+        for(const flag of flags){
+          const receipt=state.flagReceipts[flag.id],saved=state.tables.kg_chart_flags.find(row=>row.id===flag.id);
+          if(receipt?(receipt.ownerId!==ownerId||JSON.stringify(receipt.payload)!==JSON.stringify(canonicalFlag(flag))||
+              !saved||saved.reporter_id!==ownerId||JSON.stringify(canonicalFlag(saved))!==JSON.stringify(receipt.payload)):!!saved)
+            return {error:{code:'23505',message:'Synthetic report identity conflict'}};
+        }
+        // Validate the entire group before changing any row or receipt, just
+        // as the native PostgreSQL transaction rolls all rows back together.
+        for(const flag of flags)if(!state.flagReceipts[flag.id]){
+          state.flagReceipts[flag.id]={ownerId,payload:canonicalFlag(flag)};
+          state.tables.kg_chart_flags.push({...copy(flag),reporter_id:ownerId,status:'open'});
+        }
+        persist();
+        const result={flag_ids:flags.map(flag=>flag.id).sort(),count:flags.length,expected_revision:revision};
+        if(fault?.mode==='hold')await new Promise(resolve=>{release=resolve;});
+        if(fault?.mode==='lost-ack')return {error:{message:'Synthetic flag reply lost after commit'}};
+        if(fault?.mode==='wrong-id')result.flag_ids[0]='99000000-0000-4000-8000-000000000001';
+        if(fault?.mode==='duplicate-id')result.flag_ids[1]=result.flag_ids[0];
+        if(fault?.mode==='extra-id')result.flag_ids.push('99000000-0000-4000-8000-000000000001');
+        if(fault?.mode==='wrong-count')result.count++;
+        if(fault?.mode==='wrong-revision')result.expected_revision++;
+        if(fault?.mode==='reversed')result.flag_ids.reverse();
+        return {data:result,error:null};
+      }
       if(['kg_chart_f2_my_preferences','kg_chart_f2_patch_preferences'].includes(name)){
         const ownerId=state.owner,revision=state.levelRevisions[ownerId]||17;
         state.preferenceRequests.push({name,args:copy(args),ownerId});persist();
@@ -471,9 +549,20 @@ function installFakeClient() {
           const fault = faultIndex >= 0 ? state.faults.splice(faultIndex, 1)[0] : null;
           persist();
           if (fault?.mode === 'hold') await new Promise(resolve => { release = resolve; });
+          if (fault?.mode === 'hold-missing-column') {
+            await new Promise(resolve=>{release=resolve;});
+            return {data:null,error:{code:'PGRST204',message:'Synthetic missing compatibility column'}};
+          }
           if (fault?.mode === 'deny') { state.permitted = false; persist(); }
           if (!state.permitted) return {data: null, error: {code: '42501', message: 'Synthetic RLS denial'}};
           if (fault?.mode === 'fail') return {data: null, error: {message: 'Synthetic connection failure'}};
+          if(table==='kg_chart_flags'){
+            if((state.accessModes[state.owner]||'restricted')!=='legacy')return {error:{code:'42501',message:'Synthetic restricted direct flag write denied'}};
+            if(fault?.mode==='missing-column')return {error:{code:'PGRST204',message:'Synthetic missing compatibility column'}};
+            const rows=q.rows.map(row=>({...row,id:row.id||crypto.randomUUID(),reporter_id:state.owner}));
+            state.tables[table].push(...rows);persist();
+            return {data:copy(rows),error:null};
+          }
           if(table==='kg_chart_user_prefs'&&q.op==='upsert'){
             if(q.rows.some(row=>row.user_id!==state.owner))return {error:{code:'42501'}};
             for(const row of q.rows){
@@ -563,6 +652,7 @@ const harness = `
           if(patch.logout)window.__kgF1.setOwner(null);
           else if(patch.ownerId)window.__kgF1.setOwner(patch.ownerId);
           if(patch.revision!==undefined)window.__kgF1.levelRevision(patch.revision);
+          if(patch.policyState)window.__kgF1.setAccessMode(patch.policyState);
           setIdentity(old=>({user:patch.logout?null:patch.ownerId?{...fixtureUser,...old.user,id:patch.ownerId}:old.user,
             languageCode:patch.languageCode||old.languageCode,revision:patch.revision??old.revision,
             policyState:patch.policyState||old.policyState}));
@@ -581,6 +671,8 @@ const harness = `
               <button onClick={() => setShown(false)}>Leave quiz view</button>
               <button onClick={() => setShown(true)}>Reopen quiz view</button>
             </div>
+            {kind.startsWith('flags')&&<FlagRecoveryPanel user={identity.user}
+              languageCode={identity.languageCode} policy={scope?.policy}/>}
             {shown ? kind === 'word'
               ? <WordQuizView key={identity.user?.id+':'+identity.languageCode} topics={[{ id: 'food', icon: '🍎', translation: { title_native: 'Food' } }]}
                   vocabulary={fixtureWords} poolVocabulary={fixtureWords} ratings={{}}
@@ -596,6 +688,12 @@ const harness = `
               : kind === 'path' ? <PathFixture policy={scope?.policy}/>
               : kind.startsWith('preferences') ? <PreferenceFixture policy={scope?.policy} user={identity.user}
                   languageCode={identity.languageCode} audioOnly={kind==='preferences-audio'}/>
+              : kind==='flags-chart' ? <ChartView topic={{id:'food',icon:'🍎',translation:{title_native:'Food'}}}
+                  vocabulary={window.__kgF1.flagWords} ratings={{}} onRate={window.__kgF1.rate}
+                  languageCode={identity.languageCode} showEnglish onToggleEnglish={()=>{}} meaningName="English"/>
+              : kind==='flags-colour' ? <ColourQuizView languageCode={identity.languageCode} user={identity.user}/>
+              : kind==='flags-sentence' ? <SentenceQuizView languageCode={identity.languageCode} user={identity.user}
+                  meaningName="English" sentenceAccess={fixtureSentenceAccess} onSessionSaved={window.__kgF1.callback}/>
               : <SentenceQuizView languageCode="my" user={fixtureUser} meaningName="English"
                   sentenceAccess={fixtureSentenceAccess} onSessionSaved={window.__kgF1.callback} />
               : <p>Outside quiz</p>}
@@ -660,6 +758,7 @@ async function scenario(name, kind, run, restricted = false, initial = null) {
       if(initial?.policyState==='legacy')await page.getByRole('button',{name:'Change audio voice',exact:true}).waitFor();
       else await page.getByRole('region',{name:'Personal preferences'}).waitFor();
     }
+    else if(kind==='flags-chart')await page.locator('#chart-card-22000000-0000-4000-8000-000000000001').waitFor();
     else if(kind==='word'&&restricted&&initial?.policyState!=='legacy')await page.getByRole('region',{name:'Difficulty status'}).waitFor();
     else await page.getByRole('button', {name: /^Start Quiz/}).waitFor();
     await run(page);
@@ -675,6 +774,39 @@ async function scenario(name, kind, run, restricted = false, initial = null) {
   } finally { await context.close(); }
 }
 const snapshot = page => page.evaluate(() => window.__kgF1.snapshot());
+const flagRpc='kg_chart_f2_submit_flags';
+const flagDialog=(page,batch=false)=>page.getByRole('dialog',{name:batch?'Batch flags for review':'Flag for review',exact:true});
+const flagRecovery=page=>page.getByRole('region',{name:'Flag recovery',exact:true});
+const pendingFlags=page=>page.evaluate(()=>Object.keys(localStorage)
+  .filter(key=>key.startsWith('kg-chart-flag-recovery-v1:'))
+  .map(key=>JSON.parse(localStorage.getItem(key))));
+async function openWordFlag(page,index=0){
+  await page.locator('#chart-card-22000000-0000-4000-8000-'+String(index+1).padStart(12,'0'))
+    .locator('img').click();
+  await page.getByTitle('Report an issue',{exact:true}).click();
+  await flagDialog(page).waitFor();
+  return flagDialog(page);
+}
+async function openBatchFlags(page){
+  await page.getByRole('button',{name:'🚩 Flag Mode',exact:true}).click();
+  await page.getByRole('button',{name:'Select All',exact:true}).click();
+  await page.getByRole('button',{name:'Submit Flags →',exact:true}).click();
+  const dialog=flagDialog(page,true);await dialog.waitFor();
+  await dialog.getByRole('button',{name:/Needs Review \/ Unsure/}).click();
+  await dialog.locator('textarea').fill('Original batch notes — စမ်းသပ်');
+  return dialog;
+}
+async function flagDownload(page,button){
+  const downloadReady=page.waitForEvent('download');
+  await button.click();
+  const download=await downloadReady,path=await download.path();
+  assert.ok(path,'The original authored flag work must be exportable');
+  return JSON.parse(await readFile(path,'utf8'));
+}
+function assertFlagOnlyRpc(db){
+  assert.equal(db.requests.filter(request=>request.table==='kg_chart_flags').length,0,
+    'Restricted reports must never use direct inserts or schema compatibility fallback');
+}
 const preferenceReadRpc='kg_chart_f2_my_preferences';
 const preferencePatchRpc='kg_chart_f2_patch_preferences';
 const preferenceRegion=page=>page.getByRole('region',{name:'Personal preferences'});
@@ -1984,6 +2116,357 @@ try {
     otherPreferences:{typing_best:{}},faults:[{table:'kg_chart_user_prefs',mode:'hold-typing-read'}],local:{
       'kg_chart_typing_best:owner:11000000-0000-4000-8000-000000000001':{'my|copy|words':{cpm:1,last:1,at:'2026-01-02T10:00:00Z'}},
       'kg_chart_typing_best:owner:11000000-0000-4000-8000-000000000099':{'my|copy|words':{cpm:777,last:777,at:'2026-01-02T10:00:00Z'}}}});
+
+  await scenario('F2E2e actual word flags: styled detail form keeps one immutable intent and permits a distinct later report', 'flags-chart', async page=>{
+    let dialog=await openWordFlag(page);
+    assert.equal(await dialog.getByRole('button',{name:'Cancel',exact:true}).evaluate(button=>button===document.activeElement),true);
+    await page.keyboard.press('Tab');
+    assert.equal(await dialog.evaluate(node=>node.contains(document.activeElement)),true);
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await dialog.getByRole('button',{name:'Cancel',exact:true}).evaluate(button=>button===document.activeElement),true);
+    await page.keyboard.press('Escape');
+    await dialog.waitFor({state:'hidden'});
+    assert.equal((await snapshot(page)).flagRequests.length,0);
+    dialog=await openWordFlag(page);
+    const notes='Original note — စမ်းသပ် · do not replace',suggestion='सुधार';
+    await dialog.locator('input').fill(suggestion);
+    await dialog.locator('textarea').fill(notes);
+    await page.evaluate(name=>window.__kgF1.fault(name,'hold'),flagRpc);
+    await dialog.getByRole('button',{name:'Submit Flag',exact:true}).dblclick();
+    await page.waitForFunction(()=>window.__kgF1.snapshot().flagRequests.length===1);
+    const [draft]=await pendingFlags(page),first=(await snapshot(page)).flagRequests[0];
+    assert.equal(draft.ownerId,'11000000-0000-4000-8000-000000000001');
+    assert.equal(draft.languageCode,'my');assert.equal(draft.revision,17);
+    assert.equal(draft.flags.length,1);assert.deepEqual(draft.batches,[[draft.flags[0].id]]);
+    assert.deepEqual(first.args,{p_expected_revision:17,p_owner_id:draft.ownerId,p_flags:draft.flags});
+    assert.deepEqual(draft.flags[0],{id:draft.flags[0].id,language_code:'my',
+      vocabulary_id:'22000000-0000-4000-8000-000000000001',sentence_id:null,colour_phrase_id:null,
+      reason:'pronunciation',notes,status:'open',shown_devanagari:'शब्द 0',suggestion});
+    await dialog.getByText('0 of 1 flags confirmed.',{exact:true}).waitFor();
+    assert.equal(await dialog.getByRole('button',{name:'Done',exact:true}).count(),0);
+    assert.equal(await dialog.locator('textarea').isDisabled(),true);
+    assert.equal(await dialog.locator('input').isDisabled(),true);
+    await page.keyboard.press('Tab');
+    assert.equal(await dialog.evaluate(node=>node.contains(document.activeElement)),true);
+    await page.evaluate(()=>window.__kgF1.release());
+    await dialog.getByRole('button',{name:'Done',exact:true}).click();
+    await dialog.waitFor({state:'hidden'});
+    assert.equal((await pendingFlags(page)).length,0);
+    assert.equal(await page.locator('#root').getAttribute('inert'),null);
+    dialog=await openWordFlag(page);
+    await dialog.locator('input').fill(suggestion);await dialog.locator('textarea').fill(notes);
+    await dialog.getByRole('button',{name:'Submit Flag',exact:true}).click();
+    await dialog.getByRole('button',{name:'Done',exact:true}).waitFor();
+    const db=await snapshot(page);
+    assert.equal(db.flagRequests.length,2);assert.equal(db.tables.kg_chart_flags.length,2);
+    assert.notEqual(db.flagRequests[1].args.p_flags[0].id,draft.flags[0].id);
+    assert.deepEqual({...db.flagRequests[1].args.p_flags[0],id:draft.flags[0].id},draft.flags[0]);
+    assertFlagOnlyRpc(db);
+  },true);
+
+  await scenario('F2E2e actual sentence flag: the displayed sentence ID and allowed reason survive submission', 'flags-sentence', async page=>{
+    await page.getByRole('button',{name:/^Start Quiz/}).click();
+    const native=(await page.getByText(/^Sentence [0-3]$/).first().textContent()).trim();
+    await page.getByRole('button',{name:/Meaning [0-3]/}).first().click();
+    const origin=page.getByTitle('Flag wrong Devanagari, word, picture…',{exact:true}).last();
+    await origin.click();
+    const dialog=flagDialog(page);await dialog.waitFor();
+    assert.equal(await dialog.getByRole('button',{name:/Missing Image/}).count(),0);
+    await dialog.getByRole('button',{name:/Missing Translation/}).click();
+    await dialog.locator('textarea').fill('Original sentence translation report');
+    await dialog.getByRole('button',{name:'Submit Flag',exact:true}).click();
+    await dialog.getByRole('button',{name:'Done',exact:true}).click();
+    await dialog.waitFor({state:'hidden'});
+    await origin.click({trial:true});
+    assert.equal(await origin.evaluate(button=>button===document.activeElement),true);
+    const db=await snapshot(page),flag=db.flagRequests[0].args.p_flags[0];
+    assert.equal(flag.sentence_id,db.tables.kg_chart_sentences.find(row=>row.native_text===native).id);
+    assert.equal(flag.vocabulary_id,null);assert.equal(flag.colour_phrase_id,null);
+    assert.equal(flag.reason,'missing_translation');assert.equal(flag.suggestion,null);
+    assert.equal(flag.notes,'Original sentence translation report');assert.equal(flag.language_code,'my');
+    assert.equal(db.callbacks,0);assert.equal(db.levelRequests.length,0);assertFlagOnlyRpc(db);
+  },true);
+
+  await scenario('F2E2e actual colour flag: the original phrase ID is retained without invented vocabulary identity', 'flags-colour', async page=>{
+    await page.getByRole('button',{name:/^Start Quiz/}).click();
+    const target=await page.locator('[data-colour-target]').getAttribute('data-colour-target');
+    await page.locator('[data-colour-option]').first().click();
+    await page.getByTitle('Flag wrong Devanagari, word, picture…',{exact:true}).last().click();
+    const dialog=flagDialog(page);await dialog.waitFor();
+    assert.equal(await dialog.getByRole('button',{name:/Missing Translation/}).count(),0);
+    await dialog.getByRole('button',{name:/Picture or colour looks wrong/}).click();
+    await dialog.locator('textarea').fill('Original colour picture report');
+    await dialog.getByRole('button',{name:'Submit Flag',exact:true}).click();
+    await dialog.getByRole('button',{name:'Done',exact:true}).waitFor();
+    const db=await snapshot(page),flag=db.flagRequests[0].args.p_flags[0];
+    assert.equal(flag.colour_phrase_id,target);assert.equal(flag.vocabulary_id,null);assert.equal(flag.sentence_id,null);
+    assert.equal(flag.reason,'missing_image');assert.equal(flag.suggestion,null);assert.equal(flag.language_code,'my');
+    assert.equal(flag.notes,'Original colour picture report');assert.equal(db.levelRequests.length,0);assertFlagOnlyRpc(db);
+  },true);
+
+  await scenario('F2E2e actual mobile batch: ten confirmed reports and a lost final reply survive reload and exact remaining retry', 'flags-chart', async page=>{
+    await page.setViewportSize({width:390,height:844});
+    const dialog=await openBatchFlags(page);
+    await page.evaluate(name=>{window.__kgF1.fault(name,'pass');window.__kgF1.fault(name,'lost-ack');},flagRpc);
+    await dialog.getByRole('button',{name:'Flag 12 Items',exact:true}).click();
+    await dialog.getByText('10 of 12 flags confirmed.',{exact:true}).waitFor();
+    const [draft]=await pendingFlags(page);let db=await snapshot(page);
+    assert.equal(draft.flags.length,12);assert.deepEqual(draft.batches.map(batch=>batch.length),[10,2]);
+    assert.equal(new Set(draft.flags.map(flag=>flag.id)).size,12);
+    assert.equal(db.flagRequests.length,2);assert.equal(db.tables.kg_chart_flags.length,12);
+    assert.equal(await dialog.getByRole('button',{name:'Done',exact:true}).count(),0);
+    assert.equal(await page.locator('button').filter({hasText:'Exit Flag Mode'}).count(),1,'Chart must not receive onDone for a partial acknowledgement');
+    if(process.env.KG_FLAG_SCREENSHOT)await page.screenshot({path:process.env.KG_FLAG_SCREENSHOT,fullPage:true});
+    const close=dialog.getByRole('button',{name:'Close and keep pending flags',exact:true});
+    await close.scrollIntoViewIfNeeded();
+    for(const control of [close,dialog.getByRole('button',{name:'Retry exact flags',exact:true}),
+      dialog.getByRole('button',{name:'Download pending flags',exact:true})]){
+      await control.click({trial:true});
+      const bounds=await control.boundingBox();
+      assert.ok(bounds&&bounds.x>=0&&bounds.y>=0&&bounds.x+bounds.width<=390&&bounds.y+bounds.height<=844,
+        'Every original recovery action must remain reachable inside the phone viewport');
+    }
+    assert.equal(await page.locator('#root').getAttribute('inert'),'');
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    if(process.env.KG_FLAG_SCREENSHOT)await page.screenshot({path:process.env.KG_FLAG_SCREENSHOT.replace(/\.png$/,'-controls.png')});
+    await page.reload({waitUntil:'load'});
+    await flagRecovery(page).getByText('10 of 12 flags confirmed.',{exact:true}).waitFor();
+    assert.deepEqual(await pendingFlags(page),[draft]);
+    assert.equal((await snapshot(page)).flagRequests.length,2,'Reload must only display original recovery work');
+    await page.evaluate(({id,name})=>{window.__kgF1.moderateFlag(id);window.__kgF1.fault(name,'reversed');},
+      {id:draft.batches[1][0],name:flagRpc});
+    await flagRecovery(page).getByRole('button',{name:'Retry exact flags',exact:true}).click();
+    await flagRecovery(page).getByText('12 flags confirmed for review.',{exact:true}).waitFor();
+    db=await snapshot(page);
+    assert.equal(db.flagRequests.length,3);assert.deepEqual(db.flagRequests[2].args,db.flagRequests[1].args);
+    assert.equal(db.tables.kg_chart_flags.length,12);assert.equal((await pendingFlags(page)).length,0);
+    assert.equal(db.tables.kg_chart_flags.find(flag=>flag.id===draft.batches[1][0]).status,'resolved');
+    assert.equal(db.tables.kg_chart_flags.find(flag=>flag.id===draft.batches[1][0]).resolved_at,'2026-11-28T12:00:00Z');
+    assert.equal(await page.getByRole('heading',{name:/approved|resolved/i}).count(),0);
+    assertFlagOnlyRpc(db);
+  },true);
+
+  await scenario('F2E2e actual batch: malformed receipt IDs counts and revision never advance or rewrite the original selection', 'flags-chart', async page=>{
+    const dialog=await openBatchFlags(page);
+    const faults=['wrong-id','duplicate-id','extra-id','wrong-count','wrong-revision'];
+    await page.evaluate(({name,mode})=>window.__kgF1.fault(name,mode),{name:flagRpc,mode:faults[0]});
+    await dialog.getByRole('button',{name:'Flag 12 Items',exact:true}).click();
+    await dialog.getByText('The server did not confirm exactly this original batch of reports.',{exact:true}).waitFor();
+    const [draft]=await pendingFlags(page),original=(await snapshot(page)).flagRequests[0].args;
+    for(const mode of faults.slice(1)){
+      await page.evaluate(({name,mode})=>window.__kgF1.fault(name,mode),{name:flagRpc,mode});
+      await dialog.getByRole('button',{name:'Retry exact flags',exact:true}).click();
+      await dialog.getByText('The server did not confirm exactly this original batch of reports.',{exact:true}).waitFor();
+      await dialog.getByRole('button',{name:'Retry exact flags',exact:true}).click({trial:true});
+      assert.deepEqual(await pendingFlags(page),[draft]);
+      await dialog.getByText('0 of 12 flags confirmed.',{exact:true}).waitFor();
+    }
+    let db=await snapshot(page);
+    assert.equal(db.flagRequests.length,5);assert.equal(db.tables.kg_chart_flags.length,10);
+    assert.ok(db.flagRequests.every(request=>JSON.stringify(request.args)===JSON.stringify(original)));
+    assert.equal(await dialog.getByRole('button',{name:'Done',exact:true}).count(),0);
+    await page.evaluate(name=>window.__kgF1.fault(name,'reversed'),flagRpc);
+    await dialog.getByRole('button',{name:'Retry exact flags',exact:true}).click();
+    await dialog.getByRole('button',{name:'Done',exact:true}).waitFor();
+    db=await snapshot(page);assert.equal(db.flagRequests.length,7);assert.equal(db.tables.kg_chart_flags.length,12);
+    assert.deepEqual(db.flagRequests[5].args,original);assert.equal((await pendingFlags(page)).length,0);assertFlagOnlyRpc(db);
+  },true);
+
+  await scenario('F2E2e actual batch: closing a busy dialog stops later batches until explicit original recovery', 'flags-chart', async page=>{
+    const dialog=await openBatchFlags(page);
+    await page.evaluate(name=>window.__kgF1.fault(name,'hold'),flagRpc);
+    await dialog.getByRole('button',{name:'Flag 12 Items',exact:true}).click();
+    await page.waitForFunction(()=>window.__kgF1.snapshot().flagRequests.length===1);
+    const [draft]=await pendingFlags(page);
+    await dialog.getByRole('button',{name:'Close and keep pending flags',exact:true}).click();
+    await dialog.waitFor({state:'hidden'});
+    await page.evaluate(()=>window.__kgF1.release());
+    await flagRecovery(page).getByRole('button',{name:'Retry exact flags',exact:true}).click({trial:true});
+    assert.equal((await snapshot(page)).flagRequests.length,1);
+    assert.deepEqual(await pendingFlags(page),[draft]);
+    await flagRecovery(page).getByRole('button',{name:'Retry exact flags',exact:true}).click();
+    await flagRecovery(page).getByText('12 flags confirmed for review.',{exact:true}).waitFor();
+    const db=await snapshot(page);
+    assert.equal(db.tables.kg_chart_flags.length,12);
+    assert.deepEqual(db.flagRequests.at(-1).args.p_flags,draft.flags.filter(flag=>draft.batches[1].includes(flag.id)));
+    for(const request of db.flagRequests)for(const flag of request.args.p_flags)
+      assert.deepEqual(flag,draft.flags.find(original=>original.id===flag.id));
+    assert.equal((await pendingFlags(page)).length,0);assertFlagOnlyRpc(db);
+  },true);
+
+  for(const [kind,patch] of [['owner',{ownerId:'11000000-0000-4000-8000-000000000099'}],
+    ['language',{languageCode:'ja'}],['revision',{revision:18}]])await scenario(
+    `F2E2e actual batch: ${kind} change rejects stale completion and stops continuation under the original IDs`, 'flags-chart', async page=>{
+      const dialog=await openBatchFlags(page);
+      await page.evaluate(name=>window.__kgF1.fault(name,'hold'),flagRpc);
+      await dialog.getByRole('button',{name:'Flag 12 Items',exact:true}).click();
+      await page.waitForFunction(()=>window.__kgF1.snapshot().flagRequests.length===1);
+      const [draft]=await pendingFlags(page);
+      await page.evaluate(patch=>window.__kgF1.changeScope(patch),patch);
+      await page.evaluate(()=>window.__kgF1.release());
+      await page.waitForFunction(()=>document.querySelector('[role="dialog"]')===null||
+        document.querySelector('[role="dialog"]').textContent.includes('Report context changed'));
+      // Scope invalidation must become visible before inspecting the stopped
+      // task; the panel exposes changed-revision work but never another owner.
+      if(await dialog.count())await dialog.getByRole('button',{name:/Close|Cancel/}).click();
+      await dialog.waitFor({state:'hidden'});
+      assert.equal((await snapshot(page)).flagRequests.length,1);
+      assert.deepEqual(await pendingFlags(page),[draft]);
+      assert.equal(draft.ownerId,'11000000-0000-4000-8000-000000000001');
+      assert.equal(draft.languageCode,'my');assert.equal(draft.revision,17);
+      if(kind==='revision'){
+        await flagRecovery(page).getByText('These flags belong to an earlier permission revision and are held for review.',{exact:true}).waitFor();
+        assert.equal(await flagRecovery(page).getByRole('button',{name:'Retry exact flags',exact:true}).isDisabled(),true);
+      }else assert.equal(await flagRecovery(page).count(),0,'Another owner or language must not expose the original report text');
+      assert.equal(await page.getByRole('button',{name:'Done',exact:true}).count(),0);
+      assertFlagOnlyRpc(await snapshot(page));
+    },true);
+
+  await scenario('F2E2e actual editor: changed language cannot submit typed notes against replacement props', 'flags-chart', async page=>{
+    const dialog=await openWordFlag(page);
+    await dialog.locator('textarea').fill('Unsubmitted original Burmese report');
+    await page.evaluate(()=>window.__kgF1.changeScope({languageCode:'ja'}));
+    await page.waitForFunction(()=>document.querySelector('[role="dialog"]')===null||
+      document.querySelector('[role="dialog"]').textContent.includes('Report context changed'));
+    if(await dialog.count()){
+      const submit=dialog.getByRole('button',{name:'Submit Flag',exact:true});
+      assert.ok(await submit.count()===0||await submit.isDisabled());
+      assert.equal(await dialog.evaluate(node=>node.contains(document.activeElement)),true,
+        'Replacing an idle editor must keep focus within its context-changed dialog');
+      await page.keyboard.press('Escape');
+    }
+    await dialog.waitFor({state:'hidden'});
+    assert.equal((await snapshot(page)).flagRequests.length,0);assert.equal((await pendingFlags(page)).length,0);
+    const current=await openWordFlag(page);
+    assert.equal(await current.locator('textarea').inputValue(),'');
+    await current.locator('textarea').fill('Intentional current Japanese report');
+    await current.getByRole('button',{name:'Submit Flag',exact:true}).click();
+    await current.getByRole('button',{name:'Done',exact:true}).waitFor();
+    const [request]=(await snapshot(page)).flagRequests;
+    assert.equal(request.args.p_flags[0].language_code,'ja');
+    assert.equal(request.args.p_flags[0].notes,'Intentional current Japanese report');
+  },true);
+
+  await scenario('F2E2e actual flag replay: revoked targets remain pending even when the original report already exists', 'flags-chart', async page=>{
+    let dialog=await openWordFlag(page);
+    await dialog.locator('textarea').fill('Report pending current permission');
+    await dialog.locator('input').fill('Original pronunciation suggestion');
+    await page.evaluate(name=>window.__kgF1.fault(name,'lost-ack'),flagRpc);
+    await dialog.getByRole('button',{name:'Submit Flag',exact:true}).click();
+    await dialog.getByText('This batch was not confirmed. Retry the original reports.',{exact:true}).waitFor();
+    const [draft]=await pendingFlags(page);
+    await dialog.getByRole('button',{name:'Close and keep pending flags',exact:true}).click();
+    await dialog.waitFor({state:'hidden'});
+    dialog=await openWordFlag(page);
+    await dialog.getByRole('heading',{name:'Original reports are waiting',exact:true}).waitFor();
+    await dialog.getByText('Report pending current permission',{exact:true}).waitFor();
+    await dialog.getByText('Suggestion: Original pronunciation suggestion',{exact:true}).waitFor();
+    assert.equal(await dialog.getByRole('button',{name:'Submit Flag',exact:true}).count(),0);
+    assert.equal((await snapshot(page)).flagRequests.length,1,'Reopening must not resend or create replacement report IDs');
+    const retained=await flagDownload(page,dialog.getByRole('button',{name:'Download pending flags',exact:true}));
+    assert.deepEqual(retained.draft,draft);
+    await dialog.getByRole('button',{name:'Create another report',exact:true}).click();
+    assert.equal(await dialog.locator('textarea').inputValue(),'');
+    await dialog.locator('textarea').fill('A deliberate separate report while the original is pending');
+    await dialog.getByRole('button',{name:'Submit Flag',exact:true}).click();
+    await dialog.getByRole('button',{name:'Done',exact:true}).click();
+    await dialog.waitFor({state:'hidden'});
+    let db=await snapshot(page);
+    assert.equal(db.flagRequests.length,2);assert.equal(db.tables.kg_chart_flags.length,2);
+    assert.notEqual(db.flagRequests[1].args.p_flags[0].id,draft.flags[0].id);
+    assert.equal(db.flagRequests[1].args.p_flags[0].notes,'A deliberate separate report while the original is pending');
+    assert.deepEqual(await pendingFlags(page),[draft]);
+    dialog=await openWordFlag(page);
+    await dialog.getByRole('heading',{name:'Original reports are waiting',exact:true}).waitFor();
+    await page.evaluate(id=>window.__kgF1.denyFlagTarget(id),draft.flags[0].vocabulary_id);
+    await dialog.getByRole('button',{name:'Retry exact flags',exact:true}).click();
+    await dialog.getByText('These reports are not currently permitted. Their original IDs and scope are retained.',{exact:true}).waitFor();
+    db=await snapshot(page);
+    assert.equal(db.flagRequests.length,3);assert.deepEqual(db.flagRequests[2].args,db.flagRequests[0].args);
+    assert.equal(db.tables.kg_chart_flags.length,2);assert.deepEqual(await pendingFlags(page),[draft]);
+    assert.equal(await dialog.getByRole('button',{name:'Done',exact:true}).count(),0);assertFlagOnlyRpc(db);
+  },true);
+
+  await scenario('F2E2e actual offline flag: device facade cannot acknowledge and explicit retry preserves the exported original', 'flags-chart', async page=>{
+    const dialog=await openWordFlag(page);
+    await dialog.locator('textarea').fill('Offline original report');
+    await page.evaluate(()=>{window.KGOffline={client:window.__fakeClient};});
+    await dialog.getByRole('button',{name:'Submit Flag',exact:true}).click();
+    await dialog.getByText('Restricted reports require the online server. The original selection is retained.',{exact:true}).waitFor();
+    const [draft]=await pendingFlags(page);
+    assert.equal((await snapshot(page)).flagRequests.length,0);
+    const exported=await flagDownload(page,dialog.getByRole('button',{name:'Download pending flags',exact:true}));
+    assert.equal(exported.contract,'kg-flag-recovery-v1');assert.deepEqual(exported.draft,draft);
+    await page.evaluate(()=>{delete window.KGOffline;});
+    await dialog.getByRole('button',{name:'Retry exact flags',exact:true}).click();
+    await dialog.getByRole('button',{name:'Done',exact:true}).waitFor();
+    const db=await snapshot(page);
+    assert.equal(db.flagRequests.length,1);assert.deepEqual(db.flagRequests[0].args.p_flags,draft.flags);
+    assert.equal((await pendingFlags(page)).length,0);assertFlagOnlyRpc(db);
+    await dialog.getByRole('button',{name:'Done',exact:true}).click();
+    await page.evaluate(()=>window.__kgF1.changeScope({policyState:'unknown'}));
+    const unavailable=await openWordFlag(page);
+    await unavailable.getByText('Report permissions have not been verified. Close and reopen after reconnecting.',{exact:true}).waitFor();
+    assert.equal(await unavailable.getByRole('button',{name:'Submit Flag',exact:true}).isDisabled(),true);
+    assert.equal((await snapshot(page)).flagRequests.length,1);assert.equal((await pendingFlags(page)).length,0);
+  },true);
+
+  for(const checkpoint of [false,true])await scenario(`F2E2e actual flag storage: ${checkpoint?'failed receipt checkpoint stops later batches':'failed original persistence sends nothing'} and exact exported work remains recoverable`, 'flags-chart', async page=>{
+    const dialog=checkpoint?await openBatchFlags(page):await openWordFlag(page);
+    if(!checkpoint)await dialog.locator('textarea').fill('Memory-only original report');
+    await page.evaluate(checkpoint=>{
+      const original=Storage.prototype.setItem,prefix=checkpoint?window.KGFlagSave.receiptPrefix:window.KGFlagSave.storagePrefix;
+      window.__restoreFlagStorage=()=>{Storage.prototype.setItem=original;};
+      Storage.prototype.setItem=function(key,value){
+        if(String(key).startsWith(prefix))throw new DOMException('Synthetic flag quota failure','QuotaExceededError');
+        return original.call(this,key,value);
+      };
+    },checkpoint);
+    await dialog.getByRole('button',{name:checkpoint?'Flag 12 Items':'Submit Flag',exact:true}).click();
+    await dialog.getByText('Recovery storage is unavailable. Download the original flags before leaving this page.',{exact:true}).waitFor();
+    assert.equal((await snapshot(page)).flagRequests.length,checkpoint?1:0);
+    await dialog.getByText(`0 of ${checkpoint?12:1} flags confirmed.`,{exact:true}).waitFor();
+    assert.equal(await dialog.getByRole('button',{name:'Done',exact:true}).count(),0);
+    const exported=await flagDownload(page,dialog.getByRole('button',{name:'Download pending flags',exact:true}));
+    const draft=exported.draft;
+    assert.equal(draft.flags.length,checkpoint?12:1);
+    assert.equal(draft.flags[0].notes,checkpoint?'Original batch notes — စမ်းသပ်':'Memory-only original report');
+    if(checkpoint)assert.deepEqual(await pendingFlags(page),[draft]);else assert.equal((await pendingFlags(page)).length,0);
+    await page.evaluate(()=>window.__restoreFlagStorage());
+    await dialog.getByRole('button',{name:'Retry exact flags',exact:true}).click();
+    await dialog.getByRole('button',{name:'Done',exact:true}).waitFor();
+    const db=await snapshot(page);
+    assert.equal(db.flagRequests.length,checkpoint?3:1);assert.equal(db.tables.kg_chart_flags.length,draft.flags.length);
+    for(const request of db.flagRequests)for(const flag of request.args.p_flags)
+      assert.deepEqual(flag,draft.flags.find(original=>original.id===flag.id));
+    assert.equal((await pendingFlags(page)).length,0);assertFlagOnlyRpc(db);
+  },true);
+
+  await scenario('F2E2e actual legacy flags: compatibility remains legacy-only and a late reply cannot continue after access changes', 'flags-chart', async page=>{
+    let dialog=await openWordFlag(page);
+    await dialog.locator('textarea').fill('Legacy report compatibility');
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_flags','missing-column'));
+    await dialog.getByRole('button',{name:'Submit Flag',exact:true}).click();
+    await dialog.getByRole('button',{name:'Done',exact:true}).click();
+    await dialog.waitFor({state:'hidden'});
+    let db=await snapshot(page);
+    assert.equal(db.flagRequests.length,0);assert.equal(db.requests.filter(request=>request.table==='kg_chart_flags').length,2);
+    assert.equal(db.tables.kg_chart_flags.length,1);assert.equal(db.tables.kg_chart_flags[0].reporter_id,db.owner);
+    assert.equal((await pendingFlags(page)).length,0);
+    dialog=await openWordFlag(page,1);
+    await dialog.locator('textarea').fill('Old legacy report must not follow a new account');
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_flags','hold-missing-column'));
+    await dialog.getByRole('button',{name:'Submit Flag',exact:true}).click();
+    await page.waitForFunction(()=>window.__kgF1.snapshot().requests.filter(request=>request.table==='kg_chart_flags').length===3);
+    await page.evaluate(()=>window.__kgF1.changeScope({ownerId:'11000000-0000-4000-8000-000000000099',revision:18,policyState:'restricted'}));
+    await page.evaluate(()=>window.__kgF1.release());
+    if(await dialog.count())await dialog.getByRole('button',{name:/Close|Cancel/}).click();
+    await dialog.waitFor({state:'hidden'});
+    db=await snapshot(page);
+    assert.equal(db.requests.filter(request=>request.table==='kg_chart_flags').length,3,'An obsolete legacy reply must stop before the compatibility fallback');
+    assert.equal(db.flagRequests.length,0);assert.equal(db.tables.kg_chart_flags.length,1);
+    assert.equal(await page.getByRole('button',{name:'Done',exact:true}).count(),0);
+  },true,{policyState:'legacy'});
 
   assert.ok(passed>0,'The scenario filter must select at least one real scenario');
   console.log(`U4B2B3D_RENDERED_QUIZ_UI_PASS: ${passed} scenarios; isolated fictional clients; physical devices not tested`);

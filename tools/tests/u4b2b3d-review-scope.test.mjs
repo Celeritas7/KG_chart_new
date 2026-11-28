@@ -105,6 +105,16 @@ test('F2E2d admits preference controls and typing-best helpers without opening a
 });
 
 test('F2E2d admits only complete exact preference AppContent wiring at reviewed positions',()=>{
+  // Reconstruct this earlier integration independently of F2E2e's later
+  // recovery panel, which deliberately anchors beside the preference panel.
+  let preferenceSource=source;
+  const flagStart=preferenceSource.indexOf('    // F2E2e — exact restricted flag submissions and recovery.');
+  if(flagStart!==-1){
+    const flagEnd=preferenceSource.indexOf('    // Flag one word (item), one sentence or one colour phrase ({ id, native, meaning, hint }):');
+    assert.ok(flagEnd>flagStart);
+    preferenceSource=(preferenceSource.slice(0,flagStart)+preferenceSource.slice(flagEnd))
+      .replace('          <FlagRecoveryPanel user={user} languageCode={selectedLanguage} policy={policy} />\n','');
+  }
   const parts=[
     '      const preferences = usePersonalPreferences(user, policy, verified);\n',
     '        <KGPreferenceContext.Provider value={preferences}>\n',
@@ -113,30 +123,103 @@ test('F2E2d admits only complete exact preference AppContent wiring at reviewed 
   ];
   const oldEffect='      useEffect(() => { if (user) window.KGAudio.initPrefs(supabase, user.id); }, [user]);\n';
   const manifestEffect='      useEffect(() => { if (selectedLanguage) window.KGAudio.loadManifest(selectedLanguage); }, [selectedLanguage]);\n';
-  let previous=source;
+  let previous=preferenceSource;
   for(const part of parts){
-    assert.ok(source.includes(part),'Exercise actual preference AppContent wiring');
+    assert.ok(preferenceSource.includes(part),'Exercise actual preference AppContent wiring');
     previous=previous.replace(part,'');
-    assert.throws(()=>assertF1ReviewScope(source,source.replace(part,'')), 'Partial wiring must fail closed');
-    assert.throws(()=>assertF1ReviewScope(source,source+'\n'+part), 'Duplicate wiring must fail closed');
-    assert.throws(()=>assertF1ReviewScope(source,source.replace(part,'')+'\n'+part), 'Moved wiring must fail closed');
+    assert.throws(()=>assertF1ReviewScope(preferenceSource,preferenceSource.replace(part,'')), 'Partial wiring must fail closed');
+    assert.throws(()=>assertF1ReviewScope(preferenceSource,preferenceSource+'\n'+part), 'Duplicate wiring must fail closed');
+    assert.throws(()=>assertF1ReviewScope(preferenceSource,preferenceSource.replace(part,'')+'\n'+part), 'Moved wiring must fail closed');
   }
   assert.ok(previous.includes(manifestEffect));
   previous=previous.replace(manifestEffect,manifestEffect+oldEffect);
-  assert.doesNotThrow(()=>assertF1ReviewScope(previous,source));
+  assert.doesNotThrow(()=>assertF1ReviewScope(previous,preferenceSource));
   for(const [before,after] of [
     ['usePersonalPreferences(user, policy, verified);','usePersonalPreferences(user, policy, true);'],
     ['<KGPreferenceContext.Provider value={preferences}>','<KGPreferenceContext.Provider value={{}}>'],
     ['<PreferenceRecoveryPanel flow={preferences} />','<PreferenceRecoveryPanel flow={null} />'],
   ]){
-    const edited=source.replace(before,after);
-    assert.notEqual(edited,source);
-    assert.throws(()=>assertF1ReviewScope(source,edited));
+    const edited=preferenceSource.replace(before,after);
+    assert.notEqual(edited,preferenceSource);
+    assert.throws(()=>assertF1ReviewScope(preferenceSource,edited));
   }
-  assert.throws(()=>assertF1ReviewScope(source,source.replace(manifestEffect,manifestEffect+oldEffect)),
+  assert.throws(()=>assertF1ReviewScope(preferenceSource,preferenceSource.replace(manifestEffect,manifestEffect+oldEffect)),
     'New shared preference ownership cannot coexist with the unconditional legacy initializer');
   assert.throws(()=>assertF1ReviewScope(previous,previous.replace(oldEffect,'')),
     'Deleting the old initializer requires the complete new wiring');
+});
+
+const flagControllerMarker='    // F2E2e — exact restricted flag submissions and recovery.';
+const singleFlagHeader='    // Flag one word (item), one sentence or one colour phrase ({ id, native, meaning, hint }):';
+const flagPanel='          <FlagRecoveryPanel user={user} languageCode={selectedLanguage} policy={policy} />\n';
+const preferencePanel='          <PreferenceRecoveryPanel flow={preferences} />\n';
+const originalFlagButton='onClick={(e) => { e.stopPropagation(); onClick(); }} title="Flag wrong Devanagari, word, picture…"';
+const focusedFlagButton='onClick={(e) => { e.stopPropagation(); e.currentTarget.focus({ preventScroll: true }); onClick(); }} title="Flag wrong Devanagari, word, picture…"';
+const integratedFlags=source.includes(flagControllerMarker)?source:source
+  .replace(singleFlagHeader,flagControllerMarker+'\n    function FlagRecoveryFixture() {}\n\n'+singleFlagHeader)
+  .replace(preferencePanel,flagPanel+preferencePanel)
+  .replace(originalFlagButton,focusedFlagButton);
+
+test('F2E2e admits the bounded flag controller, single and batch dialogs',()=>{
+  for(const marker of ['    function FlagModal(', '    function BatchFlagModal(']){
+    assert.ok(source.includes(marker));
+    assert.doesNotThrow(()=>assertF1ReviewScope(source,source.replace(marker,marker+'/* reviewed flag submission */')));
+  }
+  assert.doesNotThrow(()=>assertF1ReviewScope(source,integratedFlags));
+  for(const marker of [singleFlagHeader,'    function FlagModal(',
+    '    // Small 🚩 for quiz / Speak screens','    function BatchFlagModal(', '    function AddWordModal(']){
+    assert.throws(()=>assertF1ReviewScope(source,source.replace(marker,'/* missing flag boundary */')));
+    assert.throws(()=>assertF1ReviewScope(source,source+'\n'+marker));
+  }
+  assert.throws(()=>assertF1ReviewScope(integratedFlags,integratedFlags+'\n'+flagControllerMarker));
+  const moved=integratedFlags.replace(flagControllerMarker,'    // Earlier flag boundary')
+    .replace('    const FLAG_REASONS = [',flagControllerMarker+'\n    const FLAG_REASONS = [');
+  assert.throws(()=>assertF1ReviewScope(integratedFlags,moved),'Moving the boundary cannot hide shared flag constants or compatibility logic');
+});
+
+test('F2E2e requires the exact complete flag panel wiring before the existing preference panel',()=>{
+  const start=integratedFlags.indexOf(flagControllerMarker),end=integratedFlags.indexOf(singleFlagHeader);
+  assert.ok(start>=0&&end>start&&integratedFlags.includes(flagPanel));
+  const previous=(integratedFlags.slice(0,start)+integratedFlags.slice(end))
+    .replace(flagPanel,'').replace(focusedFlagButton,originalFlagButton);
+  assert.doesNotThrow(()=>assertF1ReviewScope(previous,integratedFlags));
+  for(const edited of [
+    integratedFlags.replace(flagPanel,''),
+    integratedFlags.replace(flagControllerMarker,'    // Missing flag controller boundary'),
+    integratedFlags+'\n'+flagPanel,
+    integratedFlags.replace(flagPanel,'')+'\n'+flagPanel,
+    integratedFlags.replace(flagPanel,flagPanel.replace('user={user}','user={null}')),
+    integratedFlags.replace(flagPanel,flagPanel.replace('languageCode={selectedLanguage}','languageCode={currentLanguage}')),
+    integratedFlags.replace(flagPanel,flagPanel.replace('policy={policy}','policy={{state:"legacy"}}')),
+  ])assert.throws(()=>assertF1ReviewScope(integratedFlags,edited));
+});
+
+test('F2E2e admits only the exact report-button focus call and protects its callback and style',()=>{
+  assert.ok(integratedFlags.includes(focusedFlagButton));
+  assert.doesNotThrow(()=>assertF1ReviewScope(integratedFlags.replace(focusedFlagButton,originalFlagButton),integratedFlags));
+  for(const edited of [
+    integratedFlags.replace(focusedFlagButton,focusedFlagButton.replace('preventScroll: true','preventScroll: false')),
+    integratedFlags.replace(focusedFlagButton,focusedFlagButton.replace('onClick();','onClick(e);')),
+    integratedFlags.replace('function FlagButton({','function FlagButton(/* changed */{'),
+    integratedFlags.replace("'w-8 h-8 rounded-full text-sm text-gray-400 hover:bg-red-50 hover:text-red-500 transition'",
+      "'w-8 h-8 rounded-full text-sm text-red-600 hover:bg-red-50 hover:text-red-500 transition'"),
+    integratedFlags+'\n'+focusedFlagButton,
+  ]){
+    assert.notEqual(edited,integratedFlags);
+    assert.throws(()=>assertF1ReviewScope(integratedFlags,edited));
+  }
+});
+
+for(const [label,before,after] of [
+  ['flag reason definitions','    const FLAG_REASONS = [','    const FLAG_REASONS = [null,'],
+  ['legacy missing-column helper','const isMissingColumn = (error) => !!error &&','const isMissingColumn = (error) => false &&'],
+  ['shared modal shortcut detection','const kgModalOpen = () =>','const kgModalOpen = () => false &&'],
+  ['word-detail flag action','onClick={() => onFlag(item)}','onClick={() => onFlag(null)}'],
+  ['adjacent word creation','function AddWordModal({','function AddWordModal(/* changed */{'],
+])test(`F2E2e scope rejects ${label}`,()=>{
+  const edited=integratedFlags.replace(before,after);
+  assert.notEqual(edited,integratedFlags,'Fixture must alter actual protected flag-adjacent source');
+  assert.throws(()=>assertF1ReviewScope(integratedFlags,edited));
 });
 
 test('F2E2d audio scope admits only preference state, lifecycle and exact bridge exports',()=>{

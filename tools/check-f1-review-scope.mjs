@@ -21,6 +21,9 @@ const ranges = [
   // F2E2d: only the account typing-best helpers, not typing normalization,
   // matching, settings or the shared duration/language definitions.
   ['    const TYPING_BEST_KEY =', '\n    const TYPING_LANG_TAGS ='],
+  // F2E2e: preserve FlagButton, AddWordModal and Chart behavior around the
+  // reviewed batch dialog. The single dialog/controller has separate bounds.
+  ['    function BatchFlagModal(', '\n    function AddWordModal('],
 ];
 const recoveryStart = '    // Separate recovery records; never reuse or clear the installed offline outbox.\n';
 const script = '  <script src="./js/kg-quiz-save.js"></script>\n';
@@ -37,6 +40,19 @@ function uniquePosition(source, marker, optional = false) {
 
 export function normalizeF1Source(input) {
   let source = input;
+  // Only the flag controller/recovery shell and single dialog may change
+  // here. Reasons, keyboard/modal detection and legacy compatibility stay
+  // above this boundary; FlagButton and DetailModal remain protected.
+  const flagStart = uniquePosition(source,
+    '    // F2E2e — exact restricted flag submissions and recovery.', true);
+  const flagHeader = uniquePosition(source,
+    '    // Flag one word (item), one sentence or one colour phrase ({ id, native, meaning, hint }):');
+  const flagModal = uniquePosition(source, '    function FlagModal(');
+  const flagButtonHeader = uniquePosition(source, '    // Small 🚩 for quiz / Speak screens');
+  const singleFlagStart = flagStart === -1 ? flagHeader : flagStart;
+  assert(singleFlagStart <= flagHeader && flagHeader < flagModal && flagModal < flagButtonHeader,
+    'Invalid reviewed flag component boundary');
+  source = source.slice(0, singleFlagStart) + '    /* reviewed flag controller and single dialog */\n' + source.slice(flagButtonHeader);
   // The new account preference controller sits beside AudioControls. Keep
   // SpeakButton, Header, AuthContext and all authentication code outside.
   const preferenceStart = uniquePosition(source,
@@ -66,6 +82,23 @@ export function normalizeF1Source(input) {
     assert(end > start, 'Invalid F1 source range: ' + startMarker);
     source = source.slice(0, start) + '    /* reviewed F1 component */\n' + source.slice(end);
   }
+  // F2E2e: an exact standalone recovery panel is the only AppContent edit.
+  // Normalize it first so the earlier preference wiring's position checks
+  // still protect the unchanged surrounding providers and panel.
+  const flagPanel = '          <FlagRecoveryPanel user={user} languageCode={selectedLanguage} policy={policy} />\n';
+  const preferencePanel = '          <PreferenceRecoveryPanel flow={preferences} />\n';
+  const flagPanelAt = uniquePosition(source, flagPanel, true);
+  assert((flagStart !== -1) === (flagPanelAt !== -1), 'Flag recovery controller and AppContent panel wiring must be complete');
+  if (flagPanelAt !== -1) {
+    uniquePosition(source, flagPanel + preferencePanel);
+    source = source.replace(flagPanel + preferencePanel, preferencePanel);
+  }
+  // Safari pointer activation does not reliably focus the report button.
+  // Admit this one focus call without opening its styling or callbacks.
+  const focusedFlagButton = 'onClick={(e) => { e.stopPropagation(); e.currentTarget.focus({ preventScroll: true }); onClick(); }} title="Flag wrong Devanagari, word, picture…"';
+  const originalFlagButton = 'onClick={(e) => { e.stopPropagation(); onClick(); }} title="Flag wrong Devanagari, word, picture…"';
+  uniquePosition(source, focusedFlagButton, true);
+  source = source.replace(focusedFlagButton, originalFlagButton);
   // F2E2d: admit only the complete preference controller/provider/panel wiring
   // at its reviewed AppContent positions. App authorization and navigation
   // remain byte-for-byte protected, including when a marker is moved.
@@ -147,7 +180,7 @@ export function normalizeF1Source(input) {
 export function assertF1ReviewScope(before, after) {
   assert(after.includes('const U3C1_SCOPED_UI_ENABLED = false;'), 'Restricted UI activation must remain OFF');
   assert.equal(normalizeF1Source(after), normalizeF1Source(before),
-    'Learner source outside the reviewed quiz/level/rating/recovery/preference regions changed; separate review is required');
+    'Learner source outside the reviewed quiz/level/rating/recovery/preference/flag regions changed; separate review is required');
 }
 
 // F2E2d permits preference lifecycle changes in KGAudio, not a change to
