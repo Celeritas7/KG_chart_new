@@ -54,6 +54,7 @@ function installFakeClient() {
   let state = JSON.parse(localStorage.getItem(KEY) || 'null') || {
     owner, permitted: true, destination: null, faults: [], requests: [], callbacks: 0,
     levelCalls: 0, ratingCalls: 0, colourReceipts: {}, ratingVersions: {}, ratingReceipts: {}, ratingRequests: [],
+    reads: [], levelRequests: [], levelScopes: {}, levelRevisions: {[owner]:17}, mcqReceipts: {},
     pathRevision:17,pathReset:null,pathVersion:0,pathComplete:false,pathCompletedAt:null,
     pathEligible:'2026-11-27T12:00:00.123456+00:00',pathReceipts:{},pathRequests:[],
     tables: {
@@ -67,6 +68,45 @@ function installFakeClient() {
   const assertFixture = (condition, message) => { if (!condition) throw Error(message); };
   const persist = () => localStorage.setItem(KEY, JSON.stringify(state));
   persist();
+  const mcqTypes = ['native_to_image','image_to_native','devanagari_to_image',
+    'english_to_native','listen_to_image','listen_to_native'];
+  const levelKey = (ownerId,languageCode) => ownerId+'|'+languageCode;
+  const currentLevel = (ownerId,languageCode) => state.levelScopes[levelKey(ownerId,languageCode)] ||
+    {level:1,unlocked:1,version:0,adminCutoff:null};
+  const levelJson = value => ({level:value.level,unlocked:value.unlocked,version:value.version});
+  const writeLevel = (patch,{ownerId=state.owner,languageCode='my',revision}={}) => {
+    const key=levelKey(ownerId,languageCode);
+    state.levelScopes[key]={...currentLevel(ownerId,languageCode),...copy(patch)};
+    if(revision!==undefined)state.levelRevisions[ownerId]=revision;
+    persist();return copy(state.levelScopes[key]);
+  };
+  const mcqReceipt = (session,answers,confirmedAt=new Date().toISOString()) => ({
+    ownerId:session.user_id,languageCode:session.language_code,difficulty:session.difficulty,
+    answerIds:answers.map(answer=>answer.id).sort(),confirmedAt,
+  });
+  const evaluateLevel = (ownerId,languageCode,level) => {
+    let total=0,correct=0;
+    if(level.unlocked<4)for(const session of [...state.tables.kg_chart_quiz_sessions]
+      .sort((a,b)=>b.created_at.localeCompare(a.created_at)||b.id.localeCompare(a.id))){
+      const receipt=state.mcqReceipts[session.id];
+      const answers=state.tables.kg_chart_quiz_answers.filter(answer=>answer.session_id===session.id);
+      if(!receipt||session.user_id!==ownerId||session.language_code!==languageCode||
+        receipt.ownerId!==ownerId||receipt.languageCode!==languageCode||
+        receipt.difficulty!==session.difficulty||session.difficulty!==level.unlocked||
+        !mcqTypes.includes(session.quiz_type)||!session.completed_at||
+        session.total_questions<1||session.total_questions>500||
+        session.total_questions!==answers.length||
+        session.correct_answers!==answers.filter(answer=>answer.is_correct).length||
+        JSON.stringify(receipt.answerIds)!==JSON.stringify(answers.map(answer=>answer.id).sort())||
+        answers.some(answer=>typeof answer.is_correct!=='boolean'||!answer.answered_at||
+          !words.some(word=>word.id===answer.vocabulary_id)||answer.sentence_id)||
+        (level.adminCutoff&&(!receipt.confirmedAt||receipt.confirmedAt<=level.adminCutoff||
+          session.created_at<=level.adminCutoff||session.completed_at<=level.adminCutoff)))continue;
+      total+=session.total_questions;correct+=session.correct_answers;
+      if(total>=10)break;
+    }
+    return {evaluated_total:total,evaluated_correct:correct,required_answers:10,required_pct:90};
+  };
   const ratingState=id=>{
     const row=state.tables.kg_chart_user_ratings.find(r=>r.vocabulary_id===id);
     return {version:state.ratingVersions[id]||0,state:row?{
@@ -91,15 +131,87 @@ function installFakeClient() {
     rate: () => { state.ratingCalls++; persist(); },
     externalRating: (id,value)=>changeRating(id,value,'2026-11-27T12:00:00Z','2026-11-27T12:00:00Z'),
     setOwner: value => { state.owner=value; persist(); },
+    setLevel: writeLevel,
+    levelRevision: value => {state.levelRevisions[state.owner]=value;persist();},
+    levelEvidence: ({difficulty=1,count=6,correct=count,confirmed=true,
+      ownerId=state.owner,languageCode='my',at='2026-11-26T10:00:00.000Z'}={}) => {
+      const id=crypto.randomUUID();
+      const session={id,user_id:ownerId,language_code:languageCode,topic_id:'food',
+        quiz_type:'native_to_image',difficulty,total_questions:count,correct_answers:correct,
+        created_at:at,completed_at:at};
+      const answers=Array.from({length:count},(_,i)=>({id:crypto.randomUUID(),session_id:id,
+        vocabulary_id:words[i%words.length].id,selected_vocabulary_id:words[i%words.length].id,
+        is_correct:i<correct,answered_at:at}));
+      state.tables.kg_chart_quiz_sessions.push(session);state.tables.kg_chart_quiz_answers.push(...answers);
+      if(confirmed)state.mcqReceipts[id]=mcqReceipt(session,answers,at);
+      persist();return id;
+    },
     resetPath:(at='2026-11-27T13:00:00.123457+00:00')=>{state.pathRevision++;state.pathReset=at;state.pathComplete=false;state.pathEligible=null;persist();},
     eligiblePath:at=>{state.pathEligible=at;persist();},
     words, user: {id: owner, email: 'fixture@example.invalid'},
   };
   window.__kgF1 = api;
+  const initial=window.__kgF1Initial;
+  if(initial&&!state.initializedByScenario){
+    if(initial.level)api.setLevel(initial.level);
+    for(const fault of initial.faults||[])api.fault(fault.table,fault.mode);
+    if(initial.legacyLevel){
+      state.tables.kg_chart_user_levels[0]={...state.tables.kg_chart_user_levels[0],...initial.legacyLevel};
+      localStorage.setItem('kg_chart_level_my',JSON.stringify(initial.legacyLevel));
+    }
+    if(initial.history)api.levelEvidence(initial.history);
+    state.initializedByScenario=true;persist();
+  }
   window.__fakeClient = {
     auth: {async getSession() { return {data: {session: {user: {id: state.owner}}}, error: null}; }},
     async rpc(name, args) {
       if(name==='kg_chart_my_answers')return {data:[],error:null};
+      if(['kg_chart_f2_level_state','kg_chart_f2_select_difficulty','kg_chart_f2_check_level_up'].includes(name)){
+        const ownerId=state.owner,languageCode=args.p_lang;
+        state.levelRequests.push({name,args:copy(args),ownerId});persist();
+        const i=state.faults.findIndex(f=>f.table===name),fault=i<0?null:state.faults.splice(i,1)[0];persist();
+        if(args.p_expected_revision!==(state.levelRevisions[ownerId]||17))return {error:{code:'40001'}};
+        if(!state.permitted||!['my','ja'].includes(languageCode))return {error:{code:'42501'}};
+        if(fault?.mode==='fail')return {error:{message:'Synthetic difficulty connection failure'}};
+        if(fault?.mode==='deny')return {error:{code:'42501'}};
+        const before=currentLevel(ownerId,languageCode);
+        let result=levelJson(before);
+        if(name!=='kg_chart_f2_level_state'){
+          if(fault?.mode==='stale'){
+            // A competing current-version selection or successful check won
+            // before this call acquired the owned level row.
+            writeLevel({...(before.unlocked>1?{level:before.level===1?2:1}:{unlocked:2}),
+              version:before.version+1},{ownerId,languageCode});
+            return {error:{code:'40001'}};
+          }
+          if(args.p_expected_version!==before.version)return {error:{code:'40001'}};
+          if(name==='kg_chart_f2_select_difficulty'){
+            if(!Number.isInteger(args.p_level)||args.p_level<1||args.p_level>before.unlocked)return {error:{code:'42501'}};
+            result=levelJson(writeLevel({level:args.p_level,version:before.version+(args.p_level!==before.level?1:0)},
+              {ownerId,languageCode}));
+          }else{
+            const progress=evaluateLevel(ownerId,languageCode,before);
+            const advances=before.unlocked<4&&progress.evaluated_total>=progress.required_answers&&
+              progress.evaluated_correct*100>=progress.required_pct*progress.evaluated_total;
+            result={...levelJson(writeLevel({unlocked:before.unlocked+(advances?1:0),version:before.version+(advances?1:0)},
+              {ownerId,languageCode})),...progress};
+          }
+        }
+        // Hold the response after the operation's transaction, as a delayed
+        // network reply; a later server state must not masquerade as its ACK.
+        if(fault?.mode==='hold')await new Promise(resolve=>{release=resolve;});
+        if(fault?.mode==='newer-before-readback')writeLevel({level:result.unlocked,version:result.version+1},
+          {ownerId,languageCode});
+        if(fault?.mode==='lost-ack-next-evidence'){
+          // Another device can finish work at the newly available level
+          // before the first reply arrives. An automatic rebased check would
+          // wrongly perform a second advancement from this single intent.
+          api.levelEvidence({difficulty:result.unlocked,count:10,ownerId,languageCode,
+            at:new Date().toISOString()});
+        }
+        if(['lost-ack','lost-ack-next-evidence'].includes(fault?.mode))return {error:{message:'Synthetic difficulty reply lost'}};
+        return {data:result,error:null};
+      }
       if(name==='kg_chart_f2_my_completion_path'||name==='kg_chart_f2_complete_topic'){
         state.pathRequests.push({name,args:copy(args)});persist();
         if(args.p_expected_revision!==state.pathRevision)return {error:{code:'40001'}};
@@ -199,15 +311,30 @@ function installFakeClient() {
         persist();
         if (fault?.mode === 'deny') return {data: null, error: {code:'42501'}};
         if (fault?.mode === 'fail') return {data: null, error: {message:'Synthetic connection failure'}};
+        if(mcqTypes.includes(d.session.quiz_type)){
+          assertFixture(Number.isInteger(d.session.difficulty)&&d.session.difficulty>=1&&d.session.difficulty<=4,
+            'Restricted MCQ requires an explicit original difficulty');
+          if(d.session.difficulty>currentLevel(state.owner,d.session.language_code).unlocked)return {error:{code:'42501'}};
+        }else assertFixture(d.session.difficulty==null,'Non-MCQ draft must not acquire a difficulty');
         if (!state.tables.kg_chart_quiz_sessions.some(row => row.id === d.id)) {
           state.tables.kg_chart_quiz_sessions.push(copy(d.session));
           state.tables.kg_chart_quiz_answers.push(...copy(d.answers)); persist();
         }
+        if(mcqTypes.includes(d.session.quiz_type)&&!state.mcqReceipts[d.id]){
+          state.mcqReceipts[d.id]=mcqReceipt(d.session,d.answers);persist();
+        }
+        if(fault?.mode==='hold')await new Promise(resolve=>{release=resolve;});
         if (fault?.mode === 'lost-ack') return {data: null, error: {message:'Synthetic atomic reply lost'}};
         return {data:{session_id:d.id, answer_count:d.answers.length, expected_revision:17}, error:null};
       }
       if (name !== 'kg_chart_check_level_up') throw Error('Unexpected fixture RPC: ' + name);
       state.levelCalls++; persist();
+      const legacyFaultIndex=state.faults.findIndex(fault=>fault.table===name);
+      const legacyFault=legacyFaultIndex<0?null:state.faults.splice(legacyFaultIndex,1)[0];persist();
+      if(legacyFault?.mode==='hold'){
+        await new Promise(resolve=>{release=resolve;});
+        return {data:2,error:null};
+      }
       return {data: 1, error: null};
     },
     from(table) {
@@ -228,6 +355,7 @@ function installFakeClient() {
       function execute() {
         return pending ||= (async () => {
           if (q.op === 'read') {
+            state.reads.push({table,filters:copy(q.filters)});persist();
             const rows = state.tables[table].filter(row => q.filters.every(([key, value]) =>
               Array.isArray(value) ? value.includes(row[key]) : row[key] === value)).slice(0, q.limit);
             return {data: copy(q.one ? rows[0] ?? null : rows), error: null};
@@ -301,30 +429,34 @@ const harness = `
     }
     function QuizFixture() {
       const [shown, setShown] = useState(true);
-      const [identity,setIdentity]=useState({user:fixtureUser,languageCode:'my',revision:17});
+      const [identity,setIdentity]=useState({user:fixtureUser,languageCode:'my',revision:17,
+        policyState:window.__kgF1Initial?.policyState||'restricted'});
       useEffect(()=>{
         window.__kgF1.changeScope=patch=>{
           if(patch.ownerId)window.__kgF1.setOwner(patch.ownerId);
+          if(patch.revision!==undefined)window.__kgF1.levelRevision(patch.revision);
           setIdentity(old=>({user:patch.ownerId?{...old.user,id:patch.ownerId}:old.user,
-            languageCode:patch.languageCode||old.languageCode,revision:patch.revision??old.revision}));
+            languageCode:patch.languageCode||old.languageCode,revision:patch.revision??old.revision,
+            policyState:patch.policyState||old.policyState}));
         };
         return()=>{delete window.__kgF1.changeScope;};
       },[]);
       const kind = new URLSearchParams(location.search).get('kind') || 'word';
       const restricted = new URLSearchParams(location.search).get('restricted') === 'yes';
-      const scope = restricted ? {ownerId:identity.user.id, policy:{state:'restricted', revision:kind==='path'?window.__kgF1.snapshot().pathRevision:identity.revision}} : null;
+      const scope = restricted ? {ownerId:identity.user.id, policy:{state:identity.policyState, revision:kind==='path'?window.__kgF1.snapshot().pathRevision:identity.revision}} : null;
       return <AuthContext.Provider value={{ user: identity.user }}>
         <KGMediaScopeContext.Provider value={scope}>
         <RulesContext.Provider value={fixtureRules}>
           <PrivateLessonsContext.Provider value={fixturePrivate}>
-            <div aria-label="Fixture navigation">
+            <div aria-label="Fixture navigation" data-fixture-owner={identity.user.id}
+              data-fixture-language={identity.languageCode} data-fixture-revision={identity.revision}>
               <button onClick={() => setShown(false)}>Leave quiz view</button>
               <button onClick={() => setShown(true)}>Reopen quiz view</button>
             </div>
             {shown ? kind === 'word'
-              ? <WordQuizView topics={[{ id: 'food', icon: '🍎', translation: { title_native: 'Food' } }]}
+              ? <WordQuizView key={identity.user.id+':'+identity.languageCode} topics={[{ id: 'food', icon: '🍎', translation: { title_native: 'Food' } }]}
                   vocabulary={fixtureWords} poolVocabulary={fixtureWords} ratings={{}}
-                  onRate={window.__kgF1.rate} languageCode="my" user={fixtureUser}
+                  onRate={window.__kgF1.rate} languageCode={identity.languageCode} user={identity.user}
                   onSessionSaved={window.__kgF1.callback} meaningName="English" />
               : kind === 'typing' ? <TypingView topics={[{id:'food',translation:{title_native:'Food'}}]}
                   vocabulary={fixtureWords} languageCode="my" user={fixtureUser} meaningName="English" accessPolicy={scope?.policy} />
@@ -376,9 +508,10 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 let browser;
 let passed = 0;
 const sessions = 'kg_chart_quiz_sessions', answers = 'kg_chart_quiz_answers';
-async function scenario(name, kind, run, restricted = false) {
+async function scenario(name, kind, run, restricted = false, initial = null) {
   if(process.env.KG_UI_SCENARIO&&!name.includes(process.env.KG_UI_SCENARIO))return;
   const context = await browser.newContext({serviceWorkers: 'block'});
+  if(initial)await context.addInitScript(value=>{window.__kgF1Initial=value;},initial);
   // Route applies to the whole disposable context. Only this local server may
   // receive requests; canonical converter startup requests are aborted.
   await context.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort('blockedbyclient'));
@@ -392,8 +525,11 @@ async function scenario(name, kind, run, restricted = false) {
     else if (kind==='speaking') await page.getByRole('button', {name:/Whole paragraph/}).waitFor();
     else if(['ratings','rating-cards','rating-chart'].includes(kind))await page.locator('[data-ratings-loaded="yes"]').waitFor({state:'attached'});
     else if(kind==='path')await page.locator('[data-path-ready="yes"]').waitFor({state:'attached'});
+    else if(kind==='word'&&restricted&&initial?.policyState!=='legacy')await page.getByRole('region',{name:'Difficulty status'}).waitFor();
     else await page.getByRole('button', {name: /^Start Quiz/}).waitFor();
     await run(page);
+    if(restricted&&['sentence','typing','speaking','colour'].includes(kind))
+      assert.equal((await snapshot(page)).levelRequests.length,0,'Non-MCQ consumers must not read or mutate word difficulty');
     assert.deepEqual(errors, [], 'No uncaught errors in rendered canonical quiz');
     passed++;
     console.log(`PASS ${name}`);
@@ -404,6 +540,29 @@ async function scenario(name, kind, run, restricted = false) {
   } finally { await context.close(); }
 }
 const snapshot = page => page.evaluate(() => window.__kgF1.snapshot());
+const levelStateRpc='kg_chart_f2_level_state';
+const levelSelectRpc='kg_chart_f2_select_difficulty';
+const levelCheckRpc='kg_chart_f2_check_level_up';
+const levelRegion=page=>page.getByRole('region',{name:'Difficulty status'});
+const levelChoice=(page,name)=>page.getByRole('button',{name:new RegExp(name+'$')});
+const wordStart=page=>page.getByRole('button',{name:/^(Start Quiz|Verifying your level|Loading your level|Difficulty unavailable)/});
+const levelCalls=(db,name)=>db.levelRequests.filter(request=>request.name===name);
+async function verifiedLevel(page,selected='Easy',unlocked=selected){
+  await levelRegion(page).getByText(`Current difficulty: ${selected} · available through ${unlocked}.`,{exact:true}).waitFor();
+  await levelRegion(page).getByRole('button',{name:'Refresh difficulty',exact:true}).click({trial:true});
+}
+async function completeCorrectWord(page,afterStart,started=false){
+  if(!started)await page.getByRole('button',{name:/^Start Quiz/}).click();
+  await afterStart?.();
+  for(let index=0;index<4;index++){
+    await page.locator('button').filter({has:page.locator('img')}).first().click({trial:true});
+    const native=(await page.getByText(/^Native [0-3]$/).first().textContent()).trim();
+    await page.getByRole('button',{name:new RegExp('Word '+native.slice(-1)+'$')}).click();
+    await page.getByText('✅ Correct!',{exact:true}).waitFor();
+    await page.getByRole('button',{name:index===3?/^See Results/:/^Next Question/}).click();
+  }
+  await page.getByText('Quiz Completed!',{exact:true}).waitFor();
+}
 async function complete(page, kind, afterAnswer) {
   await page.getByRole('button', {name: /^Start Quiz/}).click();
   for (let index = 0; index < 4; index++) {
@@ -561,14 +720,17 @@ try {
       await page.reload({waitUntil:'load'});
       await page.getByRole('button', {name: /Retry save/}).first().click();
       await page.getByText('✓ Results saved', {exact:true}).waitFor();
+      if(kind==='word')await page.waitForFunction(name=>window.__kgF1.snapshot().levelRequests.some(request=>request.name===name),levelCheckRpc);
       const db = await snapshot(page);
       assert.equal(db.requests.length, 2);
       assert.deepEqual(db.requests[0], db.requests[1]);
       assert.equal(db.tables[sessions].length, 1);
       assert.equal(db.tables[answers].length, 4);
-      assert.equal(db.callbacks, 0, 'Restricted progress consumers remain deferred to F2E2');
+      assert.equal(db.callbacks, 0, 'Restricted confirmation must not enter legacy saved-session callbacks');
       assert.equal(db.ratingCalls, 0);
       assert.equal(db.levelCalls, 0);
+      assert.equal(levelCalls(db,levelCheckRpc).length,kind==='word'?1:0,
+        'Only a confirmed MCQ recovery may trigger the new restricted advancement contract');
       assert.equal(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('kg-chart-quiz-recovery-v1:')).length), 0);
     }, true);
   }
@@ -984,6 +1146,310 @@ try {
     assert.equal(db.pathRequests.filter(r=>r.name==='kg_chart_f2_complete_topic').length,1);
     assert.equal(await region.getByRole('button',{name:'Confirm completion',exact:true}).count(),0);
   },true);
+
+  await scenario('F2E2c actual difficulty: failed initial read never trusts local levels or historical summaries; retry and reload read current state', 'word', async page=>{
+    const region=levelRegion(page);
+    await region.getByRole('alert').filter({hasText:'Difficulty could not be verified.'}).waitFor();
+    assert.equal(await wordStart(page).isDisabled(),true);
+    assert.equal(await levelChoice(page,'Expert').isDisabled(),true);
+    assert.equal(await region.getByText(/^Confirmed .* answers:/).count(),0);
+    let db=await snapshot(page);
+    assert.equal(db.reads.some(read=>read.table==='kg_chart_user_levels'),false,'Restricted state must not query the legacy level table');
+    assert.equal(levelCalls(db,levelStateRpc).length,1);
+    assert.equal(levelCalls(db,levelCheckRpc).length,0);
+    await region.getByRole('button',{name:'Refresh difficulty',exact:true}).click();
+    await verifiedLevel(page);
+    assert.equal(await levelChoice(page,'Easy').getAttribute('aria-pressed'),'true');
+    assert.equal(await levelChoice(page,'Normal').isDisabled(),true);
+    await wordStart(page).click({trial:true});
+    await region.getByRole('button',{name:'Check advancement',exact:true}).click();
+    await region.getByText('Confirmed Easy answers: 0/10 · 0% correct (need 90%).',{exact:true}).waitFor();
+    db=await snapshot(page);
+    assert.equal(levelCalls(db,levelCheckRpc).length,1);
+    assert.equal(Object.keys(db.mcqReceipts).length,0,'Historical complete-looking rows have no confirmed MCQ receipt');
+    await page.reload({waitUntil:'load'});
+    await verifiedLevel(page);
+    assert.equal(await region.getByText(/^Confirmed .* answers:/).count(),0,'A fresh state read cannot fabricate an evaluation');
+    db=await snapshot(page);
+    assert.equal(levelCalls(db,levelCheckRpc).length,1,'Reload must not automatically perform an advancement check');
+    assert.equal(levelCalls(db,levelSelectRpc).length,0);
+    assert.equal(db.levelCalls,0);
+    assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('kg_chart_level_my'))),{level:4,unlocked:4},
+      'Restricted reads must not rewrite the unrelated legacy local mirror');
+  },true,{legacyLevel:{level:4,unlocked:4},history:{count:100,correct:100,confirmed:false},
+    faults:[{table:levelStateRpc,mode:'fail'}]});
+
+  await scenario('F2E2c actual difficulty: pending selection blocks optimistic start and freezes the confirmed quiz difficulty', 'word', async page=>{
+    await verifiedLevel(page,'Easy','Normal');
+    await page.setViewportSize({width:390,height:844});
+    if(process.env.KG_LEVEL_SCREENSHOT){
+      await levelRegion(page).scrollIntoViewIfNeeded();
+      await page.screenshot({path:process.env.KG_LEVEL_SCREENSHOT});
+    }
+    await page.evaluate(name=>window.__kgF1.fault(name,'hold'),levelSelectRpc);
+    await levelChoice(page,'Normal').click();
+    await levelRegion(page).getByText('Confirming difficulty…',{exact:true}).waitFor();
+    assert.equal(await levelChoice(page,'Easy').getAttribute('aria-pressed'),'true');
+    assert.equal(await levelChoice(page,'Normal').getAttribute('aria-pressed'),'false');
+    assert.equal(await levelChoice(page,'Normal').isDisabled(),true);
+    assert.equal(await wordStart(page).isDisabled(),true);
+    let db=await snapshot(page);
+    assert.equal(levelCalls(db,levelSelectRpc).length,1);
+    assert.deepEqual(levelCalls(db,levelSelectRpc)[0].args,
+      {p_expected_revision:17,p_lang:'my',p_expected_version:4,p_level:2});
+    await page.evaluate(()=>window.__kgF1.release());
+    await levelRegion(page).getByText('Difficulty confirmed.',{exact:true}).waitFor();
+    await verifiedLevel(page,'Normal','Normal');
+    assert.equal(await levelChoice(page,'Normal').getAttribute('aria-pressed'),'true');
+    await completeCorrectWord(page,()=>page.evaluate(()=>window.__kgF1.setLevel({level:1,version:6})));
+    await page.getByText('✓ Results saved',{exact:true}).waitFor();
+    await verifiedLevel(page,'Easy','Normal');
+    db=await snapshot(page);
+    const draft=db.requests.find(request=>request.table==='kg_chart_f2_save_recovery_quiz').args.p_draft;
+    assert.equal(draft.session.difficulty,2,'An in-progress quiz retains its original confirmed level');
+    assert.equal(db.tables[sessions].find(session=>session.id===draft.id).difficulty,2,
+      'A still-unlocked difficulty is valid even when another device selected a lower level');
+    assert.equal(levelCalls(db,levelSelectRpc).length,1);
+    assert.equal(levelCalls(db,levelCheckRpc).length,1,'A stale check is reconciled once, never rebased');
+    assert.equal(db.levelCalls,0);assert.equal(db.ratingCalls,0);
+    await page.getByRole('button',{name:'Try Again',exact:true}).click();
+    await completeCorrectWord(page,undefined,true);
+    await page.getByText('✓ Results saved',{exact:true}).waitFor();
+    await levelRegion(page).getByRole('status').filter({hasText:'Automatic advancement checks are paused.'}).waitFor();
+    db=await snapshot(page);
+    const second=db.requests.filter(request=>request.table==='kg_chart_f2_save_recovery_quiz')[1].args.p_draft;
+    assert.notEqual(second.id,draft.id);
+    assert.equal(second.session.difficulty,1,'Try Again uses the latest verified Easy selection, not the prior frozen Normal');
+    assert.equal(levelCalls(db,levelCheckRpc).length,1,'Try Again must not silently retry the previous stale check');
+  },true,{level:{level:1,unlocked:2,version:4}});
+
+  for(const fault of ['fail','lost-ack'])await scenario(`F2E2c actual difficulty: ${fault} selection reconciles by read without repeating the mutation`, 'word', async page=>{
+    await verifiedLevel(page,'Easy','Normal');
+    await page.evaluate(({name,mode})=>window.__kgF1.fault(name,mode),{name:levelSelectRpc,mode:fault});
+    await levelChoice(page,'Normal').click();
+    await levelRegion(page).getByText(/The difficulty request was not confirmed/).waitFor();
+    await verifiedLevel(page,fault==='fail'?'Easy':'Normal','Normal');
+    assert.equal(await levelRegion(page).getByText('Difficulty confirmed.',{exact:true}).count(),0);
+    let db=await snapshot(page);
+    assert.equal(levelCalls(db,levelSelectRpc).length,1);
+    assert.equal(levelCalls(db,levelStateRpc).length,2);
+    await levelRegion(page).getByRole('button',{name:'Refresh difficulty',exact:true}).click();
+    await verifiedLevel(page,fault==='fail'?'Easy':'Normal','Normal');
+    await page.reload({waitUntil:'load'});
+    await verifiedLevel(page,fault==='fail'?'Easy':'Normal','Normal');
+    db=await snapshot(page);
+    assert.equal(levelCalls(db,levelSelectRpc).length,1,'Explicit read and reload cannot repeat an uncertain selection');
+    assert.equal(levelCalls(db,levelCheckRpc).length,0);
+  },true,{level:{level:1,unlocked:2,version:0}});
+
+  await scenario('F2E2c actual difficulty: confirmed MCQ save checks once and waits for exact current readback before unlock or Switch', 'word', async page=>{
+    await verifiedLevel(page);
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_f2_save_recovery_quiz','hold'));
+    await completeCorrectWord(page);
+    await page.getByRole('status').filter({hasText:'Saving…'}).waitFor();
+    assert.equal(levelCalls(await snapshot(page),levelCheckRpc).length,0,'A committed quiz with no ACK must not advance the UI');
+    assert.equal(await page.getByText(/Normal unlocked!/).count(),0);
+    await page.evaluate(name=>window.__kgF1.fault(name,'hold'),levelStateRpc);
+    await page.evaluate(()=>window.__kgF1.release());
+    await page.waitForFunction(name=>window.__kgF1.snapshot().levelRequests.filter(request=>request.name===name).length===2,levelStateRpc);
+    await levelRegion(page).getByText('Checking advancement…',{exact:true}).waitFor();
+    assert.equal(await page.getByText(/Normal unlocked!/).count(),0,'Mutation ACK alone cannot celebrate an unlock');
+    assert.equal(await page.getByRole('button',{name:'Try Again',exact:true}).isDisabled(),true);
+    assert.equal(levelCalls(await snapshot(page),levelCheckRpc).length,1);
+    await page.evaluate(()=>window.__kgF1.release());
+    await page.getByText(/Normal unlocked!/).waitFor();
+    await verifiedLevel(page,'Easy','Normal');
+    assert.equal(await levelRegion(page).getByText(/^Confirmed .* answers:/).count(),0,
+      'The successful check counted Easy evidence, not progress toward Hard');
+    let db=await snapshot(page);
+    assert.equal(levelCalls(db,levelCheckRpc).length,1);
+    assert.equal(db.levelScopes[db.owner+'|my'].level,1,'Unlocking does not implicitly select the next difficulty');
+    await page.evaluate(name=>window.__kgF1.fault(name,'hold'),levelSelectRpc);
+    await page.getByRole('button',{name:'Switch to Normal',exact:true}).click();
+    await levelRegion(page).getByText('Confirming difficulty…',{exact:true}).waitFor();
+    await page.getByText('Quiz Completed!',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'Try Again',exact:true}).isDisabled(),true);
+    await page.evaluate(()=>window.__kgF1.release());
+    await verifiedLevel(page,'Normal','Normal');
+    await wordStart(page).click({trial:true});
+    assert.equal(await page.getByText('Quiz Completed!',{exact:true}).count(),0);
+    db=await snapshot(page);
+    assert.equal(levelCalls(db,levelSelectRpc).length,1);
+    assert.equal(levelCalls(db,levelCheckRpc).length,1);
+  },true,{history:{count:6,correct:6,confirmed:true}});
+
+  await scenario('F2E2c actual difficulty: failed and lost quiz replies retain the original draft and do not check until exact confirmation', 'word', async page=>{
+    await verifiedLevel(page);
+    await page.evaluate(()=>{
+      window.__kgF1.fault('kg_chart_f2_save_recovery_quiz','fail');
+      window.__kgF1.fault('kg_chart_f2_save_recovery_quiz','lost-ack');
+    });
+    await completeCorrectWord(page);
+    await unsaved(page);
+    assert.equal(levelCalls(await snapshot(page),levelCheckRpc).length,0);
+    await page.getByRole('button',{name:'Retry save',exact:true}).click();
+    await page.waitForFunction(()=>window.__kgF1.snapshot().requests.length===2);
+    await unsaved(page);
+    assert.equal(levelCalls(await snapshot(page),levelCheckRpc).length,0);
+    assert.equal(await levelRegion(page).getByRole('button',{name:'Check advancement',exact:true}).isDisabled(),true);
+    await page.getByRole('button',{name:'Retry save',exact:true}).click();
+    await page.getByText('✓ Results saved',{exact:true}).waitFor();
+    await levelRegion(page).getByText('Advancement checked.',{exact:true}).waitFor();
+    const db=await snapshot(page),writes=db.requests.filter(request=>request.table==='kg_chart_f2_save_recovery_quiz');
+    assert.equal(writes.length,3);
+    assert.deepEqual(writes[0],writes[1]);assert.deepEqual(writes[1],writes[2]);
+    assert.equal(levelCalls(db,levelCheckRpc).length,1);
+    assert.equal(db.callbacks,0);assert.equal(db.ratingCalls,0);assert.equal(db.levelCalls,0);
+    assert.equal(Object.keys(db.mcqReceipts).length,2,'Only the seeded evidence and one confirmed original session exist');
+  },true,{history:{count:6,correct:6,confirmed:true}});
+
+  for(const fault of ['lost-ack-next-evidence','stale','newer-before-readback'])await scenario(`F2E2c actual difficulty: ${fault} check shows current server state without stale celebration or automatic rebase`, 'word', async page=>{
+    await verifiedLevel(page);
+    await page.evaluate(({name,mode})=>window.__kgF1.fault(name,mode),{name:levelCheckRpc,mode:fault});
+    await completeCorrectWord(page);
+    await page.getByText('✓ Results saved',{exact:true}).waitFor();
+    await verifiedLevel(page,fault==='newer-before-readback'?'Normal':'Easy','Normal');
+    await levelRegion(page).getByText('Automatic advancement checks are paused. Refresh difficulty or check advancement to continue.',{exact:true}).waitFor();
+    assert.equal(await page.getByText(/Normal unlocked!/).count(),0);
+    assert.equal(await levelRegion(page).getByText(/^Confirmed .* answers:/).count(),0);
+    let db=await snapshot(page);
+    assert.equal(levelCalls(db,levelCheckRpc).length,1);
+    assert.equal(db.levelScopes[db.owner+'|my'].unlocked,2);
+    if(fault==='lost-ack-next-evidence'){
+      const reads=levelCalls(db,levelStateRpc).length;
+      await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+      await page.waitForFunction(({name,count})=>window.__kgF1.snapshot().levelRequests.filter(request=>request.name===name).length===count,
+        {name:levelStateRpc,count:reads+1});
+      await verifiedLevel(page,'Easy','Normal');
+      await levelRegion(page).getByText('Automatic advancement checks are paused. Refresh difficulty or check advancement to continue.',{exact:true}).waitFor();
+      await page.getByRole('button',{name:'← Back to Setup',exact:true}).click();
+      await completeCorrectWord(page);
+      await page.getByText('✓ Results saved',{exact:true}).waitFor();
+      await levelRegion(page).getByRole('status').filter({hasText:'Automatic advancement checks are paused.'}).waitFor();
+      assert.equal(levelCalls(await snapshot(page),levelCheckRpc).length,1,
+        'A newer confirmed quiz must not silently repeat an earlier uncertain check');
+      await levelRegion(page).getByRole('button',{name:'Check advancement',exact:true}).click();
+      await verifiedLevel(page,'Easy','Hard');
+      assert.equal(levelCalls(await snapshot(page),levelCheckRpc).length,2,'Only the explicit new check may evaluate the next level');
+    }
+    const beforeReload=levelCalls(await snapshot(page),levelCheckRpc).length;
+    await page.reload({waitUntil:'load'});
+    await verifiedLevel(page,fault==='newer-before-readback'?'Normal':'Easy',fault==='lost-ack-next-evidence'?'Hard':'Normal');
+    db=await snapshot(page);
+    assert.equal(levelCalls(db,levelCheckRpc).length,beforeReload);
+    assert.equal(await page.getByText(/unlocked!/).count(),0);
+  },true,{history:{count:6,correct:6,confirmed:true}});
+
+  for(const [kind,patch] of [
+    ['owner',{ownerId:'11000000-0000-4000-8000-000000000099'}],
+    ['language',{languageCode:'ja'}],
+    ['revision',{revision:18}],
+  ])await scenario(`F2E2c actual difficulty: ${kind} transition invalidates an in-flight check and its celebration`, 'word', async page=>{
+    await verifiedLevel(page);
+    await page.evaluate(name=>window.__kgF1.fault(name,'hold'),levelCheckRpc);
+    await completeCorrectWord(page);
+    await page.waitForFunction(name=>window.__kgF1.snapshot().levelRequests.some(request=>request.name===name),levelCheckRpc);
+    await page.evaluate(({kind,patch})=>{
+      if(kind==='revision')window.__kgF1.setLevel({level:1,unlocked:1,version:2,adminCutoff:new Date().toISOString()},{revision:18});
+      window.__kgF1.changeScope(patch);
+    },{kind,patch});
+    await verifiedLevel(page);
+    await page.evaluate(()=>window.__kgF1.release());
+    await verifiedLevel(page);
+    assert.equal(await page.getByText(/unlocked!/).count(),0);
+    assert.equal(await levelRegion(page).getByText('Advancement checked.',{exact:true}).count(),0);
+    assert.equal(await levelRegion(page).getByText(/^Confirmed .* answers:/).count(),0);
+    const db=await snapshot(page);
+    assert.equal(levelCalls(db,levelCheckRpc).length,1);
+    const reads=levelCalls(db,levelStateRpc);
+    assert.equal(reads.length,2,'Obsolete completion cannot issue another read in its former scope');
+    assert.equal(reads[1].ownerId,patch.ownerId||db.owner);
+    assert.equal(reads[1].args.p_lang,patch.languageCode||'my');
+    assert.equal(reads[1].args.p_expected_revision,patch.revision||17);
+  },true,{history:{count:6,correct:6,confirmed:true}});
+
+  await scenario('F2E2c actual difficulty: offline facade and unknown policy remain unavailable without a legacy fallback', 'word', async page=>{
+    await verifiedLevel(page,'Normal','Normal');
+    const before=await snapshot(page);
+    await page.evaluate(()=>{window.KGOffline={client:window.__fakeClient};});
+    await levelRegion(page).getByRole('button',{name:'Refresh difficulty',exact:true}).click();
+    await levelRegion(page).getByRole('alert').filter({hasText:'online server connection'}).waitFor();
+    assert.equal(await wordStart(page).isDisabled(),true);
+    assert.equal((await snapshot(page)).levelRequests.length,before.levelRequests.length);
+    await page.evaluate(()=>{delete window.KGOffline;window.__kgF1.changeScope({policyState:'unknown'});});
+    await levelRegion(page).getByRole('alert').filter({hasText:'learning access must be verified'}).waitFor();
+    assert.equal(await wordStart(page).isDisabled(),true);
+    assert.equal(await levelChoice(page,'Normal').isDisabled(),true);
+    const db=await snapshot(page);
+    assert.equal(db.levelRequests.length,before.levelRequests.length);
+    assert.equal(db.reads.some(read=>read.table==='kg_chart_user_levels'),false);
+    assert.equal(db.levelCalls,0);
+  },true,{level:{level:2,unlocked:2,version:1},legacyLevel:{level:4,unlocked:4}});
+
+  await scenario('F2E2c actual difficulty: typed word save is excluded even when confirmed MCQ evidence could advance', 'word', async page=>{
+    await verifiedLevel(page);
+    await page.getByRole('button',{name:/Type the Word/}).click();
+    await page.getByRole('button',{name:/^Start Quiz/}).click();
+    for(let index=0;index<4;index++){
+      await page.getByRole('button',{name:'Show word',exact:true}).click();
+      await page.getByRole('button',{name:index===3?/^See Results/:/^Next Word/}).click();
+    }
+    await page.getByText('✓ Results saved',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'← Back to Setup',exact:true}).click();
+    const db=await snapshot(page),draft=db.requests.find(request=>request.table==='kg_chart_f2_save_recovery_quiz').args.p_draft;
+    assert.equal(draft.session.quiz_type,'type_word');assert.equal(draft.session.difficulty??null,null);
+    assert.equal(db.mcqReceipts[draft.id],undefined);
+    assert.equal(levelCalls(db,levelCheckRpc).length,0);
+    assert.equal(db.ratingCalls,0);assert.equal(db.levelCalls,0);
+  },true,{history:{count:10,correct:10,confirmed:true}});
+
+  await scenario('F2E2c actual difficulty: unavailable refresh retains its verified version floor until a consistent state arrives', 'word', async page=>{
+    await verifiedLevel(page,'Normal','Normal');
+    for(const response of [{level:1,unlocked:1,version:2},{level:1,unlocked:2,version:3}]){
+      await page.evaluate(value=>window.__kgF1.setLevel(value),response);
+      await levelRegion(page).getByRole('button',{name:'Refresh difficulty',exact:true}).click();
+      await levelRegion(page).getByRole('alert').filter({hasText:'Difficulty could not be verified.'}).waitFor();
+      assert.equal(await wordStart(page).isDisabled(),true);
+      assert.equal(await levelChoice(page,'Normal').getAttribute('aria-pressed'),'false');
+    }
+    await page.evaluate(()=>window.__kgF1.setLevel({level:1,unlocked:2,version:4}));
+    await levelRegion(page).getByRole('button',{name:'Refresh difficulty',exact:true}).click();
+    await verifiedLevel(page,'Easy','Normal');
+    await wordStart(page).click({trial:true});
+    const db=await snapshot(page);
+    assert.equal(levelCalls(db,levelSelectRpc).length,0);assert.equal(levelCalls(db,levelCheckRpc).length,0);
+  },true,{level:{level:2,unlocked:2,version:3}});
+
+  await scenario('F2E2c actual difficulty: original quiz-save reply cannot trigger a check after permission revision changes', 'word', async page=>{
+    await verifiedLevel(page);
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_f2_save_recovery_quiz','hold'));
+    await completeCorrectWord(page);
+    await page.getByRole('status').filter({hasText:'Saving…'}).waitFor();
+    await page.evaluate(()=>window.__kgF1.changeScope({revision:18}));
+    await verifiedLevel(page);
+    await page.evaluate(()=>window.__kgF1.release());
+    await page.getByRole('status').filter({hasText:'Saving…'}).waitFor({state:'detached'});
+    const db=await snapshot(page);
+    assert.equal(levelCalls(db,levelCheckRpc).length,0);
+    assert.equal(db.requests.length,1);assert.equal(db.tables[sessions].length,2,'The completed original history remains retained');
+    assert.equal(await page.getByText(/unlocked!/).count(),0);
+  },true,{history:{count:6,correct:6,confirmed:true}});
+
+  await scenario('F2E2c actual difficulty: an old legacy level-up reply cannot overwrite newly restricted state or local history', 'word', async page=>{
+    await page.evaluate(()=>window.__kgF1.fault('kg_chart_check_level_up','hold'));
+    await completeCorrectWord(page);
+    await page.waitForFunction(()=>window.__kgF1.snapshot().levelCalls===1);
+    await page.evaluate(()=>window.__kgF1.changeScope({policyState:'restricted'}));
+    await verifiedLevel(page);
+    await page.evaluate(()=>window.__kgF1.release());
+    await verifiedLevel(page);
+    assert.equal(await page.getByText(/Normal unlocked!/).count(),0);
+    assert.equal(await page.evaluate(()=>localStorage.getItem('kg_chart_level_my')),null,
+      'The obsolete legacy continuation must not write an unlock into local storage');
+    const db=await snapshot(page);
+    assert.equal(db.levelCalls,1);assert.equal(levelCalls(db,levelCheckRpc).length,0);
+  },true,{policyState:'legacy'});
+
   assert.ok(passed>0,'The scenario filter must select at least one real scenario');
   console.log(`U4B2B3D_RENDERED_QUIZ_UI_PASS: ${passed} scenarios; isolated fictional clients; physical devices not tested`);
 } finally {
