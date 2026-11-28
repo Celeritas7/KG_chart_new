@@ -397,7 +397,9 @@ BEGIN
           -- Reset is an append-only cutoff for topic progression, not a wipe.
           SELECT max(reset_at) INTO previous_reset FROM public.kg_chart_progress_resets
             WHERE (email=email_id OR email IS NULL) AND (lang='*' OR language_code IN (lang,'*'));
-          at_now:=date_trunc('milliseconds',at_now);
+          -- Keep the server clock's full precision. Evidence and completion
+          -- use timestamptz too: rounding only this cutoff can place a later
+          -- reset before an earlier completion within the same millisecond.
           IF previous_reset IS NOT NULL AND at_now<=previous_reset THEN
             RAISE EXCEPTION 'F2D3E2 historical reset cutoff requires reconciliation' USING ERRCODE='22023';
           END IF;

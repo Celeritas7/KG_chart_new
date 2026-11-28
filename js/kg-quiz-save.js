@@ -699,6 +699,41 @@
   const key=e=>prefix(e.ownerId,e.languageCode)+e.eventId;
   const archiveKey=e=>ARCHIVE+e.ownerId+':'+e.languageCode+':'+e.eventId;
   const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  // PostgreSQL timestamps carry microseconds. Keep the whole-second epoch
+  // and fractional part separate: Date.parse alone truncates the ordering,
+  // while multiplying an epoch by 1000 can exceed safe integer precision.
+  // Unknown formats stay recoverable rather than being rounded or guessed.
+  function exactTime(value){
+    if(typeof value!=='string')return null;
+    const m=/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|([+-])(\d{2})(?::?(\d{2}))?)$/.exec(value);
+    if(!m)return null;
+    const [year,month,day,hour,minute,second]=m.slice(1,7).map(Number);
+    const zoneHour=Number(m[10]||0),zoneMinute=Number(m[11]||0);
+    if(year<1||month<1||month>12||day<1||hour>23||minute>59||second>59||zoneHour>15||zoneMinute>59)return null;
+    const date=new Date(0);date.setUTCFullYear(year,month-1,day);date.setUTCHours(hour,minute,second,0);
+    if(date.getUTCFullYear()!==year||date.getUTCMonth()!==month-1||date.getUTCDate()!==day)return null;
+    const offset=(zoneHour*60+zoneMinute)*(m[9]==='-'?-1:1);
+    return {epochMillis:date.getTime()-offset*60000,micros:Number((m[7]||'').padEnd(6,'0'))};
+  }
+  function compareTime(a,b){
+    const left=exactTime(a),right=exactTime(b);
+    if(!left||!right)return null;
+    return Math.sign(left.epochMillis-right.epochMillis)||Math.sign(left.micros-right.micros);
+  }
+  function canArchive(e,current){
+    try{
+      validate(e);
+      const snap=parseSnapshot(current,{ownerId:e.ownerId,languageCode:e.languageCode,revision:current?.permission_revision});
+      const row=snap.topics.find(x=>x.topic_id===e.topicId);
+      if(row&&row.version>e.expectedVersion)return true;
+      const boundary=compareTime(snap.reset_at,e.evidenceAt);
+      // SQL accepts evidence strictly after reset. Equality is obsolete too,
+      // but an unchanged (or unprovable) original cutoff is not new evidence
+      // that an uncertain request may be safely archived.
+      return boundary!==null&&boundary>=0&&
+        (e.resetAt===null||compareTime(snap.reset_at,e.resetAt)===1);
+    }catch(_){return false;}
+  }
   function createStore({storage,makeId=()=>root.crypto.randomUUID()}={}){
     const target=storage||root.localStorage;
     const load=k=>{
@@ -735,8 +770,7 @@
       archive(e,current,t){
         sameStored(e);const snap=parseSnapshot(current,t),row=snap.topics.find(x=>x.topic_id===e.topicId);
         if(t.ownerId!==e.ownerId||t.languageCode!==e.languageCode||
-           !(row&&row.version>e.expectedVersion||snap.reset_at!==null&&
-             Date.parse(snap.reset_at)>Date.parse(e.evidenceAt)))
+           !canArchive(e,snap))
           throw err('The old request may still be awaiting acknowledgement. Retry or retain it.','KG_PATH_ARCHIVE_UNCERTAIN','blocked');
         const k=archiveKey(e),old=target.getItem(k);
         if(old!==null&&!same(JSON.parse(old).event,e))throw invalid();
@@ -808,5 +842,5 @@
     const original=cp(e),task=perform(o,original).finally(()=>{if(flights.get(k)?.task===task)flights.delete(k);});
     flights.set(k,{client:o.client,event:original,task});return task;
   }
-  root.KGCompletionSave={createStore,parseSnapshot,read,save,validate,storagePrefix:PREFIX,archivePrefix:ARCHIVE};
+  root.KGCompletionSave={createStore,parseSnapshot,canArchive,read,save,validate,storagePrefix:PREFIX,archivePrefix:ARCHIVE};
 })(typeof window!=='undefined'?window:globalThis);

@@ -1238,6 +1238,55 @@ test('F2E2b: reset does not rebase old completion; explicit archive preserves re
   assert.ok([...f.storage.entries.keys()].some(k=>k.startsWith(CompletionAPI.archivePrefix)));
   assert.throws(()=>f.store.put(e));
 });
+test('F2E2b-R1: exact reset boundaries archive only obsolete events and preserve their payloads',async()=>{
+  for(const [resetAt,obsolete] of [
+    ['2026-11-27T12:00:00.123099+00:00',false],
+    ['2026-11-27T12:00:00.123100+00:00',true],
+    ['2026-11-27T12:00:00.123101+00:00',true],
+    ['2026-11-27T21:00:00.123100+09:00',true],
+    ['2026-11-27T06:30:00.123099-05:30',false],
+    [null,false],
+  ]){
+    const f=completionFixture(),e={...await f.make(),evidenceAt:'2026-11-27T12:00:00.123100Z'};
+    f.store.put(e);
+    const current={...f.snapshot,permission_revision:18,reset_at:resetAt,
+      topics:[{...f.snapshot.topics[0],eligible_at:null}],counts:[]};
+    const target={...f.target,revision:18};
+    assert.equal(CompletionAPI.canArchive(e,current),obsolete,String(resetAt));
+    if(!obsolete){
+      assert.throws(()=>f.store.archive(e,current,target),error=>error.code==='KG_PATH_ARCHIVE_UNCERTAIN');
+      assert.deepEqual(copy(f.store.list(OWNER,'my')[0]),copy(e));
+      continue;
+    }
+    f.store.archive(e,current,target);
+    assert.equal(f.store.list(OWNER,'my').length,0);
+    const archived=JSON.parse([...f.storage.entries].find(([k])=>k.startsWith(CompletionAPI.archivePrefix))[1]);
+    assert.deepEqual(archived.event,copy(e));
+    assert.equal(archived.observed.reset_at,resetAt);
+    assert.equal(archived.observed.permission_revision,18);
+    const fresh={...current,topics:[{...current.topics[0],eligible_at:'2026-11-27T12:00:00.123901Z'}]};
+    const next=f.store.put(f.store.make(target,fresh,'food'));
+    assert.notEqual(next.eventId,e.eventId);
+    assert.equal(next.resetAt,resetAt);assert.equal(next.revision,18);
+    assert.equal(next.evidenceAt,'2026-11-27T12:00:00.123901Z');
+    assert.deepEqual(archived.event,copy(e));
+  }
+});
+test('F2E2b-R1: uncertain timestamps and unchanged reset never justify archival',async()=>{
+  const f=completionFixture(),e=await f.make();f.store.put(e);
+  for(const resetAt of ['2026-11-27T12:00:00.1234567Z','2026-02-30T12:00:00.123457Z',
+    'November 27, 2026 13:00:00 UTC','2026-11-27T12:00:00.123457+25:00']){
+    const snap={...f.snapshot,reset_at:resetAt};
+    assert.equal(CompletionAPI.canArchive(e,snap),false,resetAt);
+    assert.throws(()=>f.store.archive(e,snap,f.target));
+    assert.deepEqual(copy(f.store.list(OWNER,'my')[0]),copy(e));
+  }
+  const sameCutoff={...e,resetAt:e.evidenceAt};
+  assert.equal(CompletionAPI.canArchive(sameCutoff,{...f.snapshot,reset_at:e.evidenceAt}),false);
+  assert.equal(CompletionAPI.canArchive(e,{...f.snapshot,owner_id:OTHER,reset_at:PATH_RESET}),false);
+  assert.equal(CompletionAPI.canArchive(e,{...f.snapshot,language_code:'ja',reset_at:PATH_RESET}),false);
+  assert.equal(CompletionAPI.canArchive(e,{...f.snapshot,topics:[{...f.snapshot.topics[0],version:1}]}),true);
+});
 test('F2E2b: denied, missing RPC, bad receipt, missing readback and owner change retain original',async()=>{
   for(const [fault,status] of [['deny','blocked'],['missing','pending'],['malformed','pending'],
     ['readback','pending'],['switch','blocked']]){
